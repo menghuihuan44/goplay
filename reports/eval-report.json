@@ -1,0 +1,1793 @@
+{
+  "version": "eval-v1",
+  "mode": "quick",
+  "generated_at": "2026-11-23T20:09:03.0575312+08:00",
+  "duration_ms": 11570,
+  "environment": {
+    "go_version": "go1.27.4",
+    "os": "windows",
+    "arch": "amd64",
+    "num_cpu": 16,
+    "working_dir": "C:\\Codes\\goplay"
+  },
+  "summary": {
+    "suites": 6,
+    "suites_passed": 6,
+    "suites_failed": 0,
+    "checks_total": 47,
+    "checks_passed": 47,
+    "checks_failed": 0,
+    "verdict": "PASS",
+    "duration_ms": 11570
+  },
+  "checks": [
+    {
+      "id": "perception.clean_overall_accuracy",
+      "suite": "perception",
+      "label": "overall field accuracy on clean frames",
+      "value": 1,
+      "unit": "ratio",
+      "op": "\u003e=",
+      "threshold": 0.99,
+      "pass": true,
+      "note": "HP/room/enemy/potions; HP tolerance 1.0"
+    },
+    {
+      "id": "perception.low_noise_overall_accuracy",
+      "suite": "perception",
+      "label": "overall field accuracy at 0.1% pixel noise",
+      "value": 0.9932291666666667,
+      "unit": "ratio",
+      "op": "\u003e=",
+      "threshold": 0.97,
+      "pass": true
+    },
+    {
+      "id": "perception.mid_noise_overall_accuracy",
+      "suite": "perception",
+      "label": "overall field accuracy at 0.5% pixel noise",
+      "value": 0.98046875,
+      "unit": "ratio",
+      "op": "\u003e=",
+      "threshold": 0.9,
+      "pass": true
+    },
+    {
+      "id": "perception.high_noise_overall_accuracy",
+      "suite": "perception",
+      "label": "overall field accuracy at 1% pixel noise",
+      "value": 0.9552083333333333,
+      "unit": "ratio",
+      "op": "\u003e=",
+      "threshold": 0.85,
+      "pass": true
+    },
+    {
+      "id": "perception.high_noise_hp_accuracy",
+      "suite": "perception",
+      "label": "HP accuracy at 1% pixel noise",
+      "value": 0.9989583333333333,
+      "unit": "ratio",
+      "op": "\u003e=",
+      "threshold": 0.9,
+      "pass": true
+    },
+    {
+      "id": "perception.high_noise_enemy_hp_accuracy",
+      "suite": "perception",
+      "label": "enemy HP accuracy at 1% pixel noise",
+      "value": 0.9822916666666667,
+      "unit": "ratio",
+      "op": "\u003e=",
+      "threshold": 0.95,
+      "pass": true
+    },
+    {
+      "id": "perception.high_noise_room_accuracy",
+      "suite": "perception",
+      "label": "room accuracy at 1% pixel noise",
+      "value": 0.9802083333333333,
+      "unit": "ratio",
+      "op": "\u003e=",
+      "threshold": 0.95,
+      "pass": true
+    },
+    {
+      "id": "perception.high_noise_potions_accuracy",
+      "suite": "perception",
+      "label": "potion-count accuracy at 1% pixel noise",
+      "value": 0.859375,
+      "unit": "ratio",
+      "op": "\u003e=",
+      "threshold": 0.8,
+      "pass": true,
+      "note": "potion icons are 7x7 and easiest to fragment under noise"
+    },
+    {
+      "id": "learning.win_rate",
+      "suite": "learning",
+      "label": "win rate over all episodes",
+      "value": 1,
+      "unit": "ratio",
+      "op": "\u003e=",
+      "threshold": 0.5,
+      "pass": true,
+      "note": "a win is GroundTruth won at episode end"
+    },
+    {
+      "id": "learning.reached_90_rate",
+      "suite": "learning",
+      "label": "fraction of seeds reaching 90% progress",
+      "value": 1,
+      "unit": "ratio",
+      "op": "==",
+      "threshold": 1,
+      "pass": true,
+      "note": "at least one episode at \u003e=0.90 progress"
+    },
+    {
+      "id": "learning.attempts_to_90",
+      "suite": "learning",
+      "label": "average attempts to reach 90% progress",
+      "value": 1,
+      "unit": "count",
+      "op": "\u003c=",
+      "threshold": 4,
+      "pass": true,
+      "note": "never reached counts as 9; per-seed attempts use Episode.Index"
+    },
+    {
+      "id": "learning.errors",
+      "suite": "learning",
+      "label": "engine errors",
+      "value": 0,
+      "unit": "count",
+      "op": "==",
+      "threshold": 0,
+      "pass": true,
+      "note": "MaxEpisodes=8, TickMS=5"
+    },
+    {
+      "id": "memory.eviction.budget_respected",
+      "suite": "memory",
+      "label": "memory stays within the 256KB budget",
+      "value": 262078,
+      "unit": "bytes",
+      "op": "\u003c=",
+      "threshold": 262144,
+      "pass": true
+    },
+    {
+      "id": "memory.eviction.compaction_ran",
+      "suite": "memory",
+      "label": "at least one compaction happened",
+      "value": 446,
+      "unit": "count",
+      "op": "\u003e=",
+      "threshold": 1,
+      "pass": true
+    },
+    {
+      "id": "memory.eviction.eviction_ran",
+      "suite": "memory",
+      "label": "at least one low-value entry was evicted",
+      "value": 446,
+      "unit": "count",
+      "op": "\u003e=",
+      "threshold": 1,
+      "pass": true
+    },
+    {
+      "id": "memory.eviction.recall_at_1",
+      "suite": "memory",
+      "label": "must-remember Recall@1 after compaction",
+      "value": 1,
+      "unit": "ratio",
+      "op": "\u003e=",
+      "threshold": 0.9,
+      "pass": true,
+      "note": "40 labeled facts"
+    },
+    {
+      "id": "memory.eviction.recall_at_3",
+      "suite": "memory",
+      "label": "must-remember Recall@3 after compaction",
+      "value": 1,
+      "unit": "ratio",
+      "op": "\u003e=",
+      "threshold": 0.95,
+      "pass": true,
+      "note": "40 labeled facts"
+    },
+    {
+      "id": "memory.eviction.recall_at_5",
+      "suite": "memory",
+      "label": "must-remember Recall@5 after compaction",
+      "value": 1,
+      "unit": "ratio",
+      "op": "\u003e=",
+      "threshold": 0.95,
+      "pass": true,
+      "note": "40 labeled facts"
+    },
+    {
+      "id": "memory.summary.compaction_ran",
+      "suite": "memory",
+      "label": "working events were folded into summaries",
+      "value": 3,
+      "unit": "count",
+      "op": "\u003e=",
+      "threshold": 1,
+      "pass": true
+    },
+    {
+      "id": "memory.summary.summaries_created",
+      "suite": "memory",
+      "label": "at least 8 summaries retained the must keys",
+      "value": 12,
+      "unit": "count",
+      "op": "\u003e=",
+      "threshold": 8,
+      "pass": true
+    },
+    {
+      "id": "memory.summary.recall_at_1",
+      "suite": "memory",
+      "label": "must-remember event Recall@1 after compression",
+      "value": 1,
+      "unit": "ratio",
+      "op": "\u003e=",
+      "threshold": 0.9,
+      "pass": true
+    },
+    {
+      "id": "memory.summary.recall_at_3",
+      "suite": "memory",
+      "label": "must-remember event Recall@3 after compression",
+      "value": 1,
+      "unit": "ratio",
+      "op": "\u003e=",
+      "threshold": 0.95,
+      "pass": true
+    },
+    {
+      "id": "memory.summary.recall_at_5",
+      "suite": "memory",
+      "label": "must-remember event Recall@5 after compression",
+      "value": 1,
+      "unit": "ratio",
+      "op": "\u003e=",
+      "threshold": 0.95,
+      "pass": true
+    },
+    {
+      "id": "control.takeover_latency",
+      "suite": "control",
+      "label": "human takeover applied within 1s",
+      "value": 9,
+      "unit": "ms",
+      "op": "\u003c=",
+      "threshold": 1000,
+      "pass": true
+    },
+    {
+      "id": "control.action_freeze",
+      "suite": "control",
+      "label": "no actions execute while the human is in control",
+      "value": 1,
+      "unit": "count",
+      "op": "==",
+      "threshold": 1,
+      "pass": true
+    },
+    {
+      "id": "control.recovery_latency",
+      "suite": "control",
+      "label": "recovery within 2s of release",
+      "value": 132,
+      "unit": "ms",
+      "op": "\u003c=",
+      "threshold": 2000,
+      "pass": true
+    },
+    {
+      "id": "control.handover_metric",
+      "suite": "control",
+      "label": "engine recorded a handover latency below 1s",
+      "value": 9,
+      "unit": "ms",
+      "op": "\u003c=",
+      "threshold": 1000,
+      "pass": true
+    },
+    {
+      "id": "control.intervention_latency",
+      "suite": "control",
+      "label": "constraint applied within 1s",
+      "value": 9,
+      "unit": "ms",
+      "op": "\u003c=",
+      "threshold": 1000,
+      "pass": true
+    },
+    {
+      "id": "control.constraint_enforced",
+      "suite": "control",
+      "label": "no attack after the constraint boundary",
+      "value": 0,
+      "unit": "count",
+      "op": "==",
+      "threshold": 0,
+      "pass": true,
+      "note": "first in-flight action excluded"
+    },
+    {
+      "id": "control.post_constraint_actions",
+      "suite": "control",
+      "label": "play continues after constraint",
+      "value": 5,
+      "unit": "count",
+      "op": "\u003e=",
+      "threshold": 3,
+      "pass": true
+    },
+    {
+      "id": "control.preference_latency",
+      "suite": "control",
+      "label": "preference applied within 1s",
+      "value": 11,
+      "unit": "ms",
+      "op": "\u003c=",
+      "threshold": 1000,
+      "pass": true
+    },
+    {
+      "id": "control.preference_weight",
+      "suite": "control",
+      "label": "risk_aversion weight is at least 0.2",
+      "value": 0.25,
+      "unit": "ratio",
+      "op": "\u003e=",
+      "threshold": 0.2,
+      "pass": true
+    },
+    {
+      "id": "control.preference_play_continues",
+      "suite": "control",
+      "label": "play continues after preference",
+      "value": 1,
+      "unit": "count",
+      "op": "==",
+      "threshold": 1,
+      "pass": true
+    },
+    {
+      "id": "concurrency.2.all_active",
+      "suite": "concurrency",
+      "label": "2 instances all running before takeover",
+      "value": 2,
+      "unit": "count",
+      "op": "==",
+      "threshold": 2,
+      "pass": true
+    },
+    {
+      "id": "concurrency.2.crosstalk_violations",
+      "suite": "concurrency",
+      "label": "2 instances: no cross-talk on human takeover",
+      "value": 0,
+      "unit": "count",
+      "op": "==",
+      "threshold": 0,
+      "pass": true
+    },
+    {
+      "id": "concurrency.2.isolation_violations",
+      "suite": "concurrency",
+      "label": "2 instances: no shared game/memory/ID",
+      "value": 0,
+      "unit": "count",
+      "op": "==",
+      "threshold": 0,
+      "pass": true
+    },
+    {
+      "id": "concurrency.2.min_actions",
+      "suite": "concurrency",
+      "label": "2 instances: every instance keeps acting",
+      "value": 6,
+      "unit": "count",
+      "op": "\u003e=",
+      "threshold": 5,
+      "pass": true
+    },
+    {
+      "id": "concurrency.4.all_active",
+      "suite": "concurrency",
+      "label": "4 instances all running before takeover",
+      "value": 4,
+      "unit": "count",
+      "op": "==",
+      "threshold": 4,
+      "pass": true
+    },
+    {
+      "id": "concurrency.4.crosstalk_violations",
+      "suite": "concurrency",
+      "label": "4 instances: no cross-talk on human takeover",
+      "value": 0,
+      "unit": "count",
+      "op": "==",
+      "threshold": 0,
+      "pass": true
+    },
+    {
+      "id": "concurrency.4.isolation_violations",
+      "suite": "concurrency",
+      "label": "4 instances: no shared game/memory/ID",
+      "value": 0,
+      "unit": "count",
+      "op": "==",
+      "threshold": 0,
+      "pass": true
+    },
+    {
+      "id": "concurrency.4.min_actions",
+      "suite": "concurrency",
+      "label": "4 instances: every instance keeps acting",
+      "value": 6,
+      "unit": "count",
+      "op": "\u003e=",
+      "threshold": 5,
+      "pass": true
+    },
+    {
+      "id": "localmodel.ttft",
+      "suite": "localmodel",
+      "label": "first token under 500ms",
+      "value": 10,
+      "unit": "ms",
+      "op": "\u003c=",
+      "threshold": 500,
+      "pass": true
+    },
+    {
+      "id": "localmodel.tps",
+      "suite": "localmodel",
+      "label": "decode speed at least 20 tokens/sec",
+      "value": 106.77101754114355,
+      "unit": "tps",
+      "op": "\u003e=",
+      "threshold": 20,
+      "pass": true,
+      "note": "8 tokens at 10ms/token"
+    },
+    {
+      "id": "localmodel.tokens",
+      "suite": "localmodel",
+      "label": "all 8 stream deltas parsed",
+      "value": 8,
+      "unit": "tokens",
+      "op": "==",
+      "threshold": 8,
+      "pass": true
+    },
+    {
+      "id": "localmodel.text",
+      "suite": "localmodel",
+      "label": "streamed text matches the mock",
+      "value": 1,
+      "unit": "count",
+      "op": "==",
+      "threshold": 1,
+      "pass": true
+    },
+    {
+      "id": "localmodel.metric_chain",
+      "suite": "localmodel",
+      "label": "TTFT histogram and TPS gauge are wired",
+      "value": 1,
+      "unit": "count",
+      "op": "==",
+      "threshold": 1,
+      "pass": true
+    },
+    {
+      "id": "localmodel.mock_provider",
+      "suite": "localmodel",
+      "label": "llm.Mock completes offline",
+      "value": 1,
+      "unit": "count",
+      "op": "==",
+      "threshold": 1,
+      "pass": true,
+      "note": "no network"
+    }
+  ],
+  "suites": [
+    {
+      "id": "perception",
+      "title": "Perception accuracy under renderer noise",
+      "status": "pass",
+      "duration_ms": 914,
+      "metrics": [
+        {
+          "id": "perception.noise_0.000.hp_accuracy",
+          "label": "HP accuracy @ level 0",
+          "value": 1,
+          "unit": "ratio"
+        },
+        {
+          "id": "perception.noise_0.000.enemy_hp_accuracy",
+          "label": "enemy HP accuracy @ level 0",
+          "value": 1,
+          "unit": "ratio"
+        },
+        {
+          "id": "perception.noise_0.000.room_accuracy",
+          "label": "room accuracy @ level 0",
+          "value": 1,
+          "unit": "ratio"
+        },
+        {
+          "id": "perception.noise_0.000.potions_accuracy",
+          "label": "potions accuracy @ level 0",
+          "value": 1,
+          "unit": "ratio"
+        },
+        {
+          "id": "perception.noise_0.001.hp_accuracy",
+          "label": "HP accuracy @ level 1",
+          "value": 1,
+          "unit": "ratio"
+        },
+        {
+          "id": "perception.noise_0.001.enemy_hp_accuracy",
+          "label": "enemy HP accuracy @ level 1",
+          "value": 0.9979166666666667,
+          "unit": "ratio"
+        },
+        {
+          "id": "perception.noise_0.001.room_accuracy",
+          "label": "room accuracy @ level 1",
+          "value": 0.996875,
+          "unit": "ratio"
+        },
+        {
+          "id": "perception.noise_0.001.potions_accuracy",
+          "label": "potions accuracy @ level 1",
+          "value": 0.978125,
+          "unit": "ratio"
+        },
+        {
+          "id": "perception.noise_0.005.hp_accuracy",
+          "label": "HP accuracy @ level 2",
+          "value": 1,
+          "unit": "ratio"
+        },
+        {
+          "id": "perception.noise_0.005.enemy_hp_accuracy",
+          "label": "enemy HP accuracy @ level 2",
+          "value": 0.9989583333333333,
+          "unit": "ratio"
+        },
+        {
+          "id": "perception.noise_0.005.room_accuracy",
+          "label": "room accuracy @ level 2",
+          "value": 0.9958333333333333,
+          "unit": "ratio"
+        },
+        {
+          "id": "perception.noise_0.005.potions_accuracy",
+          "label": "potions accuracy @ level 2",
+          "value": 0.9270833333333334,
+          "unit": "ratio"
+        },
+        {
+          "id": "perception.noise_0.010.hp_accuracy",
+          "label": "HP accuracy @ level 3",
+          "value": 0.9989583333333333,
+          "unit": "ratio"
+        },
+        {
+          "id": "perception.noise_0.010.enemy_hp_accuracy",
+          "label": "enemy HP accuracy @ level 3",
+          "value": 0.9822916666666667,
+          "unit": "ratio"
+        },
+        {
+          "id": "perception.noise_0.010.room_accuracy",
+          "label": "room accuracy @ level 3",
+          "value": 0.9802083333333333,
+          "unit": "ratio"
+        },
+        {
+          "id": "perception.noise_0.010.potions_accuracy",
+          "label": "potions accuracy @ level 3",
+          "value": 0.859375,
+          "unit": "ratio"
+        },
+        {
+          "id": "perception.clean_overall_accuracy",
+          "label": "overall field accuracy on clean frames",
+          "value": 1,
+          "unit": "ratio",
+          "threshold": 0.99,
+          "op": "\u003e=",
+          "pass": true,
+          "note": "HP/room/enemy/potions; HP tolerance 1.0"
+        },
+        {
+          "id": "perception.low_noise_overall_accuracy",
+          "label": "overall field accuracy at 0.1% pixel noise",
+          "value": 0.9932291666666667,
+          "unit": "ratio",
+          "threshold": 0.97,
+          "op": "\u003e=",
+          "pass": true
+        },
+        {
+          "id": "perception.mid_noise_overall_accuracy",
+          "label": "overall field accuracy at 0.5% pixel noise",
+          "value": 0.98046875,
+          "unit": "ratio",
+          "threshold": 0.9,
+          "op": "\u003e=",
+          "pass": true
+        },
+        {
+          "id": "perception.high_noise_overall_accuracy",
+          "label": "overall field accuracy at 1% pixel noise",
+          "value": 0.9552083333333333,
+          "unit": "ratio",
+          "threshold": 0.85,
+          "op": "\u003e=",
+          "pass": true
+        },
+        {
+          "id": "perception.high_noise_hp_accuracy",
+          "label": "HP accuracy at 1% pixel noise",
+          "value": 0.9989583333333333,
+          "unit": "ratio",
+          "threshold": 0.9,
+          "op": "\u003e=",
+          "pass": true
+        },
+        {
+          "id": "perception.high_noise_enemy_hp_accuracy",
+          "label": "enemy HP accuracy at 1% pixel noise",
+          "value": 0.9822916666666667,
+          "unit": "ratio",
+          "threshold": 0.95,
+          "op": "\u003e=",
+          "pass": true
+        },
+        {
+          "id": "perception.high_noise_room_accuracy",
+          "label": "room accuracy at 1% pixel noise",
+          "value": 0.9802083333333333,
+          "unit": "ratio",
+          "threshold": 0.95,
+          "op": "\u003e=",
+          "pass": true
+        },
+        {
+          "id": "perception.high_noise_potions_accuracy",
+          "label": "potion-count accuracy at 1% pixel noise",
+          "value": 0.859375,
+          "unit": "ratio",
+          "threshold": 0.8,
+          "op": "\u003e=",
+          "pass": true,
+          "note": "potion icons are 7x7 and easiest to fragment under noise"
+        }
+      ],
+      "details": {
+        "levels": [
+          {
+            "noise": 0,
+            "counts": {
+              "samples": 960,
+              "hp_correct": 960,
+              "enemy_hp_correct": 960,
+              "room_correct": 960,
+              "potions_correct": 960,
+              "dead_correct": 960,
+              "won_correct": 952
+            },
+            "hp_accuracy": 1,
+            "enemy_hp_accuracy": 1,
+            "room_accuracy": 1,
+            "potions_accuracy": 1,
+            "overall_accuracy": 1
+          },
+          {
+            "noise": 0.001,
+            "counts": {
+              "samples": 960,
+              "hp_correct": 960,
+              "enemy_hp_correct": 958,
+              "room_correct": 957,
+              "potions_correct": 939,
+              "dead_correct": 960,
+              "won_correct": 952
+            },
+            "hp_accuracy": 1,
+            "enemy_hp_accuracy": 0.9979166666666667,
+            "room_accuracy": 0.996875,
+            "potions_accuracy": 0.978125,
+            "overall_accuracy": 0.9932291666666667
+          },
+          {
+            "noise": 0.005,
+            "counts": {
+              "samples": 960,
+              "hp_correct": 960,
+              "enemy_hp_correct": 959,
+              "room_correct": 956,
+              "potions_correct": 890,
+              "dead_correct": 960,
+              "won_correct": 952
+            },
+            "hp_accuracy": 1,
+            "enemy_hp_accuracy": 0.9989583333333333,
+            "room_accuracy": 0.9958333333333333,
+            "potions_accuracy": 0.9270833333333334,
+            "overall_accuracy": 0.98046875
+          },
+          {
+            "noise": 0.01,
+            "counts": {
+              "samples": 960,
+              "hp_correct": 959,
+              "enemy_hp_correct": 943,
+              "room_correct": 941,
+              "potions_correct": 825,
+              "dead_correct": 960,
+              "won_correct": 952
+            },
+            "hp_accuracy": 0.9989583333333333,
+            "enemy_hp_accuracy": 0.9822916666666667,
+            "room_accuracy": 0.9802083333333333,
+            "potions_accuracy": 0.859375,
+            "overall_accuracy": 0.9552083333333333
+          }
+        ],
+        "seeds": [
+          3,
+          7,
+          11,
+          19,
+          23,
+          29,
+          31,
+          37
+        ],
+        "steps": 120
+      },
+      "notes": [
+        "8 seeds x 120 steps x 4 noise levels; HP tolerance 1.0, enemy HP tolerance 1.0, room/potions exact.",
+        "GroundTruth is mockgame.GroundTruth(); the analyzer never reads it."
+      ]
+    },
+    {
+      "id": "learning",
+      "title": "Learning convergence across episodes",
+      "status": "pass",
+      "duration_ms": 8967,
+      "metrics": [
+        {
+          "id": "learning.episodes_completed",
+          "label": "episodes completed across seeds",
+          "value": 24,
+          "unit": "count"
+        },
+        {
+          "id": "learning.actions_total",
+          "label": "actions executed across seeds",
+          "value": 1782,
+          "unit": "count"
+        },
+        {
+          "id": "learning.win_rate",
+          "label": "win rate over all episodes",
+          "value": 1,
+          "unit": "ratio",
+          "threshold": 0.5,
+          "op": "\u003e=",
+          "pass": true,
+          "note": "a win is GroundTruth won at episode end"
+        },
+        {
+          "id": "learning.reached_90_rate",
+          "label": "fraction of seeds reaching 90% progress",
+          "value": 1,
+          "unit": "ratio",
+          "threshold": 1,
+          "op": "==",
+          "pass": true,
+          "note": "at least one episode at \u003e=0.90 progress"
+        },
+        {
+          "id": "learning.attempts_to_90",
+          "label": "average attempts to reach 90% progress",
+          "value": 1,
+          "unit": "count",
+          "threshold": 4,
+          "op": "\u003c=",
+          "pass": true,
+          "note": "never reached counts as 9; per-seed attempts use Episode.Index"
+        },
+        {
+          "id": "learning.errors",
+          "label": "engine errors",
+          "value": 0,
+          "unit": "count",
+          "threshold": 0,
+          "op": "==",
+          "pass": true,
+          "note": "MaxEpisodes=8, TickMS=5"
+        }
+      ],
+      "details": {
+        "configured_episodes": 8,
+        "seeds": [
+          {
+            "seed": 7,
+            "status": "stopped",
+            "episodes": 8,
+            "wins": 8,
+            "win_rate": 1,
+            "reached_90": true,
+            "attempts_to_90": 1,
+            "best_progress": 0.999,
+            "actions": 589,
+            "errors": 0,
+            "episodes_detail": [
+              {
+                "index": 1,
+                "won": true,
+                "progress": 0.999,
+                "actions": 76,
+                "reward": 164.46666666666667
+              },
+              {
+                "index": 2,
+                "won": true,
+                "progress": 0.999,
+                "actions": 76,
+                "reward": 164.89999999999972
+              },
+              {
+                "index": 3,
+                "won": true,
+                "progress": 0.999,
+                "actions": 83,
+                "reward": 164.59999999999974
+              },
+              {
+                "index": 4,
+                "won": true,
+                "progress": 0.999,
+                "actions": 73,
+                "reward": 164.516666666667
+              },
+              {
+                "index": 5,
+                "won": true,
+                "progress": 0.999,
+                "actions": 71,
+                "reward": 164.16666666666708
+              },
+              {
+                "index": 6,
+                "won": true,
+                "progress": 0.999,
+                "actions": 73,
+                "reward": 164.2000000000004
+              },
+              {
+                "index": 7,
+                "won": true,
+                "progress": 0.999,
+                "actions": 71,
+                "reward": 164.6166666666668
+              },
+              {
+                "index": 8,
+                "won": true,
+                "progress": 0.999,
+                "actions": 66,
+                "reward": 175.08333333333417
+              }
+            ]
+          },
+          {
+            "seed": 11,
+            "status": "stopped",
+            "episodes": 8,
+            "wins": 8,
+            "win_rate": 1,
+            "reached_90": true,
+            "attempts_to_90": 1,
+            "best_progress": 0.999,
+            "actions": 596,
+            "errors": 0,
+            "episodes_detail": [
+              {
+                "index": 1,
+                "won": true,
+                "progress": 0.999,
+                "actions": 79,
+                "reward": 164.60000000000005
+              },
+              {
+                "index": 2,
+                "won": true,
+                "progress": 0.999,
+                "actions": 78,
+                "reward": 164.24999999999986
+              },
+              {
+                "index": 3,
+                "won": true,
+                "progress": 0.999,
+                "actions": 74,
+                "reward": 164.16666666666652
+              },
+              {
+                "index": 4,
+                "won": true,
+                "progress": 0.999,
+                "actions": 75,
+                "reward": 164.41666666666697
+              },
+              {
+                "index": 5,
+                "won": true,
+                "progress": 0.999,
+                "actions": 74,
+                "reward": 164.3166666666673
+              },
+              {
+                "index": 6,
+                "won": true,
+                "progress": 0.999,
+                "actions": 70,
+                "reward": 164.39999999999986
+              },
+              {
+                "index": 7,
+                "won": true,
+                "progress": 0.999,
+                "actions": 71,
+                "reward": 164.3166666666666
+              },
+              {
+                "index": 8,
+                "won": true,
+                "progress": 0.999,
+                "actions": 75,
+                "reward": 164.73333333333244
+              }
+            ]
+          },
+          {
+            "seed": 23,
+            "status": "stopped",
+            "episodes": 8,
+            "wins": 8,
+            "win_rate": 1,
+            "reached_90": true,
+            "attempts_to_90": 1,
+            "best_progress": 0.999,
+            "actions": 597,
+            "errors": 0,
+            "episodes_detail": [
+              {
+                "index": 1,
+                "won": true,
+                "progress": 0.999,
+                "actions": 78,
+                "reward": 164.2666666666667
+              },
+              {
+                "index": 2,
+                "won": true,
+                "progress": 0.999,
+                "actions": 75,
+                "reward": 164.54999999999978
+              },
+              {
+                "index": 3,
+                "won": true,
+                "progress": 0.999,
+                "actions": 81,
+                "reward": 164.56249999999983
+              },
+              {
+                "index": 4,
+                "won": true,
+                "progress": 0.999,
+                "actions": 73,
+                "reward": 163.9833333333333
+              },
+              {
+                "index": 5,
+                "won": true,
+                "progress": 0.999,
+                "actions": 74,
+                "reward": 164.13333333333355
+              },
+              {
+                "index": 6,
+                "won": true,
+                "progress": 0.999,
+                "actions": 77,
+                "reward": 164.55000000000052
+              },
+              {
+                "index": 7,
+                "won": true,
+                "progress": 0.999,
+                "actions": 71,
+                "reward": 164.08333333333314
+              },
+              {
+                "index": 8,
+                "won": true,
+                "progress": 0.999,
+                "actions": 68,
+                "reward": 164.44999999999982
+              }
+            ]
+          }
+        ]
+      },
+      "notes": [
+        "Each seed reuses one Policy and one Memory instance for all episodes; Reset() reloads a fresh mock game.",
+        "Learning signal is the action reward computed from the built-in mock_dungeon profile plus UCB exploration."
+      ]
+    },
+    {
+      "id": "memory",
+      "title": "Memory recall under a 256KB budget",
+      "status": "pass",
+      "duration_ms": 411,
+      "metrics": [
+        {
+          "id": "memory.eviction.budget_bytes",
+          "label": "fixed memory budget",
+          "value": 262144,
+          "unit": "bytes"
+        },
+        {
+          "id": "memory.eviction.bytes_after",
+          "label": "bytes used after noise (scenario A)",
+          "value": 262078,
+          "unit": "bytes"
+        },
+        {
+          "id": "memory.eviction.compactions",
+          "label": "compactions (scenario A)",
+          "value": 446,
+          "unit": "count"
+        },
+        {
+          "id": "memory.eviction.evictions",
+          "label": "evictions (scenario A)",
+          "value": 446,
+          "unit": "count"
+        },
+        {
+          "id": "memory.eviction.summaries",
+          "label": "summaries (scenario A)",
+          "value": 0,
+          "unit": "count"
+        },
+        {
+          "id": "memory.eviction.must_recall_at_1",
+          "label": "Recall@1 on must-remember facts",
+          "value": 1,
+          "unit": "ratio"
+        },
+        {
+          "id": "memory.eviction.must_recall_at_3",
+          "label": "Recall@3 on must-remember facts",
+          "value": 1,
+          "unit": "ratio"
+        },
+        {
+          "id": "memory.eviction.must_recall_at_5",
+          "label": "Recall@5 on must-remember facts",
+          "value": 1,
+          "unit": "ratio"
+        },
+        {
+          "id": "memory.eviction.budget_respected",
+          "label": "memory stays within the 256KB budget",
+          "value": 262078,
+          "unit": "bytes",
+          "threshold": 262144,
+          "op": "\u003c=",
+          "pass": true
+        },
+        {
+          "id": "memory.eviction.compaction_ran",
+          "label": "at least one compaction happened",
+          "value": 446,
+          "unit": "count",
+          "threshold": 1,
+          "op": "\u003e=",
+          "pass": true
+        },
+        {
+          "id": "memory.eviction.eviction_ran",
+          "label": "at least one low-value entry was evicted",
+          "value": 446,
+          "unit": "count",
+          "threshold": 1,
+          "op": "\u003e=",
+          "pass": true
+        },
+        {
+          "id": "memory.eviction.recall_at_1",
+          "label": "must-remember Recall@1 after compaction",
+          "value": 1,
+          "unit": "ratio",
+          "threshold": 0.9,
+          "op": "\u003e=",
+          "pass": true,
+          "note": "40 labeled facts"
+        },
+        {
+          "id": "memory.eviction.recall_at_3",
+          "label": "must-remember Recall@3 after compaction",
+          "value": 1,
+          "unit": "ratio",
+          "threshold": 0.95,
+          "op": "\u003e=",
+          "pass": true,
+          "note": "40 labeled facts"
+        },
+        {
+          "id": "memory.eviction.recall_at_5",
+          "label": "must-remember Recall@5 after compaction",
+          "value": 1,
+          "unit": "ratio",
+          "threshold": 0.95,
+          "op": "\u003e=",
+          "pass": true,
+          "note": "40 labeled facts"
+        },
+        {
+          "id": "memory.summary.summaries",
+          "label": "summaries produced (scenario B)",
+          "value": 12,
+          "unit": "count"
+        },
+        {
+          "id": "memory.summary.working",
+          "label": "working entries remaining (scenario B)",
+          "value": 32,
+          "unit": "count"
+        },
+        {
+          "id": "memory.summary.must_recall_at_1",
+          "label": "Recall@1 on must-remember events",
+          "value": 1,
+          "unit": "ratio"
+        },
+        {
+          "id": "memory.summary.must_recall_at_3",
+          "label": "Recall@3 on must-remember events",
+          "value": 1,
+          "unit": "ratio"
+        },
+        {
+          "id": "memory.summary.must_recall_at_5",
+          "label": "Recall@5 on must-remember events",
+          "value": 1,
+          "unit": "ratio"
+        },
+        {
+          "id": "memory.summary.compaction_ran",
+          "label": "working events were folded into summaries",
+          "value": 3,
+          "unit": "count",
+          "threshold": 1,
+          "op": "\u003e=",
+          "pass": true
+        },
+        {
+          "id": "memory.summary.summaries_created",
+          "label": "at least 8 summaries retained the must keys",
+          "value": 12,
+          "unit": "count",
+          "threshold": 8,
+          "op": "\u003e=",
+          "pass": true
+        },
+        {
+          "id": "memory.summary.recall_at_1",
+          "label": "must-remember event Recall@1 after compression",
+          "value": 1,
+          "unit": "ratio",
+          "threshold": 0.9,
+          "op": "\u003e=",
+          "pass": true
+        },
+        {
+          "id": "memory.summary.recall_at_3",
+          "label": "must-remember event Recall@3 after compression",
+          "value": 1,
+          "unit": "ratio",
+          "threshold": 0.95,
+          "op": "\u003e=",
+          "pass": true
+        },
+        {
+          "id": "memory.summary.recall_at_5",
+          "label": "must-remember event Recall@5 after compression",
+          "value": 1,
+          "unit": "ratio",
+          "threshold": 0.95,
+          "op": "\u003e=",
+          "pass": true
+        }
+      ],
+      "details": {
+        "budget_kb": 256,
+        "eviction": {
+          "fillers": 900,
+          "must_entries": 40,
+          "noise_events": 240,
+          "recall_at_1": {
+            "k": 1,
+            "hits": 40,
+            "total": 40,
+            "rate": 1
+          },
+          "recall_at_3": {
+            "k": 3,
+            "hits": 40,
+            "total": 40,
+            "rate": 1
+          },
+          "recall_at_5": {
+            "k": 5,
+            "hits": 40,
+            "total": 40,
+            "rate": 1
+          },
+          "stats": {
+            "added": 1180,
+            "bytes": 262078,
+            "compactions": 446,
+            "evictions": 446,
+            "facts": 732,
+            "recalls": 0,
+            "summaries": 0,
+            "working": 2
+          }
+        },
+        "summarization": {
+          "events": 128,
+          "must_entries": 16,
+          "recall_at_1": {
+            "k": 1,
+            "hits": 16,
+            "total": 16,
+            "rate": 1
+          },
+          "recall_at_3": {
+            "k": 3,
+            "hits": 16,
+            "total": 16,
+            "rate": 1
+          },
+          "recall_at_5": {
+            "k": 5,
+            "hits": 16,
+            "total": 16,
+            "rate": 1
+          },
+          "stats": {
+            "added": 128,
+            "bytes": 6244,
+            "compactions": 3,
+            "evictions": 0,
+            "facts": 0,
+            "recalls": 0,
+            "summaries": 12,
+            "working": 32
+          }
+        }
+      },
+      "notes": [
+        "Recall is counted as hit only when the correct labeled entry appears in the top K and its text contains the unique token.",
+        "Must-remember facts use importance 0.95, which the memory package protects from eviction."
+      ]
+    },
+    {
+      "id": "control",
+      "title": "Human takeover and intervention boundaries",
+      "status": "pass",
+      "duration_ms": 434,
+      "metrics": [
+        {
+          "id": "control.takeover_latency_ms",
+          "label": "Touch -\u003e human_control latency",
+          "value": 9,
+          "unit": "ms"
+        },
+        {
+          "id": "control.action_freeze",
+          "label": "Actions frozen during human control (1 = yes)",
+          "value": 1,
+          "unit": "count"
+        },
+        {
+          "id": "control.recovery_latency_ms",
+          "label": "Release -\u003e running and acting",
+          "value": 132,
+          "unit": "ms"
+        },
+        {
+          "id": "control.handover_metric_avg_ms",
+          "label": "engine handover_latency_ms average",
+          "value": 9,
+          "unit": "ms",
+          "note": "recorded by engine on the first human tick"
+        },
+        {
+          "id": "control.human_takeovers",
+          "label": "HumanTakeovers counter",
+          "value": 1,
+          "unit": "count"
+        },
+        {
+          "id": "control.intervention_latency_ms",
+          "label": "Submit constraint -\u003e applied to Control",
+          "value": 9,
+          "unit": "ms"
+        },
+        {
+          "id": "control.post_constraint_attacks",
+          "label": "attack actions after constraint (grace: first action)",
+          "value": 0,
+          "unit": "count",
+          "note": "5 post-constraint actions checked"
+        },
+        {
+          "id": "control.post_constraint_actions",
+          "label": "actions executed after constraint",
+          "value": 5,
+          "unit": "count"
+        },
+        {
+          "id": "control.preference_latency_ms",
+          "label": "Submit preference -\u003e risk_aversion weight",
+          "value": 11,
+          "unit": "ms"
+        },
+        {
+          "id": "control.preference_risk_aversion",
+          "label": "risk_aversion weight after preference",
+          "value": 0.25,
+          "unit": "ratio"
+        },
+        {
+          "id": "control.preference_play_continues",
+          "label": "actions still advance after preference (1 = yes)",
+          "value": 1,
+          "unit": "count"
+        },
+        {
+          "id": "control.takeover_latency",
+          "label": "human takeover applied within 1s",
+          "value": 9,
+          "unit": "ms",
+          "threshold": 1000,
+          "op": "\u003c=",
+          "pass": true
+        },
+        {
+          "id": "control.action_freeze",
+          "label": "no actions execute while the human is in control",
+          "value": 1,
+          "unit": "count",
+          "threshold": 1,
+          "op": "==",
+          "pass": true
+        },
+        {
+          "id": "control.recovery_latency",
+          "label": "recovery within 2s of release",
+          "value": 132,
+          "unit": "ms",
+          "threshold": 2000,
+          "op": "\u003c=",
+          "pass": true
+        },
+        {
+          "id": "control.handover_metric",
+          "label": "engine recorded a handover latency below 1s",
+          "value": 9,
+          "unit": "ms",
+          "threshold": 1000,
+          "op": "\u003c=",
+          "pass": true
+        },
+        {
+          "id": "control.intervention_latency",
+          "label": "constraint applied within 1s",
+          "value": 9,
+          "unit": "ms",
+          "threshold": 1000,
+          "op": "\u003c=",
+          "pass": true
+        },
+        {
+          "id": "control.constraint_enforced",
+          "label": "no attack after the constraint boundary",
+          "value": 0,
+          "unit": "count",
+          "threshold": 0,
+          "op": "==",
+          "pass": true,
+          "note": "first in-flight action excluded"
+        },
+        {
+          "id": "control.post_constraint_actions",
+          "label": "play continues after constraint",
+          "value": 5,
+          "unit": "count",
+          "threshold": 3,
+          "op": "\u003e=",
+          "pass": true
+        },
+        {
+          "id": "control.preference_latency",
+          "label": "preference applied within 1s",
+          "value": 11,
+          "unit": "ms",
+          "threshold": 1000,
+          "op": "\u003c=",
+          "pass": true
+        },
+        {
+          "id": "control.preference_weight",
+          "label": "risk_aversion weight is at least 0.2",
+          "value": 0.25,
+          "unit": "ratio",
+          "threshold": 0.2,
+          "op": "\u003e=",
+          "pass": true
+        },
+        {
+          "id": "control.preference_play_continues",
+          "label": "play continues after preference",
+          "value": 1,
+          "unit": "count",
+          "threshold": 1,
+          "op": "==",
+          "pass": true
+        }
+      ],
+      "details": {
+        "boundary": {
+          "adaptations": [
+            {
+              "preference_id": "p721f1904455820f",
+              "preference": "你太激进了 | hint: play less aggressively",
+              "outcome": "applied",
+              "reason": "converted to soft weights",
+              "at": "2026-11-23T20:09:13.774493+08:00"
+            }
+          ],
+          "constraints": 1,
+          "hints": [
+            "你太激进了 | hint: play less aggressively"
+          ],
+          "intervention_latency_ms": 9,
+          "play_continues": true,
+          "post_constraint_actions": 5,
+          "post_constraint_attacks": 0,
+          "preference_latency_ms": 11,
+          "preference_weight": 0.25
+        },
+        "takeover": {
+          "actions_after_freeze": 5,
+          "actions_before_freeze": 5,
+          "handover_avg_ms": 9,
+          "human_takeovers": 1,
+          "recovery_latency_ms": 132,
+          "takeover_latency_ms": 9
+        }
+      },
+      "notes": [
+        "HumanResumeMS is set to 120ms so the suite runs quickly; production defaults to 2500ms.",
+        "MockHuman is active for 1500ms after Touch; the suite calls Release explicitly.",
+        "The first action after the observed boundary may have been in flight and is excluded from the constraint check."
+      ]
+    },
+    {
+      "id": "concurrency",
+      "title": "Concurrent instance isolation",
+      "status": "pass",
+      "duration_ms": 708,
+      "metrics": [
+        {
+          "id": "concurrency.2.min_actions",
+          "label": "2 instances: minimum actions executed",
+          "value": 6,
+          "unit": "count"
+        },
+        {
+          "id": "concurrency.2.all_active",
+          "label": "2 instances all running before takeover",
+          "value": 2,
+          "unit": "count",
+          "threshold": 2,
+          "op": "==",
+          "pass": true
+        },
+        {
+          "id": "concurrency.2.crosstalk_violations",
+          "label": "2 instances: no cross-talk on human takeover",
+          "value": 0,
+          "unit": "count",
+          "threshold": 0,
+          "op": "==",
+          "pass": true
+        },
+        {
+          "id": "concurrency.2.isolation_violations",
+          "label": "2 instances: no shared game/memory/ID",
+          "value": 0,
+          "unit": "count",
+          "threshold": 0,
+          "op": "==",
+          "pass": true
+        },
+        {
+          "id": "concurrency.2.min_actions",
+          "label": "2 instances: every instance keeps acting",
+          "value": 6,
+          "unit": "count",
+          "threshold": 5,
+          "op": "\u003e=",
+          "pass": true
+        },
+        {
+          "id": "concurrency.4.min_actions",
+          "label": "4 instances: minimum actions executed",
+          "value": 6,
+          "unit": "count"
+        },
+        {
+          "id": "concurrency.4.all_active",
+          "label": "4 instances all running before takeover",
+          "value": 4,
+          "unit": "count",
+          "threshold": 4,
+          "op": "==",
+          "pass": true
+        },
+        {
+          "id": "concurrency.4.crosstalk_violations",
+          "label": "4 instances: no cross-talk on human takeover",
+          "value": 0,
+          "unit": "count",
+          "threshold": 0,
+          "op": "==",
+          "pass": true
+        },
+        {
+          "id": "concurrency.4.isolation_violations",
+          "label": "4 instances: no shared game/memory/ID",
+          "value": 0,
+          "unit": "count",
+          "threshold": 0,
+          "op": "==",
+          "pass": true
+        },
+        {
+          "id": "concurrency.4.min_actions",
+          "label": "4 instances: every instance keeps acting",
+          "value": 6,
+          "unit": "count",
+          "threshold": 5,
+          "op": "\u003e=",
+          "pass": true
+        }
+      ],
+      "details": {
+        "sizes": [
+          {
+            "instances": 2,
+            "all_active": 2,
+            "min_actions": 6,
+            "action_counts": [
+              6,
+              34
+            ],
+            "progress": [
+              0.15000000000000002,
+              0.5441666666666667
+            ],
+            "crosstalk_violations": 0,
+            "isolation_violations": 0
+          },
+          {
+            "instances": 4,
+            "all_active": 4,
+            "min_actions": 6,
+            "action_counts": [
+              6,
+              34,
+              34,
+              34
+            ],
+            "progress": [
+              0.15000000000000002,
+              0.5441666666666667,
+              0.5333333333333333,
+              0.6266666666666666
+            ],
+            "crosstalk_violations": 0,
+            "isolation_violations": 0
+          }
+        ]
+      },
+      "notes": [
+        "Each instance uses its own memory directory, Lua state, mockgame.Game, Metrics registry and Policy.",
+        "Cross-talk is tested by touching only instance 0 and confirming every other instance still advances actions."
+      ]
+    },
+    {
+      "id": "localmodel",
+      "title": "Local model TTFT/TPS metric chain",
+      "status": "pass",
+      "duration_ms": 132,
+      "metrics": [
+        {
+          "id": "localmodel.stream_ttft_ms",
+          "label": "SSE first-token latency",
+          "value": 10,
+          "unit": "ms",
+          "note": "measured by llm.OpenAI.CompleteStream"
+        },
+        {
+          "id": "localmodel.stream_latency_ms",
+          "label": "SSE full stream latency",
+          "value": 85,
+          "unit": "ms"
+        },
+        {
+          "id": "localmodel.stream_tokens",
+          "label": "streamed completion tokens",
+          "value": 8,
+          "unit": "tokens"
+        },
+        {
+          "id": "localmodel.stream_tps",
+          "label": "decode tokens per second after first token",
+          "value": 106.77101754114355,
+          "unit": "tps",
+          "note": "tokens / (latency - TTFT)"
+        },
+        {
+          "id": "localmodel.metrics_ttft_samples",
+          "label": "LocalTTFTMS histogram samples",
+          "value": 1,
+          "unit": "count"
+        },
+        {
+          "id": "localmodel.metrics_tps_gauge",
+          "label": "LocalTPS gauge value",
+          "value": 106.77101754114355,
+          "unit": "tps"
+        },
+        {
+          "id": "localmodel.mock_latency_ms",
+          "label": "llm.Mock latency",
+          "value": 15,
+          "unit": "ms"
+        },
+        {
+          "id": "localmodel.warmup_ms",
+          "label": "preflight request including first loopback connect",
+          "value": 2,
+          "unit": "ms",
+          "note": "absorbed before TTFT timing"
+        },
+        {
+          "id": "localmodel.ttft",
+          "label": "first token under 500ms",
+          "value": 10,
+          "unit": "ms",
+          "threshold": 500,
+          "op": "\u003c=",
+          "pass": true
+        },
+        {
+          "id": "localmodel.tps",
+          "label": "decode speed at least 20 tokens/sec",
+          "value": 106.77101754114355,
+          "unit": "tps",
+          "threshold": 20,
+          "op": "\u003e=",
+          "pass": true,
+          "note": "8 tokens at 10ms/token"
+        },
+        {
+          "id": "localmodel.tokens",
+          "label": "all 8 stream deltas parsed",
+          "value": 8,
+          "unit": "tokens",
+          "threshold": 8,
+          "op": "==",
+          "pass": true
+        },
+        {
+          "id": "localmodel.text",
+          "label": "streamed text matches the mock",
+          "value": 1,
+          "unit": "count",
+          "threshold": 1,
+          "op": "==",
+          "pass": true
+        },
+        {
+          "id": "localmodel.metric_chain",
+          "label": "TTFT histogram and TPS gauge are wired",
+          "value": 1,
+          "unit": "count",
+          "threshold": 1,
+          "op": "==",
+          "pass": true
+        },
+        {
+          "id": "localmodel.mock_provider",
+          "label": "llm.Mock completes offline",
+          "value": 1,
+          "unit": "count",
+          "threshold": 1,
+          "op": "==",
+          "pass": true,
+          "note": "no network"
+        }
+      ],
+      "details": {
+        "auth_header_seen": true,
+        "completion_tokens": 8,
+        "got_text": "alpha beta gamma delta alpha beta gamma delta ",
+        "mock_latency_ms": 15,
+        "mock_text": "{\"kind\":\"attack\",\"reason\":\"mock\"}",
+        "stream_latency_ms": 85,
+        "tps": 106.77101754114355,
+        "ttft_ms": 10,
+        "want_text": "alpha beta gamma delta alpha beta gamma delta ",
+        "warmup_ms": 2
+      },
+      "notes": [
+        "The SSE server is local httptest; no external network or real model is required.",
+        "TTFT is measured by the production llm.OpenAI.CompleteStream parser, not by the test harness.",
+        "A non-stream preflight request absorbs host-specific first-connect latency; its cost is reported separately as warmup_ms and is not counted as model TTFT."
+      ]
+    }
+  ],
+  "limitations": [
+    "Perception is measured on the built-in 320x180 mock renderer, not on a real game window or GPU capture.",
+    "Learning convergence uses the built-in mock_dungeon Lua profile and mock game; absolute numbers are not transferable to a commercial game.",
+    "Memory scenarios use synthetic entries with unique tokens; Recall@K is exact-token presence, not semantic judgment.",
+    "Local-model TTFT/TPS is proven through a local httptest SSE endpoint and llm.Mock; no real local LLM is required or launched.",
+    "Timing thresholds are generous and assume an idle host; CI under load can miss latency targets even when behavior is correct.",
+    "Safety auditing is a separate package (internal/audit); eval does not replace it.",
+    "All tests are offline and do not inject into, read memory of, or hook any real game process."
+  ],
+  "json_path": "reports\\eval-report.json",
+  "markdown_path": "reports\\eval-report.md"
+}

@@ -1,0 +1,39 @@
+goplay safety static audit (audit-v1)
+root:    C:\Codes\goplay
+verdict: PASS
+elapsed: 989 ms
+scanned: 123 source files (709927 bytes), 12 native PE files (1359 imported symbols)
+skipped: 2 allowlisted, 0 support dirs, 0 oversize; 0 invalid native files
+
+Source findings (0)
+  none: no forbidden injection or memory-tampering symbols found
+
+PE import findings (critical: 0, review: 20)
+  - [review] goplay-eval.exe imports kernel32.dll!GetThreadContext
+  - [review] goplay-eval.exe imports kernel32.dll!SetThreadContext
+  - [review] native/build/capture_smoke.exe imports KERNEL32.dll!GetThreadContext
+  - [review] native/build/capture_smoke.exe imports KERNEL32.dll!OpenProcess
+  - [review] native/build/capture_smoke.exe imports KERNEL32.dll!SetThreadContext
+  - [review] native/build/goplay-overlay.exe imports KERNEL32.dll!GetThreadContext
+  - [review] native/build/goplay-overlay.exe imports KERNEL32.dll!OpenProcess
+  - [review] native/build/goplay-overlay.exe imports KERNEL32.dll!SetThreadContext
+  - [review] native/build/goplay_native.dll imports KERNEL32.dll!GetThreadContext
+  - [review] native/build/goplay_native.dll imports KERNEL32.dll!OpenProcess
+  - [review] native/build/goplay_native.dll imports KERNEL32.dll!SetThreadContext
+  - [review] native/build/overlay_gc.exe imports KERNEL32.dll!GetThreadContext
+  - [review] native/build/overlay_gc.exe imports KERNEL32.dll!OpenProcess
+  - [review] native/build/overlay_gc.exe imports KERNEL32.dll!SetThreadContext
+  - [review] native/build/overlay_map.exe imports KERNEL32.dll!GetThreadContext
+  - [review] native/build/overlay_map.exe imports KERNEL32.dll!OpenProcess
+  - [review] native/build/overlay_map.exe imports KERNEL32.dll!SetThreadContext
+  - [review] native/build/overlay_noexc.exe imports KERNEL32.dll!GetThreadContext
+  - [review] native/build/overlay_noexc.exe imports KERNEL32.dll!OpenProcess
+  - [review] native/build/overlay_noexc.exe imports KERNEL32.dll!SetThreadContext
+
+Warnings (1)
+  - 20 review-level PE imports (OpenProcess/SetThreadContext/GetThreadContext): common in the MSVC C runtime and Go runtime; confirm no source uses them
+
+Allowlist: internal/audit/**, reports/**, **/testdata/**
+Support dirs: testdata, internal/audit/testdata
+
+The audit parses files without executing or mapping them; it does not inject into or hook any process.

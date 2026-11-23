@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GoPlay 灵动岛</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="overlay-body">
+<div id="island" class="island">
+  <div class="island-drag" id="drag">
+    <span class="island-pulse" id="pulse"></span>
+    <span class="island-title" id="islandTitle">GoPlay</span>
+    <span class="island-status" id="islandStatus">连接中</span>
+    <span class="island-progress"><i id="islandBar"></i></span>
+    <button class="island-icon" id="collapseBtn" title="收起">–</button>
+  </div>
+  <div class="island-body" id="islandBody">
+    <div class="island-summary">
+      <select id="instSelect" aria-label="实例"></select>
+      <span id="islandHp" class="pill">HP —</span>
+      <span id="islandRoom" class="pill">房间 —</span>
+    </div>
+    <div class="island-action" id="islandAction">等待感知…</div>
+    <div class="island-chat" id="islandChat"></div>
+    <form id="islandForm" class="island-form">
+      <input id="islandInput" placeholder="说话或输入约束…">
+      <button type="submit">发送</button>
+    </form>
+    <div class="island-controls">
+      <button id="pauseBtn">暂停</button>
+      <button id="resumeBtn">继续</button>
+      <a href="/" target="_blank">面板</a>
+    </div>
+  </div>
+</div>
+<script src="/static/overlay.js"></script>
+</body>
+</html>

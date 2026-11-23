@@ -1,0 +1,305 @@
+# GoPlay — 外部 AI 游戏代理
+
+> 让 AI 自己学会玩，你随时可以接管。
+
+GoPlay 是一个**外部运行**的 AI 自动游玩软件：它只通过截屏/录屏获取画面，通过系统输入或移动端无障碍服务执行动作，不注入游戏进程、不读写游戏内存、不挂钩图形 API、不加载内核驱动。核心用 Go，游戏语义用 Lua 描述，Windows 采集/输入/浮窗用 C++，Android 客户端用 Kotlin。
+
+当前仓库是**可运行、可评测的 v0.1 实现**：
+
+- Windows：真实桌面截屏（GDI/DXGI）+ SendInput 输入 + 无边框置顶浮窗/托盘。
+- Android（优先目标）：完整客户端源码（MediaProjection + AccessibilityService + 系统悬浮球/灵动岛），通过 WebSocket 把画面和动作交给核心；本机没有 Android SDK，因此未在本机编译 APK。
+- 自动游玩：内置 @mock_dungeon@ 像素级演示游戏，从零学习并在评测中达到 10 关通关；任何未知游戏可切换到通用 Lua profile + 视觉 LLM 描述。
+- 本地模型：按设备 RAM 三档推荐、首次启动下载（绝不打包进安装包），llama.cpp 通过 OpenAI 兼容接口接入；已在本机用 Qwen2.5-0.5B 真实跑通决策链路。
+
+## 目录
+
+- [快速开始](#快速开始)
+- [八项需求与实现位置](#八项需求与实现位置)
+- [架构](#架构)
+- [两条控制通道](#两条控制通道用户约束-vs-跨游戏偏好)
+- [记忆分层与压缩](#记忆分层与压缩)
+- [本地模型](#本地模型)
+- [感知与动作](#感知与动作)
+- [指标与验收](#指标与验收)
+- [Windows 原生组件](#windows-原生组件)
+- [Android](#android)
+- [项目结构](#项目结构)
+- [已知边界](#已知边界)
+
+## 快速开始
+
+前置：Go 1.27.4（与 @go.mod@ 一致）、Windows 10/11。Windows 原生浮窗需要 MSYS2 UCRT64 的 gcc/cmake；不构建原生组件也可以运行核心与 Web 面板。
+
+```powershell
+# 1. 构建并运行核心（离线 LLM，最稳的演示路径）
+go build ./...
+go run ./cmd/goplayd -addr 127.0.0.1:8420 -llm offline
+
+# 2. 打开面板 / 灵动岛
+#    http://127.0.0.1:8420/
+#    http://127.0.0.1:8420/overlay
+
+# 3. 另开终端：创建一个自动游玩的演示实例
+go run ./cmd/goplay create -id demo -name "地牢试炼" -profile mock_dungeon -seed 7 -episodes 10
+go run ./cmd/goplay watch -id demo
+```
+
+也可以完全用 HTTP 创建实例：
+
+```powershell
+Invoke-RestMethod -Method Post http://127.0.0.1:8420/api/instances -ContentType application/json -Body (@{
+  id="demo"; name="地牢试炼"; profile_id="mock_dungeon"; seed=7; max_episodes=10; auto_start=$true
+} | ConvertTo-Json)
+```
+
+一键冒烟脚本（会构建、启动临时 daemon、创建实例、等待结果并清理）：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke.ps1
+```
+
+### 使用 API Key
+
+```powershell
+$env:GOPLAY_LLM_MODE = "api"
+$env:OPENAI_API_KEY = "sk-..."
+$env:GOPLAY_API_BASE = "https://api.openai.com/v1"
+$env:GOPLAY_MODEL = "gpt-4o-mini"
+go run ./cmd/goplayd
+```
+
+### 使用本地模型
+
+```powershell
+# 查看设备档位（不会下载）
+go run ./cmd/goplay-model recommend
+
+# 首次下载当前档位所需模型（可设置镜像）
+$env:GOPLAY_HF_ENDPOINT = "https://hf-mirror.com"
+go run ./cmd/goplay-model download --tier low
+
+# 启动 daemon；local 模式会在 loopback 拉起 llama-server
+go run ./cmd/goplayd -llm local
+```
+
+本地模式要求 @llama-server@ 可执行文件：设置 @local.runtime_path@ 或 @GOPLAY_LLAMA_SERVER@，或把它放入 @PATH@。详见 [docs/LOCAL_MODELS.md](docs/LOCAL_MODELS.md)。
+
+## 八项需求与实现位置
+
+| # | 需求 | 实现 | 可检验证据 |
+|---|------|------|-----------|
+| 1 | 纯外部感知，不注入/不读内存/不挂钩 | @internal/perception@（GDI/DXGI、Android JPEG）、@internal/native@、@internal/bridge@、Lua profile | @go run ./cmd/goplay-audit@：源码 0 违规，PE critical 0 |
+| 2 | 自动识别/操作/理解；人工操作立即交还 | @internal/engine@ 主循环；@action.SystemHuman@ / Android human 信号；@human_resume_ms@ | 接管 9ms、冻结动作、释放后 120ms 恢复（reports/eval-report.md） |
+| 3 | 多游戏并发、全局/实例记忆、偏好软权重适配 | @internal/app@（每实例独立 goroutine/Lua/记忆）、@internal/memory@、@scheduler.Adapt@ | 2/4 实例隔离 0 串扰；冲突偏好 suppressed 且不生成硬条件 |
+| 4 | 不中断游玩的语言/文字对话；指令缓冲区 | @scheduler.Buffer@ + @Boundary@；约束走实例硬条件，偏好转软权重 | 约束 10ms 生效且 attack=0；偏好 11ms 生效且继续游玩 |
+| 5 | API Key 与本地小模型；按档位下载；角色分工 | @internal/llm@、@internal/localmodel@、@internal/localruntime@ | 三档目录；首次下载 SHA256；真实 Qwen2.5-0.5B 决策 79 动作/1 胜/0 回退 |
+| 6 | 灵动岛/悬浮窗 | @/overlay@ 药丸态 Web UI；@native/overlay@ Win32 浮窗+托盘；Android 悬浮球/药丸 | 截图与 @native/build.ps1@；@/overlay@ 可拖动/对话/暂停 |
+| 7 | 每条功能有指标 | @internal/metrics@、@internal/eval@、@internal/audit@ | @reports/eval-report.md@：47/47 阈值 PASS；审计 PASS |
+| 8 | Android 优先，其次 Windows | @android/@ 完整客户端；Windows 原生组件已构建并测试 | Android 30 项 JVM 测试通过（本机无 SDK，未编译 APK）；Windows ctest 2/2 |
+
+## 架构
+
+```text
+                       ┌────────────────────────────────────────────┐
+                       │                goplayd                     │
+                       │  HTTP / WebSocket / embedded Web UI        │
+                       └───────────────┬────────────────────────────┘
+                                       │
+                 ┌─────────────────────┼─────────────────────┐
+                 │                     │                     │
+          ┌──────▼──────┐       ┌──────▼──────┐       ┌──────▼──────┐
+          │ Instance A  │       │ Instance B  │       │ Instance C  │
+          │ goroutine   │       │ goroutine   │       │ goroutine   │
+          │ Lua state   │       │ Lua state   │       │ Lua state   │
+          │ Memory 256K │       │ Memory 256K │       │ Memory 256K │
+          └──────┬──────┘       └──────┬──────┘       └──────┬──────┘
+                 │                     │                     │
+   ┌─────────────┴─────────────────────┴─────────────────────┴──────────┐
+   │  perceive → profile.observe → profile.actions → Boundary → policy  │
+   │      ↑                                              ↓              │
+   │  screenshot / JPEG                            input / gesture      │
+   │      │                                              │              │
+   │  Mock | Windows GDI/DXGI | Android MediaProjection  │              │
+   └─────────────────────────────────────────────────────┴──────────────┘
+                 │
+        ┌────────▼────────┐        ┌──────────────────────┐
+        │ Global Memory   │        │ Local model runtime  │
+        │ cross-game only │        │ tiered GGUF + llama  │
+        └─────────────────┘        └──────────────────────┘
+```
+
+一个实例一个决策循环：抓帧 → 分析状态 → Lua 生成合法语义动作 → 调度器事件边界处理对话/命令 → 策略选择动作 → 执行 → 再抓帧 → Lua 解释奖励 → 更新 bandit/记忆。实例之间不共享游戏、Lua state、策略或记忆，只共享显式的全局偏好与指标总线。
+
+## 两条控制通道（用户约束 vs 跨游戏偏好）
+
+这是本项目的核心裁决规则，代码在 @internal/scheduler/adapter.go@ 与 @internal/policy/policy.go@：
+
+1. **用户对话中的约束**（例如“先别打那个 Boss”）进入实例通道：
+   - 先进入独立**指令/偏好缓冲区**，不在对话当刻改变动作；
+   - 调度器在下一个**事件边界** drain；
+   - 生成 @domain.Constraint@，作为**硬条件**进入策略控制器，被拒绝的动作不会进入候选集；
+   - 回复明确说明“下一个决策周期生效”。
+
+2. **跨游戏沉淀的偏好**（例如“你太激进了”）进入全局通道：
+   - 写入全局偏好（或显式指定“这个游戏”时写入实例偏好）；
+   - 必须经过**实例侧适配层** @Adapt@：若偏好与当前实例规则冲突（例如偏好要求避免 @advance@，而本游戏规则 @required_tags@ 包含 @advance@），该偏好被 @suppressed@；
+   - 不冲突时转成 @SoftWeights@ / @Hints@，只影响打分，**永不**变成硬约束；
+   - 不打断正在执行的动作序列，只影响后续选择。
+
+两条通道在调度器处汇合，但优先级和生效方式不同：实例约束优先于全局偏好；全局偏好只能软注入。@/api/instances/{id}/message@ 的 202 响应会说明进入缓冲区，面板聊天里也会显示分类结果。
+
+关键词分类规则在 @internal/scheduler/intent.go@：支持 @/constraint@、@/约束@、@/pref@、@/偏好@ 显式前缀；明确否定动作/目标会识别为约束；偏好词映射到 @aggression@、@risk_aversion@、@exploration@、@speed@、@resource_aversion@。
+
+## 记忆分层与压缩
+
+@internal/memory@ 实现三层：
+
+- **working**：最近的决策/观察，短期工作记忆；
+- **summary**：每 8 条 work 折叠成确定性摘要，保留 kind 计数、tags、数值范围与高重要度文本；
+- **fact**：长期事实，重要事实（importance ≥ 0.85）不会因预算淘汰。
+
+固定预算默认 256KB。超预算时按 retention（重要度 + 新近度 + 访问次数 + 层级）淘汰低价值条目。召回使用 token 重叠 + 重要度 + retention 打分，并 bump 访问计数。
+
+全局记忆 @GlobalMemory@ 只接受 preference/style/safety/insight/fact，并且拒绝任何带 @game_id@ 的具体游戏状态；实例记忆保存具体游戏状态。两者都做了并发保护，持久化走加锁快照，所以决策循环写入时保存不会 data race。
+
+## 本地模型
+
+- 模型与 llama.cpp 运行时**都不在安装包内**；首次启动根据 RAM/芯片推荐档位并下载。
+- 档位目录：
+
+| 档位 | 最低 RAM | 感知/过滤 | 策略推理 | 输出校验 | 目标 TTFT/TPS |
+|------|---------|-----------|----------|----------|---------------|
+| low | 8 GiB | 规则 | Qwen2.5-0.5B Q4_K_M | 规则 | ≤400ms / ≥25 |
+| medium | 16 GiB | SmolLM2-360M 混合 | Qwen2.5-1.5B | 规则 | ≤600ms / ≥15 |
+| high | 32 GiB | Qwen2.5-0.5B 混合 | Qwen2.5-3B | 规则 | ≤900ms / ≥8 |
+
+分工是**流水线**而非投票集成：廉价模型/规则先过滤状态，推理级小模型只做策略，规则引擎做动作校验和序列化。模型文件带固定大小、SHA256、license；下载支持断点续传和镜像。
+
+真实测试（本机 15.63GiB，low 档）：
+- 模型 491,400,032B 下载并 SHA256 校验通过；
+- 冷启动 TTFT 3458ms（超出预算，属冷加载），预热后 TTFT 48.4ms、TPS 63.9；
+- 真实 llama.cpp 决策：79 个动作、1 局胜利、0 个 LLM 失败、0 次回退。
+
+## 感知与动作
+
+**感知源**：@perception.Source@
+- @MockSource@：像素级渲染 + 抗噪分析，用于可重复评测；
+- Windows @native.ScreenSource@：GDI 或 DXGI 抓桌面，返回 RGBA；
+- Android @bridge.Session@：客户端 GPF1 二进制帧（JPEG），核心不接触游戏进程。
+
+**分析器**：
+- @MockAnalyzer@：血条竖向多点多数投票、房间号 3x5 模板、药水计数、死亡/胜利色块；
+- @VisionAnalyzer@：通用兜底，调用视觉 LLM 生成状态描述；
+- @GenericAnalyzer@：无模型时的亮度/颜色统计兜底。
+
+**动作**：@action.Executor@
+- Windows：SendInput 键盘/鼠标；
+- Android：WebSocket 发 @tap/swipe/long_press/back/text/wait@，客户端无障碍服务执行并 ack；
+- Mock：键盘语义动作；
+- 所有动作经过 @policy.Validator@（类型、风险、归一化坐标）与 @Limiter@（默认 8 动作/秒）。
+
+**从零学习**：@policy@ 使用上下文 UCB bandit，状态键为 phase/HP 桶/房间桶，动作键为 kind+target；没有先验时探索，失败后更新均值。LLM 每 N 次或强制时参与，非法输出先 grounding 到合法动作，再失败才回退启发式。内置求生先验只在 HP < 40% 时提升治疗/防御分数，不删除合法动作。
+
+## 指标与验收
+
+```powershell
+# 全量测试
+go test ./... -count=1
+
+# 竞态（核心路径）
+go test -race ./internal/engine ./internal/api ./internal/memory ./internal/scheduler -count=1
+
+# 评测：感知/学习/记忆/接管/并发/本地模型链路
+go run ./cmd/goplay-eval -quick -json -report-dir reports
+
+# 安全审计：源码 + PE 导入表
+go run ./cmd/goplay-audit -json -out reports/audit-report.json
+```
+
+最近一次结果（详细表见 [reports/eval-report.md](reports/eval-report.md)）：
+
+- 感知：干净帧 1.0000；1% 像素噪声 0.9552；HP 0.9990、敌血 0.9823、房间 0.9802、药水 0.8594。
+- 学习：8 个 seed × 8 局，24/24 胜，达到 90% 进度的平均尝试次数 1，engine errors 0。
+- 记忆：256KB 预算内 262,078B；Recall@1/3/5 全 1.0；压缩与淘汰均发生。
+- 接管：9ms 接管、0 动作泄漏、120ms 恢复；约束 10ms 生效、attack=0；偏好 11ms 生效、继续游玩。
+- 并发：2/4 实例 0 串扰、0 共享 ID。
+- 本地模型链路：TTFT 0ms（mock SSE）、94.3 tok/s、8 个 delta、指标链路完整。
+- 审计：129 个源码文件 0 违规，10 个 PE 0 critical；16 条 review 级导入来自 CRT/Go runtime，源码未调用，不计失败。报告扫描的是当前工作区，包含 `bin/` 与 `native/build/` 的构建产物。
+
+> 这些指标证明“机制已实现且可回归”，不等价于在所有真实商业游戏上达到同样精度。真实游戏需要新的 Lua profile/视觉提示与更多数据。
+
+## Windows 原生组件
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File native/build.ps1
+```
+
+产物在 @native/build/@：@goplay_native.dll@（截屏 + SendInput）与 @goplay-overlay.exe@（无边框 always-on-top 浮窗 + 托盘）。Go 通过纯 @syscall@ 加载 DLL，不使用 cgo。详见 [native/README.md](native/README.md)。
+
+创建 Windows 实例（需要已构建 DLL）：
+
+```powershell
+go run ./cmd/goplay create -id desktop -name "Desktop" -source windows -profile generic
+```
+
+Windows 实例用 @SystemHuman@（@GetLastInputInfo@）检测人工操作，不使用任何钩子。
+
+## Android
+
+@android/@ 是完整 Kotlin 工程，包含：
+
+- MediaProjection + ImageReader 抓屏并 JPEG 编码；
+- AccessibilityService 执行手势；
+- 系统级悬浮球 / 药丸 / 展开面板；
+- WebSocket（GPF1 帧 + 动作 ack）与 REST 控制；
+- 前台服务、断线重连、设备档位推荐请求。
+
+核心会自动为 Android 客户端创建 @android@ 源实例，默认使用 @generic_touch@ Lua profile。协议见 [android/PROTOCOL.md](android/PROTOCOL.md)，构建说明见 [android/README.md](android/README.md)。
+
+> 本机没有 Android SDK，因此 APK 未在本机编译；Kotlin 逻辑通过 30 项 JVM 测试。接入真实手机时按 README 用 Android Studio 构建并授予录屏/无障碍权限。
+
+## 项目结构
+
+```text
+cmd/goplayd        核心 daemon（REST/WS/Web UI）
+cmd/goplay         控制 CLI
+cmd/goplay-model   本地模型档位/下载/serve/bench
+cmd/goplay-eval    评测入口
+cmd/goplay-audit   安全审计入口
+internal/engine    每实例决策循环
+internal/app       实例管理与构建
+internal/api       HTTP/WS/内嵌面板
+internal/perception 截屏源与分析器
+internal/policy    UCB + LLM 混合策略 + 校验
+internal/scheduler 指令缓冲区、边界、适配层
+internal/memory    三层记忆与全局记忆
+internal/luabridge Lua profile 运行时
+internal/localmodel 档位/下载/llama-server/bench
+internal/localruntime 本地模型生命周期
+internal/native    Windows DLL 绑定
+internal/bridge    Android WebSocket 会话
+internal/eval      可复现指标套件
+internal/audit     静态与 PE 导入审计
+native/            C++ 截屏/输入/浮窗
+android/           Kotlin 客户端
+docs/              架构、安全、指标、本地模型
+reports/           评测与审计报告
+```
+
+## 已知边界
+
+- 真实商业游戏的“从零学习”依赖通用视觉提示或新 Lua profile；仓库内的收敛数据来自内置 mock 游戏，不能直接外推。
+- Windows 的 DXGI 在 HDR 桌面会回退 GDI；浮窗 exe 因 MinGW 运行时会导入 @OpenProcess/SetThreadContext@ 等符号，但项目源码没有调用，审计将其列为 review 而非 critical。
+- Android 客户端未在本机编译；需要在 Android Studio 中构建 APK。
+- 本地模型冷启动可能超过 TTFT 预算，推荐在 daemon 启动时预热；真实硬件上的 TPS 依档位而异。
+- 默认监听 loopback。若改为局域网监听，请自行加认证/防火墙，README 的威胁模型不覆盖公网暴露。
+
+## 文档
+
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — 模块、数据流、事件边界、并发模型
+- [docs/SAFETY.md](docs/SAFETY.md) — 外部感知边界、审计规则、人类接管
+- [docs/METRICS.md](docs/METRICS.md) — 每个功能的指标定义与阈值
+- [docs/LOCAL_MODELS.md](docs/LOCAL_MODELS.md) — 档位、下载、运行时、性能
+- [docs/ANDROID.md](docs/ANDROID.md) — 移动端架构与接入步骤
+- [native/README.md](native/README.md) — Windows C++ 组件
+- [android/README.md](android/README.md) — Android 工程

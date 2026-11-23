@@ -1,0 +1,32 @@
+{
+  "addr": "127.0.0.1:8420",
+  "data_dir": "",
+  "tick_ms": 250,
+  "human_resume_ms": 2500,
+  "max_instances": 8,
+  "max_actions_per_sec": 8,
+  "memory_budget_kb": 256,
+  "auto_start": true,
+  "overlay_url": "http://127.0.0.1:8420/overlay",
+  "llm": {
+    "mode": "auto",
+    "base_url": "https://api.openai.com/v1",
+    "api_key": "",
+    "model": "gpt-4o-mini",
+    "temperature": 0.2,
+    "max_tokens": 512,
+    "timeout_ms": 45000,
+    "vision": false
+  },
+  "local": {
+    "models_dir": "",
+    "runtime_path": "",
+    "server_port": 8421,
+    "auto_download": false,
+    "preferred_tier": "auto",
+    "context_tokens": 4096,
+    "threads": 4,
+    "ttft_budget_ms": 1500,
+    "tps_floor": 8
+  }
+}

@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GoPlay · 外部 AI 游戏代理</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/">
+    <span class="brand-mark"><i></i><i></i><i></i></span>
+    <span class="brand-name">GoPlay</span>
+    <span class="brand-sub">外部 AI 游戏代理</span>
+  </a>
+  <div class="top-meta">
+    <span class="live"><span class="live-dot"></span> daemon <b id="daemonAddr">127.0.0.1:8420</b></span>
+    <span class="top-stat"><b id="statRunning">0</b> 运行中</span>
+    <span class="top-stat"><b id="statInstances">0</b> 实例</span>
+    <span class="top-stat"><b id="statActions">0</b> 动作</span>
+    <a class="ghost-btn" href="/overlay" target="_blank">灵动岛</a>
+    <button class="primary-btn" id="newBtn">＋ 新实例</button>
+  </div>
+</header>
+
+<main class="shell">
+  <section class="hero">
+    <div class="hero-copy">
+      <p class="eyebrow"><span>纯外部感知</span> / 不注入 / 不读内存 / 不挂钩图形 API</p>
+      <h1>让 AI 自己学会玩，<br><em>你随时可以接管。</em></h1>
+      <p class="lede">截屏理解画面，Lua 描述游戏语义，策略层在事件边界决策。人工输入触发即时交还；对话先进入缓冲区，下一决策周期才生效。</p>
+      <div class="hero-badges">
+        <span>Android 优先</span><span>Windows 原生浮窗</span><span>本地小模型分工</span><span>分层记忆</span>
+      </div>
+    </div>
+    <div class="hero-metrics">
+      <div class="metric">
+        <span class="metric-label">决策延迟 P95</span>
+        <strong id="mDecision">—</strong><small>ms</small>
+      </div>
+      <div class="metric">
+        <span class="metric-label">感知延迟 P95</span>
+        <strong id="mPerception">—</strong><small>ms</small>
+      </div>
+      <div class="metric">
+        <span class="metric-label">动作延迟 P95</span>
+        <strong id="mAction">—</strong><small>ms</small>
+      </div>
+      <div class="metric">
+        <span class="metric-label">接管延迟 P50</span>
+        <strong id="mHandover">—</strong><small>ms</small>
+      </div>
+      <div class="metric wide">
+        <span class="metric-label">全局记忆 / 跨游戏偏好</span>
+        <div id="globalMini" class="mini-prefs"><span class="muted">暂无偏好</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section-head">
+    <div>
+      <h2>游戏实例</h2>
+      <p>每个实例拥有独立 Lua 状态、独立记忆空间和独立决策循环。</p>
+    </div>
+    <div class="section-tools">
+      <button class="chip active" data-filter="all">全部</button>
+      <button class="chip" data-filter="running">运行中</button>
+      <button class="chip" data-filter="human">人工接管</button>
+    </div>
+  </section>
+  <section id="instances" class="grid"><div class="empty">正在连接 daemon…</div></section>
+
+  <section class="lower">
+    <div class="panel">
+      <div class="panel-head">
+        <div><h3>全局偏好</h3><p>只保存跨游戏风格与安全约束；不保存任何具体游戏状态。</p></div>
+        <button class="ghost-btn small" id="prefToggle">＋ 添加</button>
+      </div>
+      <form id="prefForm" class="pref-form hidden">
+        <input id="prefText" placeholder="例如：宁可保守，也不要频繁送死" maxlength="120">
+        <select id="prefWeight">
+          <option value="risk_aversion">更谨慎</option>
+          <option value="aggression">更激进</option>
+          <option value="exploration">偏好探索</option>
+          <option value="resource_aversion">节省资源</option>
+        </select>
+        <button class="primary-btn small" type="submit">写入全局</button>
+        <p class="form-note">进入实例决策前会经过适配层：冲突时实例规则优先，其余转成软权重。</p>
+      </form>
+      <div id="prefList" class="pref-list"></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head">
+        <div><h3>事件流</h3><p>调度边界、接管、动作与回合结果。</p></div>
+        <span class="live small"><span class="live-dot"></span> websocket</span>
+      </div>
+      <div id="eventFeed" class="event-feed"><div class="muted">等待事件…</div></div>
+    </div>
+  </section>
+
+  <footer class="footer">
+    <span>GoPlay 0.1 · 外部软件，不注入游戏进程</span>
+    <span>指标：感知准确率 / 收敛局数 / Recall@K / 接管延迟 / 本地 TTFT·TPS</span>
+  </footer>
+</main>
+
+<div id="modal" class="modal hidden">
+  <div class="modal-card">
+    <div class="modal-head"><h3>新建游戏实例</h3><button class="icon-btn" id="closeModal">×</button></div>
+    <form id="createForm" class="create-form">
+      <label>实例 ID<input id="fId" required pattern="[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}" value="dungeon"></label>
+      <label>显示名称<input id="fName" placeholder="地牢试炼"></label>
+      <label>游戏配置<select id="fProfile"></select></label>
+      <div class="form-row">
+        <label>随机种子<input id="fSeed" type="number" value="7"></label>
+        <label>回合上限<input id="fEpisodes" type="number" min="1" max="1000" value="10"></label>
+      </div>
+      <label class="check"><input id="fAuto" type="checkbox" checked> 创建后立即开始自动游玩</label>
+      <p class="form-note">Mock 地下城用于离线演示与评测：像素感知 → Lua 语义 → UCB/LLM 决策 → 动作执行 → 记忆压缩。</p>
+      <div class="modal-actions"><button type="button" class="ghost-btn" id="cancelCreate">取消</button><button class="primary-btn" type="submit">创建并开始</button></div>
+    </form>
+  </div>
+</div>
+
+<div id="toast" class="toast"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

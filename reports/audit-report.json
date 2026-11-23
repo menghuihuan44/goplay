@@ -1,0 +1,132 @@
+{
+  "version": "audit-v1",
+  "root": "C:\\Codes\\goplay",
+  "generated_at": "2026-11-23T20:09:14.9447755+08:00",
+  "duration_ms": 668,
+  "verdict": "PASS",
+  "source_findings": null,
+  "pe_imports": [
+    {
+      "path": "bin/goplay-audit.exe",
+      "library": "kernel32.dll",
+      "symbol": "GetThreadContext",
+      "severity": "review"
+    },
+    {
+      "path": "bin/goplay-audit.exe",
+      "library": "kernel32.dll",
+      "symbol": "SetThreadContext",
+      "severity": "review"
+    },
+    {
+      "path": "bin/goplay-eval.exe",
+      "library": "kernel32.dll",
+      "symbol": "GetThreadContext",
+      "severity": "review"
+    },
+    {
+      "path": "bin/goplay-eval.exe",
+      "library": "kernel32.dll",
+      "symbol": "SetThreadContext",
+      "severity": "review"
+    },
+    {
+      "path": "bin/goplay-model.exe",
+      "library": "kernel32.dll",
+      "symbol": "GetThreadContext",
+      "severity": "review"
+    },
+    {
+      "path": "bin/goplay-model.exe",
+      "library": "kernel32.dll",
+      "symbol": "SetThreadContext",
+      "severity": "review"
+    },
+    {
+      "path": "bin/goplay.exe",
+      "library": "kernel32.dll",
+      "symbol": "GetThreadContext",
+      "severity": "review"
+    },
+    {
+      "path": "bin/goplay.exe",
+      "library": "kernel32.dll",
+      "symbol": "SetThreadContext",
+      "severity": "review"
+    },
+    {
+      "path": "bin/goplayd.exe",
+      "library": "kernel32.dll",
+      "symbol": "GetThreadContext",
+      "severity": "review"
+    },
+    {
+      "path": "bin/goplayd.exe",
+      "library": "kernel32.dll",
+      "symbol": "SetThreadContext",
+      "severity": "review"
+    },
+    {
+      "path": "native/build/capture_smoke.exe",
+      "library": "KERNEL32.dll",
+      "symbol": "GetThreadContext",
+      "severity": "review"
+    },
+    {
+      "path": "native/build/capture_smoke.exe",
+      "library": "KERNEL32.dll",
+      "symbol": "OpenProcess",
+      "severity": "review"
+    },
+    {
+      "path": "native/build/capture_smoke.exe",
+      "library": "KERNEL32.dll",
+      "symbol": "SetThreadContext",
+      "severity": "review"
+    },
+    {
+      "path": "native/build/goplay-overlay.exe",
+      "library": "KERNEL32.dll",
+      "symbol": "GetThreadContext",
+      "severity": "review"
+    },
+    {
+      "path": "native/build/goplay-overlay.exe",
+      "library": "KERNEL32.dll",
+      "symbol": "OpenProcess",
+      "severity": "review"
+    },
+    {
+      "path": "native/build/goplay-overlay.exe",
+      "library": "KERNEL32.dll",
+      "symbol": "SetThreadContext",
+      "severity": "review"
+    }
+  ],
+  "pe_invalid": null,
+  "stats": {
+    "walked": 295,
+    "source_files": 129,
+    "source_bytes": 746146,
+    "allowlisted": 2,
+    "support_skipped": 0,
+    "oversize_skipped": 0,
+    "native_files": 10,
+    "native_imported_symbols": 720,
+    "native_invalid": 0,
+    "pe_critical_imports": 0,
+    "pe_review_imports": 16
+  },
+  "allowlist": [
+    "internal/audit/**",
+    "reports/**",
+    "**/testdata/**"
+  ],
+  "support_dirs": [
+    "testdata",
+    "internal/audit/testdata"
+  ],
+  "warnings": [
+    "16 review-level PE imports (OpenProcess/SetThreadContext/GetThreadContext): common in the MSVC C runtime and Go runtime; confirm no source uses them"
+  ]
+}

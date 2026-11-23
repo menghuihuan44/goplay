@@ -1,0 +1,31 @@
+# build outputs
+/bin/
+/*.exe
+*.test
+coverage.out
+*.log
+
+# runtime data
+/.tmpdata*/
+/.tmp-smoke*/
+/models/
+*.gguf
+*.part
+
+# native build tree (sources live in native/)
+/native/build/
+
+# Android build outputs
+/android/.gradle/
+/android/build/
+/android/app/build/
+/android/local.properties
+/android/**/build/
+*.apk
+*.aab
+
+# editor/OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

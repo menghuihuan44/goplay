@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">GoPlay Mobile</string>
+    <string name="accessibility_service_name">GoPlay 手势服务</string>
+    <string name="accessibility_description">仅用于把 GoPlay 核心下发的点击、滑动、长按、返回和文本输入动作合成为系统无障碍手势。不会读取其他应用的界面内容，不注入进程，不访问内存。</string>
+
+    <string name="title">GoPlay Mobile</string>
+    <string name="subtitle">外部 AI 游玩客户端 · MediaProjection 截屏 + 无障碍手势 · 不注入、不读取游戏内存</string>
+
+    <string name="section_connection">连接核心</string>
+    <string name="host_label">核心地址（局域网 IP 或主机名）</string>
+    <string name="host_hint">192.168.1.100</string>
+    <string name="port_label">端口</string>
+    <string name="instance_label">实例 ID</string>
+    <string name="quality_label">JPEG 质量：70</string>
+    <string name="fps_label">目标截屏 FPS：10</string>
+    <string name="max_edge_label">截图长边：960 px</string>
+    <string name="wifi_only">仅 Wi-Fi 下载本地模型（由核心执行）</string>
+    <string name="auto_reconnect">断线自动重连（指数退避）</string>
+    <string name="save">保存设置</string>
+    <string name="connect">连接</string>
+
+    <string name="section_permissions">权限与运行</string>
+    <string name="overlay_perm_default">悬浮窗：未授权</string>
+    <string name="accessibility_perm_default">无障碍服务：未开启</string>
+    <string name="notification_perm_default">通知：未授权</string>
+    <string name="grant_overlay">授予悬浮窗权限</string>
+    <string name="open_accessibility">打开无障碍设置</string>
+    <string name="grant_notification">授权通知</string>
+    <string name="start_capture">开始截屏并启动 AI</string>
+    <string name="stop_capture">停止</string>
+
+    <string name="section_session">运行状态</string>
+    <string name="session_default">服务：未启动</string>
+    <string name="capture_default">截屏：—</string>
+    <string name="metrics_default">指标：—</string>
+    <string name="error_default">最近错误：无</string>
+
+    <string name="section_local">本地模型档位</string>
+    <string name="device_default">读取设备信息…</string>
+    <string name="local_note">模型不打进 APK。首次启动时由 Go 核心下载、校验并加载；本页只显示设备信息并调用核心 /api/local/status 与 /api/local/recommend 进行推荐。核心尚未实现这些接口时会显示错误，这是预期行为。</string>
+    <string name="query_local">查询核心本地模型</string>
+    <string name="local_result_default">尚未查询。</string>
+
+    <string name="section_chat">对话</string>
+    <string name="chat_hint">例如：稳一点 / 别打 BOSS 10 秒</string>
+    <string name="send">发送</string>
+
+    <string name="section_log">日志</string>
+    <string name="footer">安全边界：仅使用 MediaProjection 截屏与 AccessibilityService 手势；不会注入游戏进程、读写游戏内存、挂钩图形 API 或加载内核驱动。请只在联网的测试设备上使用，明文连接仅限可信局域网。</string>
+
+    <string name="toast_overlay_required">请先授予悬浮窗权限，否则无法显示悬浮控制。</string>
+    <string name="toast_accessibility_missing">无障碍服务未开启，AI 动作将无法执行。</string>
+    <string name="toast_projection_denied">未授权录屏，已取消。</string>
+    <string name="toast_saved">设置已保存</string>
+    <string name="toast_invalid_host">核心地址无效</string>
+    <string name="toast_started">已请求启动截屏服务；如弹出系统提示请允许。</string>
+    <string name="toast_stopped">正在停止截屏与悬浮控制。</string>
+    <string name="toast_message_required">请输入消息</string>
+    <string name="toast_connect_failed">连接尚未建立，请查看日志。</string>
+    <string name="toast_runner_running">会话已在运行。</string>
+    <string name="toast_runner_not_running">会话未在运行。</string>
+</resources>

@@ -1,0 +1,530 @@
+// Package api exposes the manager over HTTP and WebSocket. The browser UI and
+// the mobile/desktop overlays are thin clients of this API; all game control
+// stays inside the engine.
+package api
+
+import (
+	"context"
+	"embed"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/gorilla/websocket"
+
+	"goplay/internal/app"
+	"goplay/internal/bus"
+	"goplay/internal/config"
+	"goplay/internal/domain"
+	"goplay/internal/localmodel"
+	"goplay/internal/metrics"
+)
+
+//go:embed web/*
+var webFS embed.FS
+
+type Server struct {
+	mgr     *app.Manager
+	cfg     config.Config
+	started time.Time
+	mux     *http.ServeMux
+	up      websocket.Upgrader
+}
+
+func New(mgr *app.Manager, cfg config.Config) *Server {
+	s := &Server{
+		mgr: mgr, cfg: cfg, started: time.Now(),
+		mux: http.NewServeMux(),
+		up: websocket.Upgrader{
+			ReadBufferSize: 4096, WriteBufferSize: 4096,
+			// The daemon binds to loopback by default. A mobile client on the
+			// same LAN needs cross-origin WebSocket; the README explains the
+			// threat model and recommends a reverse proxy + token on untrusted
+			// networks.
+			CheckOrigin: func(*http.Request) bool { return true },
+		},
+	}
+	s.routes()
+	return s
+}
+
+func (s *Server) Handler() http.Handler {
+	return recoverMW(corsMW(s.mux))
+}
+
+func (s *Server) routes() {
+	mux := s.mux
+	mux.HandleFunc("GET /api/health", s.health)
+	mux.HandleFunc("GET /api/config", s.getConfig)
+	mux.HandleFunc("GET /api/instances", s.listInstances)
+	mux.HandleFunc("POST /api/instances", s.createInstance)
+	mux.HandleFunc("GET /api/instances/{id}", s.getInstance)
+	mux.HandleFunc("DELETE /api/instances/{id}", s.deleteInstance)
+	mux.HandleFunc("POST /api/instances/{id}/start", s.startInstance)
+	mux.HandleFunc("POST /api/instances/{id}/stop", s.stopInstance)
+	mux.HandleFunc("POST /api/instances/{id}/pause", s.pauseInstance)
+	mux.HandleFunc("POST /api/instances/{id}/resume", s.resumeInstance)
+	mux.HandleFunc("POST /api/instances/{id}/message", s.messageInstance)
+	mux.HandleFunc("GET /api/instances/{id}/snapshot", s.snapshotInstance)
+	mux.HandleFunc("GET /api/instances/{id}/events", s.instanceEvents)
+	mux.HandleFunc("GET /api/instances/{id}/chat", s.instanceChat)
+	mux.HandleFunc("GET /api/instances/{id}/constraints", s.instanceConstraints)
+	mux.HandleFunc("POST /api/instances/{id}/constraints", s.addConstraint)
+	mux.HandleFunc("GET /api/instances/{id}/memory", s.recallMemory)
+	mux.HandleFunc("GET /api/profiles", s.profiles)
+	mux.HandleFunc("GET /api/memory/global", s.globalMemory)
+	mux.HandleFunc("POST /api/memory/global/preferences", s.addGlobalPreference)
+	mux.HandleFunc("DELETE /api/memory/global/preferences/{pid}", s.deleteGlobalPreference)
+	mux.HandleFunc("GET /api/metrics", s.metricsJSON)
+	mux.HandleFunc("GET /metrics", s.metricsText)
+	mux.HandleFunc("GET /api/local/status", s.localStatus)
+	mux.HandleFunc("POST /api/local/recommend", s.localRecommend)
+	// Legacy mobile control surface (android/PROTOCOL.md v1).
+	mux.HandleFunc("POST /api/control/pause", s.legacyControl(s.mgr.Pause))
+	mux.HandleFunc("POST /api/control/resume", s.legacyControl(s.mgr.Resume))
+	mux.HandleFunc("POST /api/message", s.legacyMessage)
+	mux.HandleFunc("GET /ws/instance/{id}", s.instanceWS)
+	mux.HandleFunc("GET /ws/events", s.eventsWS)
+
+	sub, err := fs.Sub(webFS, "web")
+	if err != nil {
+		panic(err)
+	}
+	files := http.FileServer(http.FS(sub))
+	mux.Handle("GET /static/", http.StripPrefix("/static/", files))
+	mux.HandleFunc("GET /overlay", func(w http.ResponseWriter, r *http.Request) {
+		serveEmbedded(w, sub, "overlay.html", "text/html; charset=utf-8")
+	})
+	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/ws/") {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
+		serveEmbedded(w, sub, "index.html", "text/html; charset=utf-8")
+	})
+}
+
+func serveEmbedded(w http.ResponseWriter, fsys fs.FS, name, ctype string) {
+	b, err := fs.ReadFile(fsys, name)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "embedded asset missing")
+		return
+	}
+	w.Header().Set("Content-Type", ctype)
+	w.Header().Set("Cache-Control", "no-cache")
+	_, _ = w.Write(b)
+}
+
+func (s *Server) health(w http.ResponseWriter, r *http.Request) {
+	list := s.mgr.List()
+	running := 0
+	for _, in := range list {
+		if in.Status == domain.StatusRunning || in.Status == domain.StatusHuman {
+			running++
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "version": s.cfg.Version, "uptime_seconds": time.Since(s.started).Seconds(),
+		"instances": len(list), "running": running, "addr": s.cfg.Addr,
+	})
+}
+
+func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"config":   s.cfg.Redacted(),
+		"llm":      s.mgr.Router().Status(r.Context()),
+		"profiles": s.mgr.Profiles(),
+	})
+}
+
+func (s *Server) listInstances(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"instances": s.mgr.List()})
+}
+
+type createRequest struct {
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	ProfileID     string `json:"profile_id"`
+	SourceKind    string `json:"source_kind"`
+	Seed          int64  `json:"seed"`
+	MaxEpisodes   int    `json:"max_episodes"`
+	TickMS        int    `json:"tick_ms"`
+	HumanResumeMS int    `json:"human_resume_ms"`
+	AutoStart     *bool  `json:"auto_start"`
+}
+
+func (s *Server) createInstance(w http.ResponseWriter, r *http.Request) {
+	var req createRequest
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	auto := true
+	if req.AutoStart != nil {
+		auto = *req.AutoStart
+	}
+	spec := app.Spec{
+		ID: req.ID, Name: req.Name, ProfileID: req.ProfileID, SourceKind: req.SourceKind,
+		Seed: req.Seed, MaxEpisodes: req.MaxEpisodes, TickMS: req.TickMS,
+		HumanResumeMS: req.HumanResumeMS, AutoStart: auto,
+	}
+	view, err := s.mgr.Create(spec)
+	if err != nil {
+		status := http.StatusBadRequest
+		if strings.Contains(err.Error(), "already exists") {
+			status = http.StatusConflict
+		}
+		writeError(w, status, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, view)
+}
+
+func (s *Server) getInstance(w http.ResponseWriter, r *http.Request) {
+	view, err := s.mgr.Get(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+func (s *Server) deleteInstance(w http.ResponseWriter, r *http.Request) {
+	if err := s.mgr.Delete(r.PathValue("id")); err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": true})
+}
+
+func (s *Server) startInstance(w http.ResponseWriter, r *http.Request) { s.control(w, r, s.mgr.Start) }
+func (s *Server) stopInstance(w http.ResponseWriter, r *http.Request)  { s.control(w, r, s.mgr.Stop) }
+func (s *Server) pauseInstance(w http.ResponseWriter, r *http.Request) { s.control(w, r, s.mgr.Pause) }
+func (s *Server) resumeInstance(w http.ResponseWriter, r *http.Request) {
+	s.control(w, r, s.mgr.Resume)
+}
+
+func (s *Server) control(w http.ResponseWriter, r *http.Request, fn func(string) error) {
+	id := r.PathValue("id")
+	if err := fn(id); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	view, err := s.mgr.Get(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+func (s *Server) messageInstance(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Text string `json:"text"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := s.mgr.Submit(r.PathValue("id"), req.Text); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"accepted": true,
+		"note":     "queued in the instruction buffer; applied at the next event boundary",
+	})
+}
+
+func (s *Server) snapshotInstance(w http.ResponseWriter, r *http.Request) {
+	view, err := s.mgr.Get(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+func (s *Server) instanceEvents(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	writeJSON(w, http.StatusOK, map[string]any{"events": s.mgr.Events(r.PathValue("id"), limit)})
+}
+
+func (s *Server) instanceChat(w http.ResponseWriter, r *http.Request) {
+	view, err := s.mgr.Get(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"chat": view.Chat})
+}
+
+func (s *Server) instanceConstraints(w http.ResponseWriter, r *http.Request) {
+	view, err := s.mgr.Get(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"constraints": view.Control.Hard})
+}
+
+func (s *Server) addConstraint(w http.ResponseWriter, r *http.Request) {
+	var c domain.Constraint
+	if err := readJSON(r, &c); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := s.mgr.AddConstraint(r.PathValue("id"), c); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"constraint": c})
+}
+
+func (s *Server) recallMemory(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query().Get("q")
+	k, _ := strconv.Atoi(r.URL.Query().Get("k"))
+	if k <= 0 {
+		k = 5
+	}
+	start := time.Now()
+	res, err := s.mgr.Recall(r.PathValue("id"), q, k)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	s.mgr.Metrics().Observe(metrics.MemoryRecallMS, float64(time.Since(start).Microseconds())/1000)
+	writeJSON(w, http.StatusOK, map[string]any{"query": q, "results": res, "latency_ms": float64(time.Since(start).Microseconds()) / 1000})
+}
+
+func (s *Server) profiles(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"profiles": s.mgr.Profiles()})
+}
+
+func (s *Server) globalMemory(w http.ResponseWriter, r *http.Request) {
+	g := s.mgr.Memory().Global().SnapshotCopy()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"preferences": s.mgr.GlobalPreferences(),
+		"facts":       len(g.Facts),
+		"updated_at":  g.UpdatedAt,
+		"note":        "cross-game preferences only; per-game state lives in each instance memory",
+	})
+}
+
+func (s *Server) addGlobalPreference(w http.ResponseWriter, r *http.Request) {
+	var p domain.Preference
+	if err := readJSON(r, &p); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := s.mgr.AddGlobalPreference(p); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, p)
+}
+
+func (s *Server) deleteGlobalPreference(w http.ResponseWriter, r *http.Request) {
+	if err := s.mgr.DeleteGlobalPreference(r.PathValue("pid")); err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": true})
+}
+
+func (s *Server) metricsJSON(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.mgr.Metrics().Snapshot())
+}
+
+func (s *Server) metricsText(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+	io.WriteString(w, "# GoPlay metrics\n")
+	io.WriteString(w, s.mgr.Metrics().Prometheus())
+}
+
+func (s *Server) localStatus(w http.ResponseWriter, r *http.Request) {
+	body := map[string]any{
+		"mode":         s.cfg.LLM.Mode,
+		"models_dir":   s.cfg.Local.ModelsDir,
+		"runtime_path": s.cfg.Local.RuntimePath,
+		"server_port":  s.cfg.Local.ServerPort,
+		"tier":         s.cfg.Local.PreferredTier,
+		"llm":          s.mgr.Router().Status(r.Context()),
+		"note":         "model tiers are downloaded on first run, never bundled in the installer",
+	}
+	if st, ok := s.mgr.LocalStatus(); ok {
+		body["runtime"] = st
+	}
+	writeJSON(w, http.StatusOK, body)
+}
+
+// localRecommend maps a mobile device's RAM/ABI to a model tier. The phone
+// never bundles weights: this only tells the user which tier the core should
+// download and run for that device.
+func (s *Server) localRecommend(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Device string   `json:"device"`
+		RAMMb  int64    `json:"ramMb"`
+		ABIs   []string `json:"abis"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.RAMMb <= 0 {
+		writeError(w, http.StatusBadRequest, "ramMb must be positive")
+		return
+	}
+	arch := "arm64"
+	if len(req.ABIs) > 0 {
+		arch = req.ABIs[0]
+	}
+	hw := localmodel.HardwareInfo{
+		OS: "android", Arch: arch, RAMBytes: uint64(req.RAMMb) << 20,
+		RAMGB: float64(req.RAMMb) / 1024.0, Cores: 0, Threads: 0,
+	}
+	rec, err := localmodel.Recommend(hw, s.cfg.Local.PreferredTier)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	catalog := localmodel.DefaultCatalog()
+	plan, ok := catalog.Plan(rec.Tier)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "no plan for tier "+string(rec.Tier))
+		return
+	}
+	var approx int64
+	if models, ok := catalog.RequiredModels(rec.Tier); ok {
+		for _, m := range models {
+			approx += m.SizeBytes
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"tier": rec.Tier, "reason": rec.Rationale,
+		"download_required": true, "downloadRequired": true,
+		"approx_bytes": approx, "approxBytes": approx,
+		"hardware": hw, "plan": plan,
+		"note": "models are downloaded by the core on first run and never bundled with the APK",
+	})
+}
+
+func readJSON(r *http.Request, v any) error {
+	defer r.Body.Close()
+	dec := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		if errors.Is(err, io.EOF) {
+			return fmt.Errorf("empty JSON body")
+		}
+		return err
+	}
+	return nil
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+func writeError(w http.ResponseWriter, status int, msg string) {
+	writeJSON(w, status, map[string]any{"error": msg})
+}
+
+func corsMW(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func recoverMW(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if v := recover(); v != nil {
+				writeError(w, http.StatusInternalServerError, fmt.Sprintf("panic: %v", v))
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) Serve(ctx context.Context) error {
+	srv := &http.Server{
+		Addr:              s.cfg.Addr,
+		Handler:           s.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.ListenAndServe() }()
+	select {
+	case err := <-errCh:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	case <-ctx.Done():
+		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return srv.Shutdown(shutdown)
+	}
+}
+
+// RecentEvents is exported for tests.
+func (s *Server) RecentEvents(id string, n int) []bus.Event { return s.mgr.Events(id, n) }
+
+type legacyTarget struct {
+	InstanceID string `json:"instanceId"`
+	Reason     string `json:"reason,omitempty"`
+	Text       string `json:"text,omitempty"`
+	Kind       string `json:"kind,omitempty"`
+}
+
+func (s *Server) legacyControl(fn func(string) error) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req legacyTarget
+		if err := readJSON(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if strings.TrimSpace(req.InstanceID) == "" {
+			writeError(w, http.StatusBadRequest, "instanceId is required")
+			return
+		}
+		if err := fn(req.InstanceID); err != nil {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "instanceId": req.InstanceID})
+	}
+}
+
+func (s *Server) legacyMessage(w http.ResponseWriter, r *http.Request) {
+	var req legacyTarget
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if strings.TrimSpace(req.InstanceID) == "" || strings.TrimSpace(req.Text) == "" {
+		writeError(w, http.StatusBadRequest, "instanceId and text are required")
+		return
+	}
+	if err := s.mgr.Submit(req.InstanceID, req.Text); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "note": "queued in the instruction buffer; applied at the next event boundary"})
+}
