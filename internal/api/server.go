@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -130,8 +131,9 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok": true, "version": s.cfg.Version, "uptime_seconds": time.Since(s.started).Seconds(),
-		"instances": len(list), "running": running, "addr": s.cfg.Addr,
+		"ok": true, "service": "goplay", "version": s.cfg.Version,
+		"uptime_seconds": time.Since(s.started).Seconds(),
+		"instances":      len(list), "running": running, "addr": s.cfg.Addr,
 	})
 }
 
@@ -463,23 +465,35 @@ func recoverMW(next http.Handler) http.Handler {
 }
 
 func (s *Server) Serve(ctx context.Context) error {
+	ln, err := net.Listen("tcp", s.cfg.Addr)
+	if err != nil {
+		return err
+	}
+	return s.ServeListener(ctx, ln)
+}
+
+// ServeListener serves on an already-bound listener. It is used by the desktop
+// shell so the UI can start on port 0 without racing another process.
+func (s *Server) ServeListener(ctx context.Context, ln net.Listener) error {
 	srv := &http.Server{
-		Addr:              s.cfg.Addr,
 		Handler:           s.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	errCh := make(chan error, 1)
-	go func() { errCh <- srv.ListenAndServe() }()
+	go func() { errCh <- srv.Serve(ln) }()
 	select {
 	case err := <-errCh:
-		if errors.Is(err, http.ErrServerClosed) {
+		if errors.Is(err, http.ErrServerClosed) || errors.Is(err, net.ErrClosed) {
 			return nil
 		}
 		return err
 	case <-ctx.Done():
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		return srv.Shutdown(shutdown)
+		if err := srv.Shutdown(shutdown); err != nil {
+			return err
+		}
+		return nil
 	}
 }
 

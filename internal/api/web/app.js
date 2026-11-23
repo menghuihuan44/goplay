@@ -299,6 +299,14 @@ async function createInstance(ev) {
 
 function boot() {
   initEvents();
+  if (typeof window.goplayDesktop === 'function') {
+    $('desktopData').classList.remove('hidden');
+    $('desktopQuit').classList.remove('hidden');
+    $('desktopData').addEventListener('click', () => {
+      window.goplayDesktop('data').catch(e => toast(String(e), true));
+    });
+    $('desktopQuit').addEventListener('click', () => window.goplayDesktop('quit'));
+  }
   $('newBtn').addEventListener('click', openModal);
   $('closeModal').addEventListener('click', closeModal);
   $('cancelCreate').addEventListener('click', closeModal);

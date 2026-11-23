@@ -1,0 +1,168 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version override (default: VERSION file)"
+        required: false
+        type: string
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  GOPROXY: https://proxy.golang.org,direct
+  GOTOOLCHAIN: local
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: false
+          install: mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja
+      - name: Expose MSYS2 toolchain
+        shell: pwsh
+        run: |
+          $msys = $env:MSYS2_LOCATION
+          if (-not $msys) { $msys = 'C:\msys64' }
+          $bin = Join-Path $msys 'ucrt64\bin'
+          $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "CC=$bin\gcc.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CXX=$bin\g++.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - run: go test ./... -count=1
+      - run: go run ./cmd/goplay-release -target windows -skip-tests -out dist
+      - name: Keep per-platform metadata
+        shell: pwsh
+        run: |
+          Move-Item dist/release.json dist/release-windows.json
+          Remove-Item dist/SHA256SUMS.txt -ErrorAction SilentlyContinue
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*
+          if-no-files-found: error
+
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install WebKitGTK
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgtk-3-dev libwebkit2gtk-4.0-dev pkg-config
+      - run: go test ./... -count=1
+      - run: go run ./cmd/goplay-release -target linux -skip-tests -skip-native -out dist
+      - name: Keep per-platform metadata
+        run: |
+          mv dist/release.json dist/release-linux.json
+          rm -f dist/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/*
+          if-no-files-found: error
+
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go test ./... -count=1
+      - run: go run ./cmd/goplay-release -target darwin -skip-tests -skip-native -out dist
+      - name: Keep per-platform metadata
+        run: |
+          mv dist/release.json dist/release-macos.json
+          rm -f dist/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/*
+          if-no-files-found: error
+
+  android:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+        with:
+          # cmdline-tools 20+ writes SDK XML v4, which AGP 8.7 cannot parse.
+          cmdline-tools-version: '19.0'
+          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
+      - name: Gradle unit tests
+        run: |
+          chmod +x android/gradlew
+          cd android && ./gradlew :app:testDebugUnitTest --no-daemon
+      - run: go run ./cmd/goplay-release -target android -skip-tests -skip-native -out dist
+      - name: Keep per-platform metadata
+        run: |
+          mv dist/release.json dist/release-android.json
+          rm -f dist/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: [windows, linux, macos, android]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS.txt
+          ls -lh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: all-artifacts
+          path: dist/*
+      - name: Create GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          body: |
+            GoPlay ${{ github.ref_name }} — external AI game agent.
+
+            Download the package for your platform:
+            - Windows: `GoPlay-*-windows-amd64.zip` (includes `GoPlay.exe`, the native capture/input DLL, and CLI tools)
+            - Android: `GoPlay-*-android.apk` (debug APK is also attached)
+            - Linux/macOS: `GoPlay-*-*.tar.gz` (the desktop shell uses the host WebKitGTK/Cocoa runtime)
+
+            Verify downloads with `SHA256SUMS.txt`. Local model weights are **not** bundled; GoPlay recommends a tier on first run and downloads it only when enabled.

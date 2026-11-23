@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-  [ValidateSet('all','build','test','race','run','eval','audit','native','clean')]
+  [ValidateSet('all','build','desktop','test','race','run','eval','audit','native','release','release-windows','clean')]
   [string]$Task = 'all'
 )
 
@@ -28,6 +28,13 @@ function Invoke-Build {
   }
 }
 
+function Invoke-Desktop {
+  New-Item -ItemType Directory -Force bin | Out-Null
+  Write-Host '== build desktop shell =='
+  & go build -o bin\goplay-desktop.exe ./cmd/goplay-desktop
+  if ($LASTEXITCODE -ne 0) { throw "desktop build failed ($LASTEXITCODE)" }
+}
+
 function Invoke-Test {
   & go test ./... -count=1
   if ($LASTEXITCODE -ne 0) { throw "go test failed ($LASTEXITCODE)" }
@@ -38,8 +45,14 @@ function Invoke-Race {
   if ($LASTEXITCODE -ne 0) { throw "race tests failed ($LASTEXITCODE)" }
 }
 
+function Invoke-Release([string]$Target) {
+  & go run ./cmd/goplay-release -target $Target -out dist
+  if ($LASTEXITCODE -ne 0) { throw "release failed ($LASTEXITCODE)" }
+}
+
 switch ($Task) {
   'build' { Invoke-Build }
+  'desktop' { Invoke-Desktop }
   'test'  { Invoke-Test }
   'race'  { Invoke-Race }
   'eval'  {
@@ -54,11 +67,13 @@ switch ($Task) {
     & powershell -NoProfile -ExecutionPolicy Bypass -File native/build.ps1
     if ($LASTEXITCODE -ne 0) { throw "native build failed ($LASTEXITCODE)" }
   }
+  'release' { Invoke-Release 'all' }
+  'release-windows' { Invoke-Release 'windows' }
   'clean' {
-    Remove-Item -Recurse -Force bin, .tmpdata, .tmp-smoke -ErrorAction SilentlyContinue
+    Remove-Item -Recurse -Force bin, .tmpdata, .tmp-smoke, dist -ErrorAction SilentlyContinue
     Write-Host 'cleaned build outputs and temporary data'
   }
-  'all' { Invoke-Build; Invoke-Test; Invoke-Race }
+  'all' { Invoke-Build; Invoke-Desktop; Invoke-Test; Invoke-Race }
   'run' {
     & go run ./cmd/goplayd -addr 127.0.0.1:8420 -data .tmpdata -llm offline
   }

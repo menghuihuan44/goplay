@@ -1,6 +1,7 @@
 package com.goplay.mobile.accessibility
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.accessibilityservice.GestureDescription
 import android.graphics.Path
 import android.graphics.Point
@@ -69,7 +70,11 @@ class GameAccessibilityService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
-        logs()?.log("无障碍服务已连接（手势能力=" + (serviceInfo?.canPerformGestures == true) + "）")
+        logs()?.log(
+            "无障碍服务已连接（手势能力=" +
+                (((serviceInfo?.capabilities ?: 0) and AccessibilityServiceInfo.CAPABILITY_CAN_PERFORM_GESTURES) != 0) +
+                "）"
+        )
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {

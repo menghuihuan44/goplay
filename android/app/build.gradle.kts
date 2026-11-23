@@ -1,12 +1,66 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.serialization")
 }
 
+// --- Release signing -------------------------------------------------------
+// A release APK is only installable if it is signed. Real release keys must
+// never be committed, so signing material is read, in order, from:
+//   1. environment variables,
+//   2. android/keystore.properties (gitignored, optional),
+//   3. Gradle properties (for example ~/.gradle/gradle.properties).
+// Keys: GOPLAY_KEYSTORE, GOPLAY_KEYSTORE_PASSWORD, GOPLAY_KEY_ALIAS,
+//       GOPLAY_KEY_PASSWORD
+// When none of them is set the release build falls back to the debug signing
+// config so that a locally built release APK can still be installed. That
+// fallback is NOT suitable for publishing to an app store.
+val signingPropNames = listOf(
+    "GOPLAY_KEYSTORE",
+    "GOPLAY_KEYSTORE_PASSWORD",
+    "GOPLAY_KEY_ALIAS",
+    "GOPLAY_KEY_PASSWORD",
+)
+
+val localSigningProps = Properties().apply {
+    val f = rootProject.file("keystore.properties")
+    if (f.isFile) f.inputStream().use { load(it) }
+}
+
+fun signingValue(name: String): String? =
+    System.getenv(name)?.takeIf { it.isNotBlank() }
+        ?: localSigningProps.getProperty(name)?.takeIf { it.isNotBlank() }
+        ?: (project.findProperty(name) as String?)?.takeIf { it.isNotBlank() }
+
+val signingValues = signingPropNames.associateWith { signingValue(it) }
+val providedSigningKeys = signingValues.filterValues { it != null }.keys
+val hasReleaseSigning = providedSigningKeys.size == signingPropNames.size
+
+if (providedSigningKeys.isNotEmpty() && !hasReleaseSigning) {
+    throw GradleException(
+        "Incomplete release signing configuration: provide all of " +
+            signingPropNames.joinToString(", ") +
+            " (missing: " + (signingPropNames - providedSigningKeys).joinToString(", ") + ")."
+    )
+}
+
+val releaseKeystoreFile: File? = signingValues["GOPLAY_KEYSTORE"]?.let { raw ->
+    val f = File(raw)
+    val resolved = if (f.isAbsolute) f else rootProject.file(raw)
+    if (!resolved.isFile) {
+        throw GradleException("GOPLAY_KEYSTORE points to a missing file: " + resolved.absolutePath)
+    }
+    resolved
+}
+
 android {
     namespace = "com.goplay.mobile"
     compileSdk = 35
+    // Pin the build-tools that are installed locally; AGP 8.7 would otherwise
+    // fetch its default 34.0.0 on first build.
+    buildToolsVersion = "35.0.0"
 
     defaultConfig {
         applicationId = "com.goplay.mobile"
@@ -16,6 +70,17 @@ android {
         versionName = "0.1.0"
     }
 
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = releaseKeystoreFile
+                storePassword = signingValues["GOPLAY_KEYSTORE_PASSWORD"]
+                keyAlias = signingValues["GOPLAY_KEY_ALIAS"]
+                keyPassword = signingValues["GOPLAY_KEY_PASSWORD"]
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
@@ -23,6 +88,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            signingConfig =
+                if (hasReleaseSigning) signingConfigs.getByName("release")
+                else signingConfigs.getByName("debug")
         }
     }
 
@@ -47,6 +115,13 @@ android {
         abortOnError = false
         checkReleaseBuilds = false
     }
+}
+
+if (!hasReleaseSigning) {
+    logger.lifecycle(
+        "GoPlay: GOPLAY_KEYSTORE* not set; release APK will be signed with the " +
+            "debug keystore (installable locally, not for store publishing)."
+    )
 }
 
 dependencies {

@@ -7,7 +7,7 @@
   "max_actions_per_sec": 8,
   "memory_budget_kb": 256,
   "auto_start": true,
-  "overlay_url": "http://127.0.0.1:8420/overlay",
+  "overlay_url": "",
   "llm": {
     "mode": "auto",
     "base_url": "https://api.openai.com/v1",

@@ -32,6 +32,8 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import okio.ByteString
+import okio.ByteString.Companion.toByteString
 
 /**
  * WebSocket client for one core instance.
@@ -152,7 +154,7 @@ class CoreClient(
             return false
         }
         val accepted = try {
-            ws.send(payload)
+            ws.send(payload.toByteString())
         } catch (e: Exception) {
             logs.error("帧发送失败", e)
             false
@@ -239,7 +241,7 @@ class CoreClient(
                     handleText(text)
                 }
 
-                override fun onMessage(webSocket: WebSocket, bytes: ByteArray) {
+                override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
                     logs.log("忽略服务器二进制消息：" + bytes.size + " bytes")
                 }
 

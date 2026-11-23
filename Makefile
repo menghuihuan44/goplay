@@ -4,7 +4,7 @@ GO ?= go
 BIN := bin
 DATA ?= $(CURDIR)/.tmpdata
 
-.PHONY: all build test race run eval audit native clean
+.PHONY: all build desktop test race run eval audit native release release-windows clean
 
 all: build test
 
@@ -16,6 +16,10 @@ build:
 	$(GO) build -o $(BIN)/goplay-model ./cmd/goplay-model
 	$(GO) build -o $(BIN)/goplay-eval ./cmd/goplay-eval
 	$(GO) build -o $(BIN)/goplay-audit ./cmd/goplay-audit
+
+desktop:
+	mkdir -p $(BIN)
+	CGO_ENABLED=1 $(GO) build -o $(BIN)/goplay-desktop ./cmd/goplay-desktop
 
 test:
 	$(GO) test ./... -count=1
@@ -35,5 +39,11 @@ audit:
 native:
 	powershell -NoProfile -ExecutionPolicy Bypass -File native/build.ps1
 
+release:
+	$(GO) run ./cmd/goplay-release -target all -out dist
+
+release-windows:
+	$(GO) run ./cmd/goplay-release -target windows -out dist
+
 clean:
-	rm -rf $(BIN) .tmpdata .tmp-smoke
+	rm -rf $(BIN) .tmpdata .tmp-smoke dist

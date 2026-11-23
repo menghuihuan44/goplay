@@ -115,7 +115,7 @@ func (s *ScreenSource) Grab() (domain.Frame, error) {
 	if s.closed {
 		return domain.Frame{}, errors.New("native: capture closed")
 	}
-	var data uintptr
+	var data unsafe.Pointer
 	var w, h, stride int32
 	proc := s.cap.lib.NewProc("gp_capture_frame")
 	rc, _, callErr := proc.Call(
@@ -124,12 +124,12 @@ func (s *ScreenSource) Grab() (domain.Frame, error) {
 		uintptr(unsafe.Pointer(&h)),
 		uintptr(unsafe.Pointer(&stride)),
 	)
-	if rc != 0 || data == 0 || w <= 0 || h <= 0 {
+	if rc != 0 || data == nil || w <= 0 || h <= 0 {
 		return domain.Frame{}, fmt.Errorf("native: gp_capture_frame failed: rc=%d %v", rc, callErr)
 	}
-	defer s.cap.lib.NewProc("gp_capture_free").Call(data)
+	defer s.cap.lib.NewProc("gp_capture_free").Call(uintptr(data))
 	n := int(w) * int(h) * 4
-	bgra := unsafe.Slice((*byte)(unsafe.Pointer(data)), n)
+	bgra := unsafe.Slice((*byte)(data), n)
 	rgba := make([]byte, n)
 	for i := 0; i+3 < n; i += 4 {
 		rgba[i] = bgra[i+2]

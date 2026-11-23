@@ -1,5 +1,7 @@
 # build outputs
 /bin/
+/dist/
+/.release/
 /*.exe
 *.test
 coverage.out
@@ -8,6 +10,9 @@ coverage.out
 # runtime data
 /.tmpdata*/
 /.tmp-smoke*/
+/.tmpdesktop*/
+/.tmpdist-run*/
+/.tmp*/
 /models/
 *.gguf
 *.part
@@ -20,9 +25,12 @@ coverage.out
 /android/build/
 /android/app/build/
 /android/local.properties
+/android/keystore.properties
 /android/**/build/
 *.apk
 *.aab
+*.jks
+*.keystore
 
 # editor/OS
 .DS_Store

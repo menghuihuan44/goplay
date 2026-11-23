@@ -8,14 +8,16 @@
 
 ## 验证状态（重要）
 
-本目录在 **没有 Android SDK 的 Windows 机器**上编写，**没有执行过 Gradle/Android 编译，也没有在真机或模拟器上安装运行**。因此：
+本目录已在 Windows 上完成一次完整的命令行构建 + JVM 单元测试（2026-11 实测）：
 
-- 不能把本目录描述为“已编译通过”或“已在设备验证”。
-- 已完成的是：Kotlin 源码、资源、Manifest、Gradle KTS 配置，以及协议层的 JVM 单元测试。
-- 协议层（`app/src/main/java/com/goplay/mobile/protocol/` 的 5 个文件 + 4 个测试类）曾用独立下载的 Kotlin 2.0.21 编译器、kotlinx-serialization 1.7.3、JUnit 4.13.2 在临时目录编译并运行：**30 个测试通过**（含 human 接管信号编解码）。这**不等于** Android 工程整体可编译。
-- 其余 Android 代码只做了静态编写与人工复核，首次用 Android Studio 构建时仍可能出现编译/API 兼容问题。
+- 环境：JDK 17.0.21 (Temurin)、Gradle 8.10.2（wrapper）、AGP 8.7.3、Kotlin 2.0.21、cmdline-tools 23.0、Platform 35、Build-Tools 35.0.0；SDK 位于仓库外的 `C:\Android\sdk`。
+- 命令：`gradlew.bat :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease` → **BUILD SUCCESSFUL**（79 tasks）。
+- 测试：`testDebugUnitTest` 共 **30 个测试全部通过**（ActionMapperTest 8、BackoffPolicyTest 5、FrameCodecTest 6、MessageCodecTest 11），失败 0、跳过 0；报告在 `app/build/reports/tests/testDebugUnitTest/index.html`。
+- 产物：debug 与 release APK 均已生成且 `apksigner verify` 通过。未提供 release 密钥时按设计回退 debug 签名：APK 可本地安装，**不可用于商店发布**（见“发布签名”）。真正的 release keystore 签名路径需要自备密钥，未在本机实测。
+- 尚未在真机或模拟器上安装运行；MediaProjection、无障碍手势、悬浮窗等运行时行为仍需设备验证。
+- 构建可重复性实测：两次 clean 构建的 debug APK 字节一致（SHA256 相同）；release APK 字节略有差异（内容与签名等价），因此发布校验请以当次构建记录的 SHA256 为准。
 
-首次构建前请按下面的“构建”步骤安装 JDK 17 与 Android SDK 35。
+构建环境提示（AGP 8.7.3 与新版 cmdline-tools 的兼容性）：cmdline-tools 23.0 写出的 `package.xml` 是 SDK XML v4，而 AGP 8.7.3 只识别到 v3，会把已安装的 Platform 35 / Build-Tools 35 当作缺失并尝试重新下载。任选其一解决：安装较旧的 cmdline-tools（如 19.0）来装 SDK；或把这两个包的 `package.xml` 改写为 v3 可解析的格式（本次构建机采用后者，仅属机器本地修复，不在仓库内）。另外本机访问 dl.google.com / Maven Central 很慢，`android/settings.gradle.kts` 已把阿里云镜像排在官方仓库之前。
 
 ---
 
@@ -138,15 +140,19 @@ Manifest 声明：
 
 - Android Studio（Ladybug 或更新）或命令行 + Android SDK。
 - JDK 17（Gradle/AGP 8.7.x 要求）。
-- Android SDK Platform 35、Build-Tools 35.x。
+- Android SDK Platform 35、Build-Tools 35.x（本工程在 `app/build.gradle.kts` 固定 `buildToolsVersion = "35.0.0"`，避免 AGP 默认去下载 34.0.0）。
 - 本工程使用 Gradle **8.10.2** wrapper；首次构建会自动下载 Gradle 发行包（网络需可访问 services.gradle.org 或配置镜像）。
+- 已验证参考环境：Temurin JDK 17.0.21 + cmdline-tools 23.0 + Platform 35 + Build-Tools 35.0.0。
 
 ### Android Studio
 
 1. `File → Open` 选择 `C:\Codes\goplay\android`（不是仓库根目录）。
-2. 等待 Gradle Sync。若提示 SDK 缺失，安装 Platform 35，并在 `android/local.properties` 写入：
+2. 等待 Gradle Sync。若提示 SDK 缺失，安装 Platform 35 与 Build-Tools 35.0.0，并在 `android/local.properties` 写入（该文件已被 `.gitignore` 忽略）：
    ```properties
+   # 示例：Windows 默认安装位置
    sdk.dir=C\:\\Users\\<you>\\AppData\\Local\\Android\\Sdk
+   # 本次构建机：SDK 放在仓库外、路径更短
+   # sdk.dir=C\:\\Android\\sdk
    ```
 3. 运行 `:app` 到 API 26+ 设备/模拟器。
 
@@ -169,6 +175,57 @@ cd android
 
 产物：`app/build/outputs/apk/debug/app-debug.apk`。
 
+### 发布签名（Release）
+
+`assembleRelease` 产出的 APK 必须签名才能安装。签名材料按以下顺序读取，**任何一项都不得提交到仓库**：
+
+1. **环境变量**（推荐 CI/一次性构建）：
+
+   | 变量 | 含义 |
+   |---|---|
+   | `GOPLAY_KEYSTORE` | keystore 路径，绝对路径或相对 `android/` 的路径 |
+   | `GOPLAY_KEYSTORE_PASSWORD` | keystore 密码 |
+   | `GOPLAY_KEY_ALIAS` | key alias |
+   | `GOPLAY_KEY_PASSWORD` | key 密码 |
+
+2. **`android/keystore.properties`**（已在 `android/.gitignore` 中忽略）：
+
+   ```properties
+   GOPLAY_KEYSTORE=C:\\keys\\goplay-release.jks
+   GOPLAY_KEYSTORE_PASSWORD=***
+   GOPLAY_KEY_ALIAS=goplay
+   GOPLAY_KEY_PASSWORD=***
+   ```
+
+3. **Gradle 属性**：`-PGOPLAY_KEYSTORE=...` 或 `~/.gradle/gradle.properties`（与 `keystore.properties` 同名键）。
+
+行为：
+
+- 四项全部提供 → release 使用 `signingConfigs.release`，产物可用于分发。
+- 四项全部为空 → **回退到 debug 签名**（`signingConfigs.debug`），APK 可直接 `adb install`，适合本机/内测安装；**不能用于商店上架**。
+- 只提供一部分 → 构建直接失败并列出缺失项，避免“以为用了正式 key、实际用了 debug key”（实测：只给 `-PGOPLAY_KEYSTORE_PASSWORD` 时报 `Incomplete release signing configuration: provide all of ... (missing: GOPLAY_KEYSTORE, GOPLAY_KEY_ALIAS, GOPLAY_KEY_PASSWORD)`）。
+
+本机实测（未设置任何 `GOPLAY_KEYSTORE*`）：`app-release.apk` 由 debug keystore 签名（签名者 `CN=Android Debug`），`adb install` 可用；正式上架请按上面的方式提供自己的 keystore。
+
+生成自己的 release keystore（只做一次，务必备份；丢失后无法更新已上架应用）：
+
+```bat
+keytool -genkeypair -v -keystore C:\keys\goplay-release.jks -alias goplay ^
+  -keyalg RSA -keysize 4096 -validity 10000
+```
+
+校验签名：
+
+```bat
+$env:ANDROID_HOME\build-tools\35.0.0\apksigner.bat verify --print-certs app\build\outputs\apk\release\app-release.apk
+```
+
+发布建议：
+
+- **Google Play**：使用 Play App Signing，上传 `bundleRelease` 生成 AAB（`gradlew.bat :app:bundleRelease`，产物 `app/build/outputs/bundle/release/app-release.aab`），上传密钥自行保管。
+- **第三方商店/自托管下载**：用同一 release keystore 签 APK；`versionCode`/`versionName` 在 `app/build.gradle.kts` 的 `defaultConfig` 中递增。
+- 密钥只放本机环境变量、`keystore.properties` 或 CI secret，**不要**写进会提交的 `gradle.properties`。
+
 ### 测试
 
 JVM 单元测试（无需设备）覆盖：
@@ -180,7 +237,7 @@ JVM 单元测试（无需设备）覆盖：
 
 运行：`gradlew.bat :app:testDebugUnitTest`，报告在 `app/build/reports/tests/testDebugUnitTest/index.html`。
 
-**已知验证结果**：协议层曾用独立 Kotlin 编译器在仓库外临时目录执行，`OK (30 tests)`，exit 0；Gradle 测试任务**尚未运行**（本机无 Android SDK/Gradle 安装，仅下载了 wrapper），因此不宣称 Gradle 测试通过。
+**已知验证结果**（2026-11，命令行实测）：`gradlew.bat :app:testDebugUnitTest` 执行成功，30 个 JVM 单元测试全部通过（0 失败/0 跳过）；同一构建链也完成了 debug/release APK 构建。尚未在真机/模拟器运行。
 
 ---
 

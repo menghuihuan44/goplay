@@ -1,5 +1,9 @@
 .gradle/
 local.properties
+# release signing material (never commit keys or passwords)
+keystore.properties
+*.jks
+*.keystore
 *.iml
 .idea/
 build/
