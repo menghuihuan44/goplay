@@ -1,8 +1,8 @@
 {
   "version": "audit-v1",
   "root": "C:\\Codes\\goplay",
-  "generated_at": "2026-11-23T20:09:14.9447755+08:00",
-  "duration_ms": 668,
+  "generated_at": "2026-11-23T23:58:41.8076314+08:00",
+  "duration_ms": 1516,
   "verdict": "PASS",
   "source_findings": null,
   "pe_imports": [
@@ -15,6 +15,24 @@
     {
       "path": "bin/goplay-audit.exe",
       "library": "kernel32.dll",
+      "symbol": "SetThreadContext",
+      "severity": "review"
+    },
+    {
+      "path": "bin/goplay-desktop.exe",
+      "library": "KERNEL32.dll",
+      "symbol": "GetThreadContext",
+      "severity": "review"
+    },
+    {
+      "path": "bin/goplay-desktop.exe",
+      "library": "KERNEL32.dll",
+      "symbol": "OpenProcess",
+      "severity": "review"
+    },
+    {
+      "path": "bin/goplay-desktop.exe",
+      "library": "KERNEL32.dll",
       "symbol": "SetThreadContext",
       "severity": "review"
     },
@@ -105,17 +123,17 @@
   ],
   "pe_invalid": null,
   "stats": {
-    "walked": 295,
-    "source_files": 129,
-    "source_bytes": 746146,
+    "walked": 8353,
+    "source_files": 178,
+    "source_bytes": 1989494,
     "allowlisted": 2,
     "support_skipped": 0,
     "oversize_skipped": 0,
-    "native_files": 10,
-    "native_imported_symbols": 720,
+    "native_files": 14,
+    "native_imported_symbols": 1324,
     "native_invalid": 0,
     "pe_critical_imports": 0,
-    "pe_review_imports": 16
+    "pe_review_imports": 19
   },
   "allowlist": [
     "internal/audit/**",
@@ -127,6 +145,6 @@
     "internal/audit/testdata"
   ],
   "warnings": [
-    "16 review-level PE imports (OpenProcess/SetThreadContext/GetThreadContext): common in the MSVC C runtime and Go runtime; confirm no source uses them"
+    "19 review-level PE imports (OpenProcess/SetThreadContext/GetThreadContext): common in the MSVC C runtime and Go runtime; confirm no source uses them"
   ]
 }

@@ -1,499 +1,582 @@
 package com.goplay.mobile
 
 import android.Manifest
-import android.accessibilityservice.AccessibilityServiceInfo
+import android.annotation.SuppressLint
+import android.app.Activity
+import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
+import android.graphics.Color
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
-import android.view.accessibility.AccessibilityManager
+import android.speech.RecognizerIntent
+import android.view.Gravity
+import android.view.View
+import android.view.ViewGroup
+import android.webkit.JavascriptInterface
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.Button
-import android.widget.EditText
-import android.widget.SeekBar
+import android.widget.FrameLayout
+import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
-import androidx.appcompat.widget.SwitchCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.goplay.mobile.accessibility.GameAccessibilityService
-import com.goplay.mobile.capture.CaptureStatus
 import com.goplay.mobile.capture.ScreenCaptureService
-import com.goplay.mobile.data.AppSettings
-import com.goplay.mobile.data.BatteryMonitor
-import com.goplay.mobile.data.NetworkMonitor
-import com.goplay.mobile.data.SessionState
-import com.goplay.mobile.net.CoreRest
+import com.goplay.mobile.local.LocalCore
 import com.goplay.mobile.notifications.Notifications
 import java.util.Locale
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import org.json.JSONArray
+import org.json.JSONObject
 
 /**
- * Settings / permission / status shell. The heavy lifting happens in
- * [ScreenCaptureService] (projection + overlay) and [GameAccessibilityService]
- * (gestures). This activity never captures or injects by itself.
+ * Thin Android shell around the same five-page web console that ships with the
+ * Go core. The core (libgoplaycore.so) runs as a child process on 127.0.0.1;
+ * this activity only starts it, loads the console, and bridges the things a
+ * WebView cannot do: installed apps, screen capture consent, overlay,
+ * accessibility settings and speech recognition.
  */
 class MainActivity : AppCompatActivity() {
 
     private lateinit var graph: AppGraph
-    private val networkMonitor by lazy { NetworkMonitor(this) }
-    private val batteryMonitor by lazy { BatteryMonitor(this) }
+    private lateinit var webView: WebView
+    private lateinit var loading: LinearLayout
+    private lateinit var loadingText: TextView
+    private lateinit var loadingBar: ProgressBar
+    private lateinit var retryButton: Button
 
-    private val hostInput: EditText by lazy { findViewById(R.id.hostInput) }
-    private val portInput: EditText by lazy { findViewById(R.id.portInput) }
-    private val instanceInput: EditText by lazy { findViewById(R.id.instanceInput) }
-    private val qualityLabel: TextView by lazy { findViewById(R.id.qualityLabel) }
-    private val qualitySeek: SeekBar by lazy { findViewById(R.id.qualitySeek) }
-    private val fpsLabel: TextView by lazy { findViewById(R.id.fpsLabel) }
-    private val fpsSeek: SeekBar by lazy { findViewById(R.id.fpsSeek) }
-    private val maxEdgeLabel: TextView by lazy { findViewById(R.id.maxEdgeLabel) }
-    private val maxEdgeSeek: SeekBar by lazy { findViewById(R.id.maxEdgeSeek) }
-    private val wifiOnlySwitch: SwitchCompat by lazy { findViewById(R.id.wifiOnlySwitch) }
-    private val autoReconnectSwitch: SwitchCompat by lazy { findViewById(R.id.autoReconnectSwitch) }
-    private val saveButton: Button by lazy { findViewById(R.id.saveButton) }
-    private val connectButton: Button by lazy { findViewById(R.id.connectButton) }
-
-    private val overlayStatus: TextView by lazy { findViewById(R.id.overlayStatus) }
-    private val overlayButton: Button by lazy { findViewById(R.id.overlayButton) }
-    private val accessibilityStatus: TextView by lazy { findViewById(R.id.accessibilityStatus) }
-    private val accessibilityButton: Button by lazy { findViewById(R.id.accessibilityButton) }
-    private val notificationStatus: TextView by lazy { findViewById(R.id.notificationStatus) }
-    private val notificationButton: Button by lazy { findViewById(R.id.notificationButton) }
-    private val startCaptureButton: Button by lazy { findViewById(R.id.startCaptureButton) }
-    private val stopCaptureButton: Button by lazy { findViewById(R.id.stopCaptureButton) }
-
-    private val sessionStatus: TextView by lazy { findViewById(R.id.sessionStatus) }
-    private val captureStatus: TextView by lazy { findViewById(R.id.captureStatus) }
-    private val metricsStatus: TextView by lazy { findViewById(R.id.metricsStatus) }
-    private val errorStatus: TextView by lazy { findViewById(R.id.errorStatus) }
-    private val deviceInfoView: TextView by lazy { findViewById(R.id.deviceInfoView) }
-    private val queryLocalButton: Button by lazy { findViewById(R.id.queryLocalButton) }
-    private val localResultView: TextView by lazy { findViewById(R.id.localResultView) }
-    private val messageInput: EditText by lazy { findViewById(R.id.messageInput) }
-    private val sendButton: Button by lazy { findViewById(R.id.sendButton) }
-    private val logView: TextView by lazy { findViewById(R.id.logView) }
+    private var loadedPort = 0
+    private var pendingExpandOverlay = false
 
     private val projectionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
     ) { result ->
-        if (result.resultCode != RESULT_OK) {
-            toast(getString(R.string.toast_projection_denied))
+        if (result.resultCode != Activity.RESULT_OK) {
+            pendingExpandOverlay = false
+            toast("需要录屏授权才能看到游戏画面")
             return@registerForActivityResult
         }
         val data = result.data
         if (data == null) {
-            showError("录屏授权结果缺少 data，无法启动截屏")
+            pendingExpandOverlay = false
+            toast("录屏授权结果缺少数据，请重试")
             return@registerForActivityResult
         }
         try {
-            val serviceIntent = ScreenCaptureService.startIntent(this, result.resultCode, data)
-            ContextCompat.startForegroundService(this, serviceIntent)
+            val intent = ScreenCaptureService.startIntent(this, result.resultCode, data)
+            ContextCompat.startForegroundService(this, intent)
             graph.client.ensureConnected()
-            toast(getString(R.string.toast_started))
+            if (pendingExpandOverlay) {
+                pendingExpandOverlay = false
+                webView.postDelayed({
+                    runCatching {
+                        startService(
+                            ScreenCaptureService.commandIntent(
+                                this,
+                                ScreenCaptureService.ACTION_EXPAND_OVERLAY,
+                            ),
+                        )
+                    }
+                }, 1200L)
+            }
+            toast("已开始截屏；悬浮球可随时打开")
         } catch (e: Exception) {
-            showError("启动截屏服务失败：" + (e.message ?: e.javaClass.simpleName))
+            toast("启动截屏失败：" + (e.message ?: e.javaClass.simpleName))
         }
     }
 
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
-        renderPermissions()
-        if (granted) {
-            toast("通知权限已授予")
-        } else {
-            toast("通知权限被拒绝；前台服务仍会运行，但系统通知可能不可见")
+        toast(if (granted) "通知权限已授予" else "通知权限被拒绝；前台服务通知可能不可见")
+    }
+
+    private val speechLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        if (result.resultCode != Activity.RESULT_OK) return@registerForActivityResult
+        val text = result.data
+            ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+            ?.firstOrNull()
+            ?.trim()
+            .orEmpty()
+        if (text.isNotEmpty()) {
+            val quoted = JSONObject.quote(text)
+            webView.evaluateJavascript("window.goplayVoice && window.goplayVoice(" + quoted + ")", null)
         }
     }
 
+    @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         graph = (application as GoPlayApp).graph
         Notifications.ensureChannel(this)
-        setContentView(R.layout.activity_main)
-        bindSeekBars()
-        loadSettings(graph.settingsStore.load())
-        bindButtons()
-        deviceInfoView.text = graph.device.summary
-        graph.refreshRuntimeState()
-        renderPermissions()
-        renderMetrics()
-        observeState()
-    }
-
-    override fun onResume() {
-        super.onResume()
-        if (this::graph.isInitialized) {
-            graph.refreshRuntimeState()
-            renderPermissions()
-        }
-    }
-
-    private fun bindSeekBars() {
-        qualitySeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                renderSeekLabels()
+        buildContentView()
+        configureWebView()
+        observeCore()
+        graph.localCore.start(lifecycleScope)
+        maybeRequestNotificationPermission()
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (webView.canGoBack()) webView.goBack() else moveTaskToBack(true)
             }
-
-            override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
-            override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
-        })
-        fpsSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                renderSeekLabels()
-            }
-
-            override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
-            override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
-        })
-        maxEdgeSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                renderSeekLabels()
-            }
-
-            override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
-            override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
         })
     }
 
-    private fun bindButtons() {
-        saveButton.setOnClickListener { saveSettings(showSuccess = true) }
-        connectButton.setOnClickListener {
-            if (!saveSettings(showSuccess = false)) return@setOnClickListener
-            graph.client.connect()
-            graph.logs.log("请求连接 " + graph.settingsStore.load().wsUrl)
-            toast("正在连接核心…")
+    private fun buildContentView() {
+        val root = FrameLayout(this).apply {
+            setBackgroundColor(ContextCompat.getColor(this@MainActivity, R.color.bg))
         }
-        startCaptureButton.setOnClickListener { beginCapture() }
-        stopCaptureButton.setOnClickListener { stopCapture() }
-        overlayButton.setOnClickListener { openOverlaySettings() }
-        accessibilityButton.setOnClickListener { openAccessibilitySettings() }
-        notificationButton.setOnClickListener { requestOrOpenNotificationPermission() }
-        queryLocalButton.setOnClickListener { queryLocalModels() }
-        sendButton.setOnClickListener { sendMessage() }
-    }
-
-    private fun loadSettings(settings: AppSettings) {
-        hostInput.setText(settings.host)
-        portInput.setText(settings.port.toString())
-        instanceInput.setText(settings.instanceId)
-        qualitySeek.progress = settings.jpegQuality.coerceIn(10, 95)
-        fpsSeek.progress = settings.targetFps.coerceIn(1, 30)
-        val index = MAX_EDGES.indexOfFirst { it >= settings.maxEdge }
-            .let { if (it < 0) MAX_EDGES.lastIndex else it }
-        maxEdgeSeek.progress = index
-        wifiOnlySwitch.isChecked = settings.wifiOnlyDownloads
-        autoReconnectSwitch.isChecked = settings.autoReconnect
-        renderSeekLabels()
-    }
-
-    private fun renderSeekLabels() {
-        val quality = qualitySeek.progress.coerceIn(10, 95)
-        val fps = fpsSeek.progress.coerceIn(1, 30)
-        val edge = MAX_EDGES[maxEdgeSeek.progress.coerceIn(0, MAX_EDGES.lastIndex)]
-        qualityLabel.text = "JPEG 质量：" + quality + "（10–95，越高越清晰也越费流量）"
-        fpsLabel.text = "目标截屏 FPS：" + fps + "（实际受设备和网络限制）"
-        maxEdgeLabel.text = "截图长边：" + edge + " px"
-    }
-
-    private fun currentSettings(): AppSettings = AppSettings(
-        host = hostInput.text?.toString().orEmpty(),
-        port = portInput.text?.toString()?.toIntOrNull() ?: 0,
-        instanceId = instanceInput.text?.toString().orEmpty(),
-        jpegQuality = qualitySeek.progress.coerceIn(10, 95),
-        targetFps = fpsSeek.progress.coerceIn(1, 30),
-        maxEdge = MAX_EDGES[maxEdgeSeek.progress.coerceIn(0, MAX_EDGES.lastIndex)],
-        wifiOnlyDownloads = wifiOnlySwitch.isChecked,
-        autoReconnect = autoReconnectSwitch.isChecked,
-    )
-
-    private fun saveSettings(showSuccess: Boolean): Boolean {
-        val raw = currentSettings()
-        if (raw.port !in 1..65535) {
-            showError("端口必须在 1–65535 之间")
-            return false
-        }
-        val result = graph.settingsStore.save(raw)
-        val saved = result.settings
-        if (!result.ok || saved == null) {
-            showError(result.error ?: "设置保存失败")
-            return false
-        }
-        loadSettings(saved)
-        if (showSuccess) {
-            toast(getString(R.string.toast_saved))
-            graph.logs.log("设置已保存：" + saved.wsUrl)
-        }
-        if (ScreenCaptureService.state.value.running) {
-            try {
-                startService(
-                    ScreenCaptureService.commandIntent(
-                        this,
-                        ScreenCaptureService.ACTION_RELOAD_SETTINGS,
-                    ),
-                )
-            } catch (e: Exception) {
-                graph.logs.error("通知截屏服务重载设置失败", e)
-            }
-        }
-        graph.client.reconnectIfActive()
-        return true
-    }
-
-    private fun beginCapture() {
-        if (!saveSettings(showSuccess = false)) return
-        if (!Settings.canDrawOverlays(this)) {
-            toast(getString(R.string.toast_overlay_required))
-        }
-        if (GameAccessibilityService.instance == null) {
-            toast(getString(R.string.toast_accessibility_missing))
-        }
-        val manager = getSystemService(MediaProjectionManager::class.java)
-        if (manager == null) {
-            showError("系统不支持 MediaProjection")
-            return
-        }
-        val intent = try {
-            manager.createScreenCaptureIntent()
-        } catch (e: Exception) {
-            showError("无法创建录屏授权请求：" + (e.message ?: e.javaClass.simpleName))
-            return
-        }
-        try {
-            projectionLauncher.launch(intent)
-        } catch (e: Exception) {
-            showError("打开录屏授权界面失败：" + (e.message ?: e.javaClass.simpleName))
-        }
-    }
-
-    private fun stopCapture() {
-        val wasRunning = ScreenCaptureService.state.value.running
-        try {
-            stopService(Intent(this, ScreenCaptureService::class.java))
-        } catch (e: Exception) {
-            graph.logs.error("停止截屏服务失败", e)
-        }
-        graph.client.disconnect()
-        graph.refreshRuntimeState()
-        toast(if (wasRunning) getString(R.string.toast_stopped) else "截屏未在运行")
-    }
-
-    private fun openOverlaySettings() {
-        try {
-            startActivity(
-                Intent(
-                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                    Uri.parse("package:" + packageName),
-                ),
+        webView = WebView(this).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
             )
-        } catch (e: Exception) {
-            try {
-                startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION))
-            } catch (inner: Exception) {
-                showError("无法打开悬浮窗设置：" + (inner.message ?: inner.javaClass.simpleName))
+        }
+        root.addView(webView)
+
+        loading = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(dp(28), dp(28), dp(28), dp(28))
+            setBackgroundColor(ContextCompat.getColor(this@MainActivity, R.color.bg))
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            )
+        }
+        val title = TextView(this).apply {
+            text = "GoPlay"
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.accent))
+            textSize = 30f
+            gravity = Gravity.CENTER
+        }
+        loadingText = TextView(this).apply {
+            text = "正在启动本机 AI 核心…"
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.text_secondary))
+            textSize = 14f
+            gravity = Gravity.CENTER
+            setPadding(0, dp(12), 0, dp(14))
+        }
+        loadingBar = ProgressBar(this).apply {
+            isIndeterminate = true
+            indeterminateTintList = android.content.res.ColorStateList.valueOf(
+                ContextCompat.getColor(this@MainActivity, R.color.accent),
+            )
+        }
+        retryButton = Button(this).apply {
+            text = "重试"
+            isAllCaps = false
+            visibility = View.GONE
+            setOnClickListener {
+                retryButton.visibility = View.GONE
+                loadingBar.visibility = View.VISIBLE
+                loadingText.text = "正在启动本机 AI 核心…"
+                graph.localCore.start(lifecycleScope)
+            }
+        }
+        loading.addView(title)
+        loading.addView(loadingText)
+        loading.addView(loadingBar)
+        loading.addView(retryButton)
+        root.addView(loading)
+        setContentView(root)
+    }
+
+    private fun configureWebView() {
+        WebView.setWebContentsDebuggingEnabled(
+            (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0,
+        )
+        webView.setBackgroundColor(ContextCompat.getColor(this, R.color.bg))
+        webView.settings.apply {
+            javaScriptEnabled = true
+            domStorageEnabled = true
+            allowFileAccess = false
+            allowContentAccess = false
+            mediaPlaybackRequiresUserGesture = false
+            cacheMode = WebSettings.LOAD_DEFAULT
+            userAgentString = userAgentString + " GoPlayAndroid/0.3"
+        }
+        webView.addJavascriptInterface(HostBridge(), "GoPlayHost")
+        webView.webChromeClient = object : WebChromeClient() {
+            override fun onConsoleMessage(message: android.webkit.ConsoleMessage): Boolean {
+                val level = when (message.messageLevel()) {
+                    android.webkit.ConsoleMessage.MessageLevel.ERROR -> "ERROR"
+                    android.webkit.ConsoleMessage.MessageLevel.WARNING -> "WARN"
+                    else -> "LOG"
+                }
+                graph.logs.log("WebView " + level + ": " + message.message())
+                return true
+            }
+        }
+        webView.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(
+                view: WebView,
+                request: WebResourceRequest,
+            ): Boolean {
+                val url = request.url.toString()
+                val local = graph.localCore.port > 0 &&
+                    url.startsWith("http://127.0.0.1:" + graph.localCore.port)
+                if (local) return false
+                if (url.startsWith("http://") || url.startsWith("https://")) {
+                    runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+                    return true
+                }
+                return false
+            }
+
+            override fun onPageFinished(view: WebView, url: String) {
+                loading.visibility = View.GONE
             }
         }
     }
 
-    private fun openAccessibilitySettings() {
-        try {
-            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-        } catch (e: Exception) {
-            showError("无法打开无障碍设置：" + (e.message ?: e.javaClass.simpleName))
+    private fun observeCore() {
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                graph.localCore.state.collect { state ->
+                    when {
+                        state.ready -> {
+                            val port = state.port
+                            if (port > 0 && port != loadedPort) {
+                                loadedPort = port
+                                loading.visibility = View.VISIBLE
+                                loadingBar.visibility = View.VISIBLE
+                                retryButton.visibility = View.GONE
+                                loadingText.text = "本机 AI 核心已就绪，正在打开控制台…"
+                                webView.loadUrl("http://127.0.0.1:" + port + "/")
+                            }
+                        }
+
+                        !state.error.isNullOrBlank() -> {
+                            loading.visibility = View.VISIBLE
+                            loadingBar.visibility = View.GONE
+                            retryButton.visibility = View.VISIBLE
+                            loadingText.text = "本机核心启动失败\n\n" + state.error +
+                                "\n\n日志：" + state.logPath
+                        }
+
+                        state.starting -> {
+                            loading.visibility = View.VISIBLE
+                            loadingBar.visibility = View.VISIBLE
+                            loadingText.text = "正在启动本机 AI 核心…"
+                        }
+                    }
+                }
+            }
         }
     }
 
-    private fun requestOrOpenNotificationPermission() {
+    private fun maybeRequestNotificationPermission() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
             PackageManager.PERMISSION_GRANTED
         ) {
             notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-            return
         }
-        openNotificationSettings()
     }
 
-    private fun openNotificationSettings() {
+    private fun beginCapture() {
+        val manager = getSystemService(MediaProjectionManager::class.java)
+        if (manager == null) {
+            toast("系统不支持 MediaProjection")
+            return
+        }
+        if (!Settings.canDrawOverlays(this)) {
+            toast("建议授予悬浮窗权限，否则没有悬浮球")
+        }
+        if (GameAccessibilityService.instance == null) {
+            toast("建议开启无障碍服务，否则 AI 无法点击/滑动")
+        }
         try {
-            val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
-                .putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
-            startActivity(intent)
+            projectionLauncher.launch(manager.createScreenCaptureIntent())
         } catch (e: Exception) {
-            try {
-                startActivity(
-                    Intent(
-                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                        Uri.parse("package:" + packageName),
-                    ),
-                )
-            } catch (inner: Exception) {
-                showError("无法打开通知设置：" + (inner.message ?: inner.javaClass.simpleName))
-            }
+            toast("打开录屏授权失败：" + (e.message ?: e.javaClass.simpleName))
         }
     }
 
-    private fun renderPermissions() {
-        val overlay = Settings.canDrawOverlays(this)
-        overlayStatus.text = "悬浮窗：" + if (overlay) {
-            "已授权，录屏时显示可拖动悬浮球"
-        } else {
-            "未授权（仍可录屏，但没有悬浮球控制）"
+    private fun stopCapture() {
+        try {
+            stopService(Intent(this, ScreenCaptureService::class.java))
+        } catch (_: Exception) {
         }
-
-        val manager = getSystemService(AccessibilityManager::class.java)
-        val enabledInSystem = manager
-            ?.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)
-            ?.any { info ->
-                info.resolveInfo?.serviceInfo?.packageName == packageName
-            } == true
-        val bound = GameAccessibilityService.instance != null
-        accessibilityStatus.text = "无障碍服务：" + when {
-            bound -> "已连接，可执行点击/滑动/长按/返回/文本"
-            enabledInSystem -> "系统已启用，等待服务绑定"
-            else -> "未开启（AI 动作无法执行）"
-        }
-
-        val notifications = NotificationManagerCompat.from(this).areNotificationsEnabled()
-        notificationStatus.text = "通知：" + if (notifications) {
-            "已开启，前台服务通知可见"
-        } else {
-            "未开启，前台服务通知可能不可见"
-        }
+        graph.client.disconnect()
+        toast("已停止截屏")
     }
 
-    private fun queryLocalModels() {
-        queryLocalButton.isEnabled = false
-        localResultView.text = "查询中…（核心未实现接口时会显示错误）"
-        lifecycleScope.launch {
-            try {
-                val status = graph.rest.localStatus()
-                val recommend = graph.rest.localRecommend(graph.device)
-                localResultView.text = buildString {
-                    appendLine("设备：" + graph.device.summary)
-                    appendLine()
-                    appendLine("GET /api/local/status")
-                    appendLine(status.display().take(2000))
-                    appendLine()
-                    appendLine("POST /api/local/recommend")
-                    append(recommend.display().take(2000))
-                }
-                graph.logs.log("本地模型查询 status=" + status.status + " recommend=" + recommend.status)
-            } finally {
-                queryLocalButton.isEnabled = true
-            }
-        }
-    }
-
-    private fun sendMessage() {
-        val text = messageInput.text?.toString()?.trim().orEmpty()
-        if (text.isEmpty()) {
-            toast(getString(R.string.toast_message_required))
-            return
-        }
-        messageInput.setText("")
-        lifecycleScope.launch {
-            val result = graph.rest.sendMessage(text)
-            graph.logs.log("发送消息：" + result.display())
-            toast(if (result.ok) "消息已发送" else "发送失败：" + (result.error ?: "HTTP " + result.status))
-        }
-    }
-
-    private fun observeState() {
-        lifecycleScope.launch {
-            repeatOnLifecycle(Lifecycle.State.STARTED) {
-                launch {
-                    graph.session.collect { state -> renderSession(state) }
-                }
-                launch {
-                    ScreenCaptureService.state.collect { capture -> renderCapture(capture) }
-                }
-                launch {
-                    graph.logs.lines.collect { lines ->
-                        logView.text = lines.joinToString("\n")
-                    }
-                }
-                launch {
-                    while (isActive) {
-                        graph.refreshRuntimeState()
-                        renderPermissions()
-                        renderMetrics()
-                        delay(1000L)
-                    }
-                }
-            }
-        }
-    }
-
-    private fun renderSession(state: SessionState) {
-        val running = if (state.running) "运行中" else "未运行"
-        val paused = if (state.paused) " · 已暂停" else ""
-        val connection = if (state.connected) "已连接" else state.wsState
-        sessionStatus.text = "服务：" + running + paused +
-            " · WebSocket：" + connection +
-            " · 实例：" + state.instanceStatus
-        if (state.lastError.isNullOrBlank()) {
-            errorStatus.text = "最近错误：无"
-        } else {
-            errorStatus.text = "最近错误：" + state.lastError
-        }
-    }
-
-    private fun renderCapture(capture: CaptureStatus) {
-        captureStatus.text = if (capture.running) {
-            "截屏：" + capture.width + "×" + capture.height +
-                " · JPEG q" + capture.quality +
-                " · 目标 " + capture.targetFps + " fps" +
-                (if (capture.paused) " · 已暂停" else "")
-        } else {
-            "截屏：未运行"
-        }
-        if (!capture.error.isNullOrBlank()) {
-            errorStatus.text = "最近错误：" + capture.error
-        }
-        startCaptureButton.isEnabled = !capture.running
-        stopCaptureButton.isEnabled = capture.running
-    }
-
-    private fun renderMetrics() {
-        val metrics = graph.metrics.snapshot()
-        val network = networkMonitor.status()
-        val battery = batteryMonitor.status()
-        metricsStatus.text = String.format(
-            Locale.US,
-            "截图 FPS %.1f · 已发送 %d 帧 · 丢弃 %d · 动作 %d（错误 %d） · 重连 %d\n网络：%s · 电量：%s",
-            metrics.captureFps,
-            metrics.framesSent,
-            metrics.framesDropped,
-            metrics.actionsExecuted,
-            metrics.actionErrors,
-            metrics.wsReconnects,
-            network.label,
-            battery.label,
+    private fun activateInstance(id: String): Boolean {
+        val clean = id.trim()
+        if (!Regex("^[A-Za-z0-9._-]{1,64}$").matches(clean)) return false
+        val current = graph.settingsStore.load()
+        val port = graph.localCore.port.takeIf { it > 0 } ?: current.port
+        val saved = graph.settingsStore.save(
+            current.copy(host = "127.0.0.1", port = port, instanceId = clean),
         )
+        if (!saved.ok) {
+            toast(saved.error ?: "保存当前游戏失败")
+            return false
+        }
+        runOnUiThread {
+            if (ScreenCaptureService.state.value.running) {
+                graph.client.reconnectIfActive()
+                graph.client.ensureConnected()
+                runCatching {
+                    startService(
+                        ScreenCaptureService.commandIntent(
+                            this,
+                            ScreenCaptureService.ACTION_RELOAD_SETTINGS,
+                        ),
+                    )
+                }
+            } else {
+                beginCapture()
+            }
+        }
+        return true
     }
 
-    private fun showError(message: String) {
-        errorStatus.text = "最近错误：" + message
-        toast(message)
-        if (this::graph.isInitialized) graph.logs.error(message, null)
+    private fun requestVoice() {
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(
+                RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM,
+            )
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag())
+            putExtra(RecognizerIntent.EXTRA_PROMPT, "说出你的指令，例如：先别打那个 Boss")
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+        }
+        try {
+            speechLauncher.launch(intent)
+        } catch (e: ActivityNotFoundException) {
+            toast("这台设备没有语音识别服务，请用键盘输入")
+        } catch (e: Exception) {
+            toast("语音启动失败：" + (e.message ?: e.javaClass.simpleName))
+        }
+    }
+
+    private fun openAccessibilitySettings() {
+        runCatching { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+            .onFailure { toast("无法打开无障碍设置") }
+    }
+
+    private fun openOverlaySettings() {
+        val intent = Intent(
+            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+            Uri.parse("package:" + packageName),
+        )
+        runCatching { startActivity(intent) }.onFailure {
+            runCatching { startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION)) }
+                .onFailure { toast("无法打开悬浮窗设置") }
+        }
+    }
+
+    private fun openAppSettings() {
+        val intent = Intent(
+            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+            Uri.parse("package:" + packageName),
+        )
+        runCatching { startActivity(intent) }.onFailure { toast("无法打开应用设置") }
+    }
+
+    private fun installedGamesJson(): String {
+        val manager = packageManager
+        val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        val resolved = try {
+            @Suppress("DEPRECATION")
+            manager.queryIntentActivities(intent, 0)
+        } catch (_: Exception) {
+            emptyList()
+        }
+        val seen = HashSet<String>()
+        val entries = ArrayList<Triple<String, String, Boolean>>()
+        for (info in resolved) {
+            val pkg = info.activityInfo?.packageName ?: continue
+            if (pkg == packageName || !seen.add(pkg)) continue
+            val app = info.activityInfo.applicationInfo
+            val label = try {
+                info.loadLabel(manager).toString()
+            } catch (_: Exception) {
+                pkg
+            }
+            val system = (app.flags and ApplicationInfo.FLAG_SYSTEM) != 0
+            entries.add(Triple(pkg, label, system))
+        }
+        entries.sortWith(compareBy<Triple<String, String, Boolean>> { it.third }.thenBy { it.second })
+        val out = JSONArray()
+        for ((pkg, label, system) in entries.take(300)) {
+            out.put(
+                JSONObject()
+                    .put("package", pkg)
+                    .put("label", label)
+                    .put("system", system),
+            )
+        }
+        return out.toString()
+    }
+
+    private fun statusJson(): String {
+        val capture = ScreenCaptureService.state.value
+        val settings = graph.settingsStore.load()
+        val core = graph.localCore.state.value
+        val notifications = NotificationManagerCompat.from(this).areNotificationsEnabled()
+        return JSONObject()
+            .put("coreReady", core.ready)
+            .put("corePort", core.port)
+            .put("coreError", core.error ?: JSONObject.NULL)
+            .put("coreLog", core.logPath)
+            .put("captureRunning", capture.running)
+            .put("capturePaused", capture.paused)
+            .put("captureWidth", capture.width)
+            .put("captureHeight", capture.height)
+            .put("accessibilityReady", GameAccessibilityService.instance != null)
+            .put("overlayPermission", Settings.canDrawOverlays(this))
+            .put("notificationPermission", notifications)
+            .put("activeInstance", settings.instanceId)
+            .put("device", graph.device.summary)
+            .put("version", core.version)
+            .toString()
     }
 
     private fun toast(message: String) {
-        Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+        runOnUiThread { Toast.makeText(this, message, Toast.LENGTH_SHORT).show() }
     }
 
-    companion object {
-        /** Selectable long-edge values; must match maxEdgeSeek's max=3. */
-        private val MAX_EDGES = intArrayOf(640, 960, 1280, 1920)
+    private fun dp(value: Int): Int =
+        (value * resources.displayMetrics.density).toInt()
+
+    private inner class HostBridge {
+        @JavascriptInterface
+        fun installedGames(): String = installedGamesJson()
+
+        @JavascriptInterface
+        fun statusJson(): String = statusJson()
+
+        @JavascriptInterface
+        fun setActiveInstance(id: String): String {
+            val ok = activateInstance(id)
+            return JSONObject().put("ok", ok).put("instanceId", id).toString()
+        }
+
+        @JavascriptInterface
+        fun launchGame(pkg: String): String {
+            val intent = packageManager.getLaunchIntentForPackage(pkg)
+            if (intent == null) {
+                toast("找不到可启动的游戏：" + pkg)
+                return "{\"ok\":false}"
+            }
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            return try {
+                startActivity(intent)
+                "{\"ok\":true}"
+            } catch (e: Exception) {
+                toast("启动游戏失败：" + (e.message ?: e.javaClass.simpleName))
+                "{\"ok\":false}"
+            }
+        }
+
+        @JavascriptInterface
+        fun startCapture(): String {
+            runOnUiThread {
+                if (!ScreenCaptureService.state.value.running) beginCapture()
+            }
+            return "{\"ok\":true}"
+        }
+
+        @JavascriptInterface
+        fun stopCapture(): String {
+            runOnUiThread { stopCapture() }
+            return "{\"ok\":true}"
+        }
+
+        @JavascriptInterface
+        fun openOverlay(): String {
+            runOnUiThread {
+                if (!Settings.canDrawOverlays(this@MainActivity)) {
+                    openOverlaySettings()
+                    toast("先允许「显示在其他应用上层」，再点灵动岛")
+                } else if (ScreenCaptureService.state.value.running) {
+                    runCatching {
+                        startService(
+                            ScreenCaptureService.commandIntent(
+                                this@MainActivity,
+                                ScreenCaptureService.ACTION_EXPAND_OVERLAY,
+                            ),
+                        )
+                    }
+                } else {
+                    pendingExpandOverlay = true
+                    beginCapture()
+                }
+            }
+            return "{\"ok\":true}"
+        }
+
+        @JavascriptInterface
+        fun startVoice(): String {
+            runOnUiThread { requestVoice() }
+            return "{\"ok\":true}"
+        }
+
+        @JavascriptInterface
+        fun openAccessibility(): String {
+            runOnUiThread { openAccessibilitySettings() }
+            return "{\"ok\":true}"
+        }
+
+        @JavascriptInterface
+        fun openOverlaySettings(): String {
+            runOnUiThread { this@MainActivity.openOverlaySettings() }
+            return "{\"ok\":true}"
+        }
+
+        @JavascriptInterface
+        fun requestNotification(): String {
+            runOnUiThread {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                    ContextCompat.checkSelfPermission(
+                        this@MainActivity,
+                        Manifest.permission.POST_NOTIFICATIONS,
+                    ) != PackageManager.PERMISSION_GRANTED
+                ) {
+                    notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                } else {
+                    toast("通知权限已授予")
+                }
+            }
+            return "{\"ok\":true}"
+        }
+
+        @JavascriptInterface
+        fun openAppSettings(): String {
+            runOnUiThread { this@MainActivity.openAppSettings() }
+            return "{\"ok\":true}"
+        }
+
+        @JavascriptInterface
+        fun quit(): String {
+            runOnUiThread {
+                stopCapture()
+                graph.localCore.stop()
+                finishAndRemoveTask()
+            }
+            return "{\"ok\":true}"
+        }
     }
 }

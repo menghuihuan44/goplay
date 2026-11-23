@@ -1,6 +1,8 @@
 # GoPlay 一键打包与发布
 
-`cmd/goplay-release` 是唯一的发布入口，CI 与本地使用同一条命令。它负责：跑测试（可选）、构建 Go 二进制、构建 Windows 原生组件、调用 Gradle 构建 Android APK、生成压缩包、写 `SHA256SUMS.txt` 与 `release.json`。
+`cmd/goplay-release` 是唯一的发布入口，CI 与本地使用同一条命令。它负责：跑测试（可选）、构建 Go 二进制、构建 Windows 原生组件、构建 Android Go 核心并布置 llama-server 运行时、调用 Gradle 构建 Android APK、生成压缩包、写 `SHA256SUMS.txt` 与 `release.json`。
+
+Android 目标不要求本机安装 NDK：`CGO_ENABLED=0 GOOS=android GOARCH=arm64` 交叉编译核心；预编译的 `third_party/llama.cpp-android/arm64-v8a/libllama-server.so` 会复制进 APK。干净 checkout 必须包含该运行时（约 13 MB）。
 
 ## 1. 快速命令
 
@@ -56,7 +58,7 @@ go run ./cmd/goplay-release -target all -clean -out dist
 
 ### Android
 
-`GoPlay-<version>-android.apk`（release）与 `GoPlay-<version>-android-debug.apk`。若未配置签名，release APK 回退 debug 签名：可直接安装内测，**不能上架**。
+`GoPlay-<version>-android.apk`（release）与 `GoPlay-<version>-android-debug.apk`。APK 内包含 arm64 的 `libgoplaycore.so`（Go 核心，发布时从源码构建）与 `libllama-server.so`（本地推理运行时），但不含任何 GGUF 模型权重。仅打包 arm64-v8a。若未配置签名，release APK 回退 debug 签名：可直接安装内测，**不能上架**。
 
 ### CLI
 
@@ -88,7 +90,7 @@ keystore 不得提交。CI 中放入 Secrets，或在本机用环境变量注入
 | macos | macos-14 | macOS tar.gz（GUI） |
 | android | ubuntu-22.04 + JDK17 + SDK35 | APK/AAB |
 
-`publish` job 汇总全部 artifact，生成总 `SHA256SUMS.txt`；tag 构建时创建 GitHub Release。模型权重与 llama.cpp 运行时不进入任何产物。
+`publish` job 汇总全部 artifact，生成总 `SHA256SUMS.txt`；tag 构建时创建 GitHub Release。模型权重不进入任何产物；Android APK 内含 arm64 `libllama-server.so` 运行时（桌面版不内置 llama.cpp，需外部 `--runtime` 或 `GOPLAY_LLAMA_SERVER`）。
 
 本地开发用 `-skip-tests` 可快速验证打包；CI 在打包前单独跑 `go test ./...`，避免重复。
 
@@ -99,7 +101,7 @@ keystore 不得提交。CI 中放入 Secrets，或在本机用环境变量注入
 3. `go run ./cmd/goplay-eval -quick -json -report-dir reports` 与 `go run ./cmd/goplay-audit -json -out reports/audit-report.json` 通过。
 4. `go run ./cmd/goplay-release -target all -out dist` 成功；解压 Windows 包，双击 `GoPlay.exe`，确认窗口和 `/api/health` 正常。
 5. 用 `apksigner verify --print-certs` 检查 APK；在真机安装并授予录屏/无障碍/悬浮窗权限。
-6. 提交源码、文档、CI、VERSION；不要提交 `dist/`、`bin/`、`android/.gradle`、`android/app/build`、keystore、模型权重、运行时临时目录。
+6. 提交源码、文档、CI、VERSION、Android 预编译运行时 `third_party/llama.cpp-android/` 与生成的 `jniLibs/`；不要提交 `dist/`、`bin/`、`android/.gradle`、`android/app/build`、keystore、GGUF 模型权重、llama.cpp 上游源码 checkout 与运行时临时目录。
 7. 打 tag `v<version>` 并推送，等待 Actions 创建 Release。
 
 ## 7. 已知限制

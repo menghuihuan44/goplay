@@ -66,8 +66,14 @@ android {
         applicationId = "com.goplay.mobile"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 3
+        versionName = "0.3.0"
+        ndk {
+            // The Go core and llama-server ship as prebuilt arm64 libraries.
+            // Go's android/amd64 target needs cgo + the NDK, so x86_64
+            // emulators are intentionally not packaged in v0.3.
+            abiFilters += listOf("arm64-v8a")
+        }
     }
 
     signingConfigs {
@@ -109,6 +115,9 @@ android {
 
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        // extractNativeLibs=true keeps the Go core executable from
+        // applicationInfo.nativeLibraryDir on all supported Android versions.
+        jniLibs.useLegacyPackaging = true
     }
 
     lint {

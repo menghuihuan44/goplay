@@ -41,6 +41,7 @@ class OverlayPanel(
     private val body: LinearLayout
     private val input: EditText
     private val pauseButton: Button
+    private val panelButton: Button
     private val stopButton: Button
 
     private var expanded = false
@@ -128,9 +129,11 @@ class OverlayPanel(
             setHintTextColor(ContextCompat.getColor(context, R.color.text_muted))
             setTextColor(ContextCompat.getColor(context, R.color.text_primary))
             textSize = 12f
-            inputType = InputType.TYPE_CLASS_TEXT
-            maxLines = 1
-            setSingleLine(true)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            maxLines = 3
+            minLines = 2
+            gravity = Gravity.TOP or Gravity.START
+            setSingleLine(false)
             background = rounded(
                 fill = ContextCompat.getColor(context, R.color.surface_2),
                 radiusDp = 12f,
@@ -190,6 +193,21 @@ class OverlayPanel(
             stateListAnimator = null
             setOnClickListener { callbacks.onPauseToggle() }
         }
+        panelButton = Button(context).apply {
+            text = "面板"
+            isAllCaps = false
+            textSize = 12f
+            minHeight = dp(38)
+            minimumHeight = dp(38)
+            setTextColor(ContextCompat.getColor(context, R.color.text_primary))
+            background = rounded(
+                fill = ContextCompat.getColor(context, R.color.surface_2),
+                radiusDp = 19f,
+                stroke = ContextCompat.getColor(context, R.color.divider),
+            )
+            stateListAnimator = null
+            setOnClickListener { callbacks.onOpenApp() }
+        }
         stopButton = Button(context).apply {
             text = "停止"
             isAllCaps = false
@@ -209,9 +227,15 @@ class OverlayPanel(
             LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
         )
         actions.addView(
+            panelButton,
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginStart = dp(6)
+            },
+        )
+        actions.addView(
             stopButton,
             LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginStart = dp(8)
+                marginStart = dp(6)
             },
         )
         body.addView(
@@ -286,6 +310,10 @@ class OverlayPanel(
 
     fun toggleExpanded() {
         setExpanded(!expanded)
+    }
+
+    fun expand() {
+        setExpanded(true)
     }
 
     fun setExpanded(value: Boolean) {

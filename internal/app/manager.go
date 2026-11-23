@@ -642,6 +642,13 @@ func (m *Manager) AttachLocal(rt *localruntime.Runtime) {
 	m.mu.Unlock()
 }
 
+// LocalRuntime returns the attached on-device runtime, or nil.
+func (m *Manager) LocalRuntime() *localruntime.Runtime {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.local
+}
+
 // LocalStatus returns the local runtime status when one is attached.
 func (m *Manager) LocalStatus() (localruntime.Status, bool) {
 	m.mu.RLock()

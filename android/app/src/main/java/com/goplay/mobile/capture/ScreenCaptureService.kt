@@ -22,6 +22,7 @@ import android.view.Display
 import android.view.Surface
 import android.view.WindowManager
 import com.goplay.mobile.GoPlayApp
+import com.goplay.mobile.MainActivity
 import com.goplay.mobile.data.AppSettings
 import com.goplay.mobile.data.BatteryMonitor
 import com.goplay.mobile.data.NetworkMonitor
@@ -145,6 +146,7 @@ class ScreenCaptureService : Service() {
             ACTION_PAUSE -> pauseCapture()
             ACTION_RESUME -> resumeCapture()
             ACTION_RELOAD_SETTINGS -> reloadSettings()
+            ACTION_EXPAND_OVERLAY -> expandOverlay()
             else -> if (projection == null) stopSelf()
         }
         return START_NOT_STICKY
@@ -463,6 +465,21 @@ class ScreenCaptureService : Service() {
                 override fun onExpandedChanged(expanded: Boolean) {
                     if (expanded) graph.logs.log("悬浮球展开")
                 }
+
+                override fun onOpenApp() {
+                    try {
+                        startActivity(
+                            Intent(this@ScreenCaptureService, MainActivity::class.java).apply {
+                                addFlags(
+                                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                                        Intent.FLAG_ACTIVITY_SINGLE_TOP,
+                                )
+                            },
+                        )
+                    } catch (e: Exception) {
+                        graph.logs.log("从悬浮球打开主界面失败: " + e.message)
+                    }
+                }
             },
         )
         if (controller.show()) {
@@ -471,6 +488,15 @@ class ScreenCaptureService : Service() {
         } else {
             graph.logs.log("悬浮球添加失败")
         }
+    }
+
+    private fun expandOverlay() {
+        if (projection == null) {
+            graph.logs.log("截屏未运行，无法展开悬浮球")
+            return
+        }
+        if (overlay == null) showOverlay()
+        overlay?.expand()
     }
 
     private fun updateOverlayState(connected: Boolean) {
@@ -585,6 +611,7 @@ class ScreenCaptureService : Service() {
         const val ACTION_PAUSE = "com.goplay.mobile.action.PAUSE_CAPTURE"
         const val ACTION_RESUME = "com.goplay.mobile.action.RESUME_CAPTURE"
         const val ACTION_RELOAD_SETTINGS = "com.goplay.mobile.action.RELOAD_SETTINGS"
+        const val ACTION_EXPAND_OVERLAY = "com.goplay.mobile.action.EXPAND_OVERLAY"
 
         const val EXTRA_RESULT_CODE = "result_code"
         const val EXTRA_DATA = "result_data"

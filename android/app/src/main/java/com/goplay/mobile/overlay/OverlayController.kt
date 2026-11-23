@@ -23,6 +23,7 @@ class OverlayController(
         fun onStop()
         fun onMessage(text: String)
         fun onExpandedChanged(expanded: Boolean)
+        fun onOpenApp()
     }
 
     private val windowManager =
@@ -74,6 +75,12 @@ class OverlayController(
         accessibilityReady: Boolean,
     ) {
         panel.setRuntime(connected, paused, running, accessibilityReady)
+    }
+
+    /** Expand the pill into the compact console, e.g. after tapping 灵动岛. */
+    fun expand() {
+        if (!shown) return
+        panel.expand()
     }
 
     fun destroy() {

@@ -1,6 +1,6 @@
 # GoPlay Mobile（Android 外部 AI 游玩客户端）
 
-面向 GoPlay Go 核心的 Android 客户端：用 **MediaProjection** 截屏，把 JPEG 帧通过 WebSocket 发给核心；核心返回 JSON 动作，客户端用 **AccessibilityService** 合成点击/滑动/长按/返回/文本；悬浮球提供对话、暂停/继续/停止。全程不 root、不注入游戏进程、不读写游戏内存、不挂钩图形 API、不加载内核驱动。
+v0.3「手机完全独立」：Go 核心（`libgoplaycore.so`）和 llama-server（`libllama-server.so`）随 APK 安装为 arm64 原生库，由 Kotlin 壳以**独立子进程**启动在 `127.0.0.1`；Kotlin 壳只负责 WebView 控制台、**MediaProjection** 截屏、**AccessibilityService** 手势、系统悬浮球/灵动岛和语音入口。核心返回 JSON 动作，客户端合成点击/滑动/长按/返回/文本。全程不 root、不注入游戏进程、不读写游戏内存、不挂钩图形 API、不加载内核驱动。
 
 包名：`com.goplay.mobile`。协议：[`PROTOCOL.md`](PROTOCOL.md)。
 
@@ -8,14 +8,15 @@
 
 ## 验证状态（重要）
 
-本目录已在 Windows 上完成一次完整的命令行构建 + JVM 单元测试（2026-11 实测）：
+本目录已在 Windows 上完成 v0.3 的命令行构建 + JVM 单元测试（2026-11 实测）：
 
 - 环境：JDK 17.0.21 (Temurin)、Gradle 8.10.2（wrapper）、AGP 8.7.3、Kotlin 2.0.21、cmdline-tools 23.0、Platform 35、Build-Tools 35.0.0；SDK 位于仓库外的 `C:\Android\sdk`。
-- 命令：`gradlew.bat :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease` → **BUILD SUCCESSFUL**（79 tasks）。
-- 测试：`testDebugUnitTest` 共 **30 个测试全部通过**（ActionMapperTest 8、BackoffPolicyTest 5、FrameCodecTest 6、MessageCodecTest 11），失败 0、跳过 0；报告在 `app/build/reports/tests/testDebugUnitTest/index.html`。
-- 产物：debug 与 release APK 均已生成且 `apksigner verify` 通过。未提供 release 密钥时按设计回退 debug 签名：APK 可本地安装，**不可用于商店发布**（见“发布签名”）。真正的 release keystore 签名路径需要自备密钥，未在本机实测。
-- 尚未在真机或模拟器上安装运行；MediaProjection、无障碍手势、悬浮窗等运行时行为仍需设备验证。
-- 构建可重复性实测：两次 clean 构建的 debug APK 字节一致（SHA256 相同）；release APK 字节略有差异（内容与签名等价），因此发布校验请以当次构建记录的 SHA256 为准。
+- 原生核心：`CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build -buildmode=pie -ldflags "-s -w"` 产出 `libgoplaycore.so`（10,158,374B）；llama-server 已 strip 为 `libllama-server.so`（13,174,768B）。两者放入 `app/src/main/jniLibs/arm64-v8a/`。
+- 产物：`:app:assembleDebug` **BUILD SUCCESSFUL**；debug APK 14,829,414B，SHA256 `BF66E61781C7C78139AC2669C6147C52746D4F6AE8337B39162213D20595F2C9`，包内 `lib/arm64-v8a/` 两个原生库存在，`aapt` 显示 versionCode 3 / versionName 0.3.0 / native-code arm64-v8a。
+- 签名：未提供 release 密钥时按设计回退 debug 签名（CN=Android Debug），可本地安装，**不可用于商店发布**。
+- 测试：`:app:testDebugUnitTest` 的 30 个 JVM 测试需在每次改动后重跑；本目录未包含 MediaProjection/无障碍/悬浮窗的 instrumentation 测试。
+- **尚未在真机或模拟器上安装运行**：本机 SDK 没有 emulator/system-images，也没有连接设备。MediaProjection、AccessibilityService、悬浮球展开、本机核心子进程、模型下载仍需要设备验证。
+- x86_64 模拟器未打包：Go 的 `android/amd64` 目标要求 cgo + NDK，而本机没有安装 NDK；v0.3 只包含 arm64-v8a，覆盖真实 Android 手机。
 
 构建环境提示（AGP 8.7.3 与新版 cmdline-tools 的兼容性）：cmdline-tools 23.0 写出的 `package.xml` 是 SDK XML v4，而 AGP 8.7.3 只识别到 v3，会把已安装的 Platform 35 / Build-Tools 35 当作缺失并尝试重新下载。任选其一解决：安装较旧的 cmdline-tools（如 19.0）来装 SDK；或把这两个包的 `package.xml` 改写为 v3 可解析的格式（本次构建机采用后者，仅属机器本地修复，不在仓库内）。另外本机访问 dl.google.com / Maven Central 很慢，`android/settings.gradle.kts` 已把阿里云镜像排在官方仓库之前。
 
@@ -26,37 +27,40 @@
 ```text
 ┌──────────────────────────── Android 设备（无 root） ────────────────────────────┐
 │                                                                                │
-│  MainActivity (AppCompat + XML View)                                           │
-│   ├─ 连接/画质/FPS/最大边/仅 Wi-Fi/自动重连设置                                │
-│   ├─ 权限入口：悬浮窗、录屏、无障碍、通知                                       │
-│   ├─ 会话/截屏/指标状态、日志、本地模型查询                                     │
+│  MainActivity (AppCompat + WebView)                                            │
+│   ├─ 启动 LocalCore 子进程，等待 /health 后加载 http://127.0.0.1:<port>/       │
+│   ├─ 同一个五页 Web 控制台（总览/游戏/AI 大脑/记忆/设置）                       │
+│   ├─ GoPlayHost JS bridge：已安装游戏/切实例/截屏/悬浮球/语音/系统设置          │
 │   └─ 投屏授权 launcher ───────────────┐                                        │
 │                                       ▼                                        │
+│  LocalCore (ProcessBuilder)                                                    │
+│   └─ nativeLibraryDir/libgoplaycore.so -addr 127.0.0.1:<free> -data filesDir/core│
+│        env: GOPLAY_LLAMA_SERVER=nativeLibraryDir/libllama-server.so            │
+│                                                                                │
 │  ScreenCaptureService (前台服务, mediaProjection)                              │
-│   ├─ startForeground 通知（含“停止”）                                           │
 │   ├─ MediaProjection + VirtualDisplay + ImageReader(RGBA_8888)                  │
 │   ├─ FrameEncoder: 裁剪 rowPadding -> JPEG(quality)                            │
 │   ├─ 目标 FPS 节流、暂停/断线丢帧、屏幕旋转重建显示                              │
 │   └─ OverlayController: TYPE_APPLICATION_OVERLAY 悬浮球/药丸/展开面板            │
-│         └─ 对话输入、暂停/继续、停止、状态灯                                     │
+│         ├─ 多行输入、发送、暂停/继续、面板、停止、状态灯                         │
+│         └─ 「面板」回到 Web 控制台的设置页                                       │
 │                                                                                │
 │  AppGraph（进程级单例，GoPlayApp 创建）                                         │
-│   ├─ SettingsStore / DeviceInfo / NetworkMonitor / BatteryMonitor / Metrics             │
-│   ├─ CoreClient (OkHttp WebSocket) ────────┐                                    │
-│   ├─ CoreRest (OkHttp HTTP) ───────────────┼──► Go core                        │
+│   ├─ SettingsStore / DeviceInfo / NetworkMonitor / BatteryMonitor / Metrics     │
+│   ├─ LocalCore ────────────────────────────► 本机 Go core（子进程）             │
+│   ├─ CoreClient (OkHttp WebSocket) ────────┘                                    │
+│   ├─ CoreRest (OkHttp HTTP) ───────────────┘                                    │
 │   └─ ActionRouter ──► GameAccessibilityService                                  │
 │                          ├─ dispatchGesture(tap/swipe/long_press)              │
 │                          ├─ GLOBAL_ACTION_BACK                                  │
 │                          ├─ ACTION_SET_TEXT（仅已聚焦输入框）                     │
 │                          └─ 只读 eventType -> WS human(true/false)              │
 └────────────────────────────────────────────────────────────────────────────────┘
-                                      │
-                     WS: JPEG 帧（二进制）
-                     WS: action / ack / ping / stats / chat
-                     WS: human（用户接管 true/false，只有事件类型）
-                     REST: pause / resume / message / local status/recommend
+                                      │ loopback only
+                      WS: JPEG 帧 / action / ack / human
+                      REST: pause / resume / message / local status/download
                                       ▼
-                         Go core（默认 :8420，另行实现）
+              Go core + llama-server（同一 APK，独立子进程，模型按档位下载）
 ```
 
 ### 关键设计
@@ -85,8 +89,9 @@ android/
       ├─ main/
       │  ├─ AndroidManifest.xml
       │  ├─ java/com/goplay/mobile/
-      │  │  ├─ GoPlayApp.kt, AppGraph.kt, MainActivity.kt
+      │  │  ├─ GoPlayApp.kt, AppGraph.kt, MainActivity.kt（WebView + GoPlayHost）
       │  │  ├─ accessibility/GameAccessibilityService.kt, ActionRouter.kt
+      │  │  ├─ local/LocalCore.kt（Go 核心子进程）
       │  │  ├─ capture/FrameEncoder.kt, ScreenCaptureService.kt
       │  │  ├─ data/AppSettings.kt, SettingsStore.kt, DeviceInfo.kt,
       │  │  │      NetworkMonitor.kt, BatteryMonitor.kt, Metrics.kt, LogBus.kt, SessionState.kt
@@ -95,8 +100,10 @@ android/
       │  │  ├─ overlay/OverlayController.kt, OverlayPanel.kt
       │  │  └─ protocol/Models.kt, MessageCodec.kt, FrameCodec.kt,
       │  │         ActionMapper.kt, BackoffPolicy.kt
+      │  ├─ jniLibs/arm64-v8a/
+      │  │  ├─ libgoplaycore.so        # Go 核心，AArch64 PIE
+      │  │  └─ libllama-server.so      # llama.cpp 运行时，AArch64
       │  └─ res/
-      │     ├─ layout/activity_main.xml
       │     ├─ xml/accessibility_service_config.xml
       │     ├─ values/{strings,colors,themes}.xml
       │     └─ drawable/*.xml
@@ -118,17 +125,19 @@ Manifest 声明：
 | `SYSTEM_ALERT_WINDOW` | 悬浮球/药丸 | 设置页“悬浮窗权限”→ 系统页打开 |
 | `FOREGROUND_SERVICE` + `FOREGROUND_SERVICE_MEDIA_PROJECTION` | 截屏前台服务（Android 14+ 必需类型） | 安装时授予 |
 | `POST_NOTIFICATIONS` | Android 13+ 前台通知可见 | 设置页“通知权限”请求，或系统通知设置 |
+| `QUERY_ALL_PACKAGES` + `<queries>` | 列出用户已安装游戏，供“新游戏”选择 | 安装时授予；上架前需按商店政策说明用途 |
 | MediaProjection | 截屏授权 | 点“开始截屏”后系统弹窗确认；每次会话需重新确认 |
 | AccessibilityService（`BIND_ACCESSIBILITY_SERVICE` + 系统绑定） | 合成手势/返回/文本 | 设置页“无障碍服务”→ 系统无障碍页手动启用 |
+| `RECORD_AUDIO` | 不直接申请；语音走系统 `RecognizerIntent` | 由系统语音识别界面自行申请 |
 
 首次使用建议顺序：
 
-1. 填核心 host/port/实例 ID（默认 `192.168.1.100:8420`，实例 `android-1`），保存。
-2. 授予悬浮窗权限（否则仍可仅用主界面，但无悬浮控制）。
-3. 启用 GoPlay 无障碍服务（否则动作 ack 返回 `accessibility_unavailable`）。
-4. Android 13+ 授予通知权限（否则前台服务通知可能不可见，服务仍运行）。
-5. 点“开始截屏”→ 系统录屏弹窗确认。
-6. 返回游戏，悬浮球/药丸可见；点击展开对话与暂停/继续/停止。
+1. 打开 App：`LocalCore` 自动启动本机 Go 核心（`127.0.0.1` 随机端口），WebView 自动加载控制台。
+2. 在「设置 → Android 权限」依次点：悬浮窗权限 → 无障碍设置 → 通知权限。
+3. 回到「游戏 → 新游戏」，从已安装游戏里选一个；创建时会自动切换当前实例并请求录屏授权（如勾选“创建后启动游戏”，授权后游戏会打开）。
+4. 授权后悬浮球/药丸出现；点它展开对话、暂停/继续/停止，点「面板」回到控制台。
+5. 在「AI 大脑」填 API Key，或按设备档位下载本机策略模型并点「启用本机 AI」。模型权重不随 APK 打包。
+6. 回到游戏，AI 开始截屏/决策/手势。
 
 > 系统安全窗口、DRM 保护内容、部分厂商的“隐私屏/安全键盘”会让截屏黑屏或隐藏输入框；见“限制”。
 

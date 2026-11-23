@@ -1,20 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="bg">#0A0F17</color>
-    <color name="surface">#121B28</color>
-    <color name="surface_2">#16202E</color>
-    <color name="text_primary">#E8F0FA</color>
-    <color name="text_secondary">#93A4BA</color>
-    <color name="text_muted">#63748A</color>
-    <color name="accent">#4CC2FF</color>
-    <color name="accent_dark">#1B6E91</color>
-    <color name="on_accent">#04121B</color>
-    <color name="state_ok">#4ADE80</color>
-    <color name="state_warn">#FBBF24</color>
-    <color name="state_bad">#F87171</color>
-    <color name="divider">#22324A</color>
-    <color name="overlay_bg">#F20B1220</color>
-    <color name="overlay_stroke">#334A66</color>
-    <color name="danger">#7F1D1D</color>
-    <color name="danger_text">#FCA5A5</color>
+    <!-- Shared palette with internal/api/web/app.css so the Android shell,
+         the overlay and the web console look like one product. -->
+    <color name="bg">#080A08</color>
+    <color name="surface">#11150F</color>
+    <color name="surface_2">#16200D</color>
+    <color name="text_primary">#F1F5EC</color>
+    <color name="text_secondary">#A7B3A0</color>
+    <color name="text_muted">#6E7C68</color>
+    <color name="accent">#C8FF3E</color>
+    <color name="accent_dark">#9ACB2C</color>
+    <color name="on_accent">#0A0F05</color>
+    <color name="state_ok">#C8FF3E</color>
+    <color name="state_warn">#FFBD55</color>
+    <color name="state_bad">#FF5D78</color>
+    <color name="divider">#253026</color>
+    <color name="overlay_bg">#F2080B08</color>
+    <color name="overlay_stroke">#33402A</color>
+    <color name="danger">#3A121A</color>
+    <color name="danger_text">#FF8FA2</color>
 </resources>

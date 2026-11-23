@@ -7,7 +7,7 @@ GoPlay 的本地模式不是“把一个模型塞进安装包”，而是：
 3. 只下载该档位需要的 GGUF；
 4. 用外部 @llama-server@ 提供 OpenAI 兼容接口，核心通过 @/v1/chat/completions@ 调用。
 
-模型和 llama.cpp 运行时都不属于安装包，用户可替换/删除，下载带大小与 SHA256 校验。
+模型权重不属于安装包，下载带大小与 SHA256 校验。桌面包不内置 llama.cpp 运行时（用 `--runtime` 或 `GOPLAY_LLAMA_SERVER` 指向外部 `llama-server`）；Android APK 为「手机完全独立」内置了 arm64 的 `libllama-server.so` 运行时，但同样不打包任何 GGUF。
 
 ## 档位
 
@@ -75,7 +75,9 @@ go run ./cmd/goplay-model bench --url http://127.0.0.1:8421/v1 --tier low --stri
 - @-llm api@：不启动本地服务；
 - @-llm offline@：只用启发式/Mock，适合测试。
 
-@GET /api/local/status@ 返回档位、硬件、模型是否存在、服务 PID、provider/model、错误与 note。@POST /api/local/recommend@ 供 Android 首次连接前按设备 RAM 询问档位，避免手机端内置模型。
+@GET /api/local/status@ 返回档位、硬件、模型是否存在、服务 PID、provider/model、错误与 note。@POST /api/local/recommend@ 供控制台按设备 RAM 询问档位。
+
+Android 上核心与 llama-server 都是 APK 内的 arm64 原生库，由 Kotlin 壳的子进程启动；核心通过 `GOPLAY_LLAMA_SERVER` 找到同目录的 `libllama-server.so`，模型下载到 App 私有目录后由 `llama.cpp` 加载。权重仍然按档位在首次使用时下载，不进安装包。
 
 ## 配置示例
 

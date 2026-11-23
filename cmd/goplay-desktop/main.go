@@ -147,13 +147,18 @@ func runGUI(opts service.Options, previewAddr string, width, height int, log *sl
 			}
 			return "", openPath(dir)
 		case "overlay":
-			target := "http://" + previewAddr + "/overlay"
+			baseURL := "http://" + previewAddr
 			svcMu.Lock()
 			if svc != nil {
-				target = svc.URL() + "overlay"
+				baseURL = strings.TrimSuffix(svc.URL(), "/")
 			}
 			svcMu.Unlock()
-			return "", openBrowser(target)
+			if err := launchNativeOverlay(baseURL); err != nil {
+				// goplay-overlay.exe is shipped with the Windows bundle. Fall
+				// back to the web overlay if the shell runs from a bare build.
+				return "", openBrowser(baseURL + "/overlay")
+			}
+			return "ok", nil
 		case "quit":
 			dispatch(func() { w.Terminate() })
 			return "ok", nil
@@ -300,6 +305,29 @@ func waitServer(base string, timeout time.Duration) bool {
 		time.Sleep(120 * time.Millisecond)
 	}
 	return false
+}
+
+// launchNativeOverlay starts the borderless always-on-top Windows overlay
+// shipped next to GoPlay.exe. It returns an error on other platforms or when
+// the helper is absent so the caller can fall back to the browser.
+func launchNativeOverlay(baseURL string) error {
+	if runtime.GOOS != "windows" {
+		return fmt.Errorf("native overlay is Windows-only")
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	helper := filepath.Join(filepath.Dir(exe), "goplay-overlay.exe")
+	if _, err := os.Stat(helper); err != nil {
+		return err
+	}
+	cmd := exec.Command(helper, "--base-url", baseURL)
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	go func() { _ = cmd.Wait() }()
+	return nil
 }
 
 func openBrowser(url string) error {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -46,74 +47,135 @@ type StreamProvider interface {
 
 var ErrNoProvider = errors.New("no LLM provider available")
 
+// Router is the single decision point for API-vs-local providers. It is
+// mutable at runtime so the model manager can attach a llama.cpp provider after
+// a download finishes; every field is guarded by mu.
 type Router struct {
-	Mode  string
-	API   Provider
-	Local Provider
+	mu    sync.RWMutex
+	mode  string
+	api   Provider
+	local Provider
 }
 
 func NewRouter(mode string, api, local Provider) *Router {
 	if mode == "" {
 		mode = "auto"
 	}
-	return &Router{Mode: mode, API: api, Local: local}
+	return &Router{mode: mode, api: api, local: local}
 }
 
-func (r *Router) Name() string { return "router:" + r.Mode }
+// Set replaces the mode and both providers atomically.
+func (r *Router) Set(mode string, api, local Provider) {
+	if mode == "" {
+		mode = "auto"
+	}
+	r.mu.Lock()
+	r.mode, r.api, r.local = mode, api, local
+	r.mu.Unlock()
+}
+
+// SetMode switches api/local/auto/offline without touching providers.
+func (r *Router) SetMode(mode string) {
+	if mode == "" {
+		mode = "auto"
+	}
+	r.mu.Lock()
+	r.mode = mode
+	r.mu.Unlock()
+}
+
+// SetAPI swaps the remote provider.
+func (r *Router) SetAPI(p Provider) {
+	r.mu.Lock()
+	r.api = p
+	r.mu.Unlock()
+}
+
+// SetLocal swaps the on-device provider.
+func (r *Router) SetLocal(p Provider) {
+	r.mu.Lock()
+	r.local = p
+	r.mu.Unlock()
+}
+
+// Mode returns the current routing mode.
+func (r *Router) Mode() string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.mode
+}
+
+// Providers returns the current provider pair.
+func (r *Router) Providers() (Provider, Provider) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.api, r.local
+}
+
+func (r *Router) snapshot() (string, Provider, Provider) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.mode, r.api, r.local
+}
+
+func (r *Router) Name() string { return "router:" + r.Mode() }
 
 // Available implements Provider so a Router can be injected anywhere a single
 // provider is expected (the policy layer uses this).
 func (r *Router) Available(ctx context.Context) bool {
-	switch r.Mode {
+	mode, api, local := r.snapshot()
+	switch mode {
 	case "offline":
 		return false
 	case "api":
-		return r.API != nil && r.API.Available(ctx)
+		return api != nil && api.Available(ctx)
 	case "local":
-		return r.Local != nil && r.Local.Available(ctx)
+		return local != nil && local.Available(ctx)
 	default:
-		if r.Local != nil && r.Local.Available(ctx) {
+		if local != nil && local.Available(ctx) {
 			return true
 		}
-		return r.API != nil && r.API.Available(ctx)
+		return api != nil && api.Available(ctx)
 	}
 }
 
 func (r *Router) Status(ctx context.Context) map[string]any {
-	out := map[string]any{"mode": r.Mode}
-	if r.API != nil {
-		out["api"] = r.API.Name()
-		out["api_available"] = r.API.Available(ctx)
+	mode, api, local := r.snapshot()
+	out := map[string]any{"mode": mode}
+	if api != nil {
+		out["api"] = api.Name()
+		out["api_available"] = api.Available(ctx)
 	}
-	if r.Local != nil {
-		out["local"] = r.Local.Name()
-		out["local_available"] = r.Local.Available(ctx)
+	if local != nil {
+		out["local"] = local.Name()
+		out["local_available"] = local.Available(ctx)
 	}
 	return out
 }
 
 func (r *Router) Complete(ctx context.Context, req Request) (Response, error) {
-	switch r.Mode {
+	mode, api, local := r.snapshot()
+	switch mode {
 	case "offline":
 		return Response{}, ErrNoProvider
 	case "api":
-		if r.API == nil {
+		if api == nil {
 			return Response{}, ErrNoProvider
 		}
-		return r.API.Complete(ctx, req)
+		return api.Complete(ctx, req)
 	case "local":
-		if r.Local == nil {
+		if local == nil {
 			return Response{}, ErrNoProvider
 		}
-		return r.Local.Complete(ctx, req)
+		return local.Complete(ctx, req)
 	default: // auto: prefer local (privacy, no API key), fall back to API
-		if r.Local != nil && r.Local.Available(ctx) {
-			if resp, err := r.Local.Complete(ctx, req); err == nil {
+		if local != nil && local.Available(ctx) {
+			if resp, err := local.Complete(ctx, req); err == nil {
 				return resp, nil
 			}
 		}
-		if r.API != nil && r.API.Available(ctx) {
-			return r.API.Complete(ctx, req)
+		if api != nil && api.Available(ctx) {
+			return api.Complete(ctx, req)
 		}
 		return Response{}, ErrNoProvider
 	}

@@ -365,12 +365,50 @@ func (b *builder) buildCLI(ctx context.Context) error {
 	return nil
 }
 
+// prepareAndroidNative builds the Go core for Android/arm64 and stages it with
+// the pinned llama-server runtime under jniLibs. The APK build itself only runs
+// Gradle, so a clean checkout cannot produce an APK that silently lacks a core.
+func (b *builder) prepareAndroidNative(ctx context.Context) error {
+	jni := filepath.Join(b.root, "android", "app", "src", "main", "jniLibs", "arm64-v8a")
+	if err := os.MkdirAll(jni, 0o755); err != nil {
+		return fmt.Errorf("create Android jniLibs: %w", err)
+	}
+	coreDst := filepath.Join(jni, "libgoplaycore.so")
+	b.log.Printf("-- android core (go build, arm64) --")
+	env := map[string]string{"CGO_ENABLED": "0", "GOOS": "android", "GOARCH": "arm64"}
+	if err := b.run(ctx, b.root, env, "go", "build", "-trimpath", "-buildmode=pie",
+		"-ldflags", b.ldflags(false), "-o", coreDst, "./cmd/goplayd"); err != nil {
+		return fmt.Errorf("build Android core: %w", err)
+	}
+	llamaSrc := filepath.Join(b.root, "third_party", "llama.cpp-android", "arm64-v8a", "libllama-server.so")
+	llamaDst := filepath.Join(jni, "libllama-server.so")
+	if st, err := os.Stat(llamaSrc); err != nil {
+		return fmt.Errorf("missing Android llama-server runtime at %s (see third_party/llama.cpp-android/README.goplay.md): %w", llamaSrc, err)
+	} else if st.IsDir() {
+		return fmt.Errorf("Android llama-server runtime path is a directory: %s", llamaSrc)
+	}
+	if err := copyFile(llamaSrc, llamaDst); err != nil {
+		return fmt.Errorf("stage Android llama-server: %w", err)
+	}
+	for _, f := range []string{coreDst, llamaDst} {
+		st, err := os.Stat(f)
+		if err != nil {
+			return err
+		}
+		b.log.Printf("  staged %s (%.1f MiB)", filepath.Base(f), float64(st.Size())/1024/1024)
+	}
+	return nil
+}
+
 func (b *builder) buildAndroid(ctx context.Context) error {
 	sdk, err := b.resolveSDK()
 	if err != nil {
 		return err
 	}
 	b.log.Printf("== android (sdk=%s) ==", sdk)
+	if err := b.prepareAndroidNative(ctx); err != nil {
+		return err
+	}
 	props := filepath.Join(b.root, "android", "local.properties")
 	if _, err := os.Stat(props); errors.Is(err, fs.ErrNotExist) {
 		line := "sdk.dir=" + escapeProperties(sdk) + "\n"

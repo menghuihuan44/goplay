@@ -13,6 +13,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -23,6 +24,7 @@ import (
 	"goplay/internal/bus"
 	"goplay/internal/config"
 	"goplay/internal/domain"
+	"goplay/internal/llm"
 	"goplay/internal/localmodel"
 	"goplay/internal/metrics"
 )
@@ -86,6 +88,13 @@ func (s *Server) routes() {
 	mux.HandleFunc("GET /metrics", s.metricsText)
 	mux.HandleFunc("GET /api/local/status", s.localStatus)
 	mux.HandleFunc("POST /api/local/recommend", s.localRecommend)
+	mux.HandleFunc("POST /api/local/download", s.localDownload)
+	mux.HandleFunc("POST /api/local/start", s.localStart)
+	mux.HandleFunc("POST /api/local/stop", s.localStop)
+	mux.HandleFunc("POST /api/local/cancel", s.localCancel)
+	mux.HandleFunc("GET /api/llm", s.getLLM)
+	mux.HandleFunc("POST /api/llm", s.updateLLM)
+	mux.HandleFunc("POST /api/llm/test", s.testLLM)
 	// Legacy mobile control surface (android/PROTOCOL.md v1).
 	mux.HandleFunc("POST /api/control/pause", s.legacyControl(s.mgr.Pause))
 	mux.HandleFunc("POST /api/control/resume", s.legacyControl(s.mgr.Resume))
@@ -138,8 +147,9 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
+	cfg := s.cfg
 	writeJSON(w, http.StatusOK, map[string]any{
-		"config":   s.cfg.Redacted(),
+		"config":   cfg.Redacted(),
 		"llm":      s.mgr.Router().Status(r.Context()),
 		"profiles": s.mgr.Profiles(),
 	})
@@ -350,13 +360,219 @@ func (s *Server) metricsText(w http.ResponseWriter, r *http.Request) {
 	io.WriteString(w, s.mgr.Metrics().Prometheus())
 }
 
-func (s *Server) localStatus(w http.ResponseWriter, r *http.Request) {
+func (s *Server) localDownload(w http.ResponseWriter, r *http.Request) {
+	rt := s.mgr.LocalRuntime()
+	if rt == nil {
+		writeError(w, http.StatusServiceUnavailable, "local runtime is not attached")
+		return
+	}
+	if err := rt.DownloadModel(); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"accepted": true, "status": rt.Status()})
+}
+
+func (s *Server) localStart(w http.ResponseWriter, r *http.Request) {
+	rt := s.mgr.LocalRuntime()
+	if rt == nil {
+		writeError(w, http.StatusServiceUnavailable, "local runtime is not attached")
+		return
+	}
+	cfg := s.cfg
+	cfg.LLM.Mode = "local"
+	if err := cfg.Save(filepath.Join(cfg.DataDir, "config.json")); err != nil {
+		writeError(w, http.StatusInternalServerError, "save config: "+err.Error())
+		return
+	}
+	s.cfg = cfg
+	rt.SetMode("local")
+	s.mgr.Router().SetMode("local")
+	go s.ensureLocalProvider()
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"accepted": true,
+		"note":     "downloading if needed, then starting llama-server on loopback",
+		"status":   rt.Status(),
+	})
+}
+
+func (s *Server) localStop(w http.ResponseWriter, r *http.Request) {
+	rt := s.mgr.LocalRuntime()
+	if rt == nil {
+		writeError(w, http.StatusServiceUnavailable, "local runtime is not attached")
+		return
+	}
+	if err := rt.StopServer(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.mgr.Router().SetLocal(nil)
+	s.mgr.Router().SetMode("auto")
+	rt.SetMode("auto")
+	cfg := s.cfg
+	cfg.LLM.Mode = "auto"
+	if err := cfg.Save(filepath.Join(cfg.DataDir, "config.json")); err == nil {
+		s.cfg = cfg
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"stopped": true, "status": rt.Status()})
+}
+
+func (s *Server) localCancel(w http.ResponseWriter, r *http.Request) {
+	rt := s.mgr.LocalRuntime()
+	if rt == nil {
+		writeError(w, http.StatusServiceUnavailable, "local runtime is not attached")
+		return
+	}
+	rt.CancelDownload()
+	writeJSON(w, http.StatusOK, map[string]any{"cancelled": true, "status": rt.Status()})
+}
+
+// ensureLocalProvider downloads (user-initiated) and launches llama-server, then
+// attaches the provider to the router. The triggering HTTP request returns
+// immediately, so this uses a background context.
+func (s *Server) ensureLocalProvider() {
+	rt := s.mgr.LocalRuntime()
+	if rt == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+	if err := rt.StartModel(ctx); err != nil {
+		return
+	}
+	if p := rt.Provider(); p != nil {
+		s.mgr.Router().SetLocal(p)
+	}
+}
+
+func (s *Server) getLLM(w http.ResponseWriter, r *http.Request) {
+	cfg := s.cfg
 	body := map[string]any{
-		"mode":         s.cfg.LLM.Mode,
-		"models_dir":   s.cfg.Local.ModelsDir,
-		"runtime_path": s.cfg.Local.RuntimePath,
-		"server_port":  s.cfg.Local.ServerPort,
-		"tier":         s.cfg.Local.PreferredTier,
+		"mode":        s.mgr.Router().Mode(),
+		"base_url":    cfg.LLM.BaseURL,
+		"model":       cfg.LLM.Model,
+		"has_api_key": strings.TrimSpace(cfg.LLM.APIKey) != "",
+		"temperature": cfg.LLM.Temperature,
+		"max_tokens":  cfg.LLM.MaxTokens,
+		"timeout_ms":  cfg.LLM.TimeoutMS,
+		"vision":      cfg.LLM.Vision,
+		"router":      s.mgr.Router().Status(r.Context()),
+	}
+	if st, ok := s.mgr.LocalStatus(); ok {
+		body["local"] = st
+	}
+	writeJSON(w, http.StatusOK, body)
+}
+
+type llmUpdateRequest struct {
+	Mode        string   `json:"mode"`
+	BaseURL     string   `json:"base_url"`
+	APIKey      string   `json:"api_key"`
+	ClearKey    bool     `json:"clear_key"`
+	Model       string   `json:"model"`
+	Temperature *float64 `json:"temperature"`
+	MaxTokens   *int     `json:"max_tokens"`
+	TimeoutMS   *int     `json:"timeout_ms"`
+	Vision      *bool    `json:"vision"`
+}
+
+func (s *Server) updateLLM(w http.ResponseWriter, r *http.Request) {
+	var req llmUpdateRequest
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	mode := strings.ToLower(strings.TrimSpace(req.Mode))
+	switch mode {
+	case "", "auto", "api", "local", "offline":
+	default:
+		writeError(w, http.StatusBadRequest, "mode must be auto, api, local or offline")
+		return
+	}
+	cfg := s.mgr.Config()
+	if mode != "" {
+		cfg.LLM.Mode = mode
+	}
+	if v := strings.TrimSpace(req.BaseURL); v != "" {
+		cfg.LLM.BaseURL = strings.TrimRight(v, "/")
+	}
+	if req.ClearKey {
+		cfg.LLM.APIKey = ""
+	} else if v := strings.TrimSpace(req.APIKey); v != "" {
+		cfg.LLM.APIKey = v
+	}
+	if v := strings.TrimSpace(req.Model); v != "" {
+		cfg.LLM.Model = v
+	}
+	if req.Temperature != nil {
+		cfg.LLM.Temperature = *req.Temperature
+	}
+	if req.MaxTokens != nil {
+		cfg.LLM.MaxTokens = *req.MaxTokens
+	}
+	if req.TimeoutMS != nil {
+		cfg.LLM.TimeoutMS = *req.TimeoutMS
+	}
+	if req.Vision != nil {
+		cfg.LLM.Vision = *req.Vision
+	}
+	var api llm.Provider
+	if cfg.LLM.BaseURL != "" && cfg.LLM.Model != "" {
+		api = llm.NewOpenAI(llm.OpenAIConfig{
+			BaseURL: cfg.LLM.BaseURL, APIKey: cfg.LLM.APIKey, Model: cfg.LLM.Model,
+			Timeout:     time.Duration(cfg.LLM.TimeoutMS) * time.Millisecond,
+			Temperature: cfg.LLM.Temperature, MaxTokens: cfg.LLM.MaxTokens,
+			Provider: "openai-compatible",
+		})
+	}
+	s.mgr.Router().SetAPI(api)
+	s.mgr.Router().SetMode(cfg.LLM.Mode)
+	if rt := s.mgr.LocalRuntime(); rt != nil {
+		rt.SetMode(cfg.LLM.Mode)
+		if cfg.LLM.Mode == "local" {
+			go s.ensureLocalProvider()
+		}
+	}
+	if err := cfg.Save(filepath.Join(cfg.DataDir, "config.json")); err != nil {
+		writeError(w, http.StatusInternalServerError, "save config: "+err.Error())
+		return
+	}
+	s.cfg = cfg
+	s.getLLM(w, r)
+}
+
+func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
+	api, _ := s.mgr.Router().Providers()
+	if api == nil {
+		writeError(w, http.StatusBadRequest, "no API provider configured")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+	defer cancel()
+	start := time.Now()
+	resp, err := api.Complete(ctx, llm.Request{
+		System: "You are a connectivity probe. Reply with exactly: ok",
+		Prompt: "ok", MaxTokens: 8, Temperature: 0.1,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "model": resp.Model, "provider": resp.Provider,
+		"latency_ms": float64(time.Since(start).Microseconds()) / 1000,
+		"text":       strings.TrimSpace(resp.Text),
+	})
+}
+
+func (s *Server) localStatus(w http.ResponseWriter, r *http.Request) {
+	cfg := s.cfg
+	body := map[string]any{
+		"mode":         s.mgr.Router().Mode(),
+		"models_dir":   cfg.Local.ModelsDir,
+		"runtime_path": cfg.Local.RuntimePath,
+		"server_port":  cfg.Local.ServerPort,
+		"tier":         cfg.Local.PreferredTier,
 		"llm":          s.mgr.Router().Status(r.Context()),
 		"note":         "model tiers are downloaded on first run, never bundled in the installer",
 	}

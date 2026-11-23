@@ -12,13 +12,16 @@ coverage.out
 /.tmp-smoke*/
 /.tmpdesktop*/
 /.tmpdist-run*/
-/.tmp*/
+/.tmp*
 /models/
 *.gguf
 *.part
 
 # native build tree (sources live in native/)
 /native/build/
+
+# llama.cpp upstream checkout (prebuilt Android runtime is under llama.cpp-android/)
+/third_party/llama.cpp/
 
 # Android build outputs
 /android/.gradle/

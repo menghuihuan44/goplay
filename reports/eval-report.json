@@ -1,8 +1,8 @@
 {
   "version": "eval-v1",
   "mode": "quick",
-  "generated_at": "2026-11-23T20:09:03.0575312+08:00",
-  "duration_ms": 11570,
+  "generated_at": "2026-11-23T23:56:50.1010967+08:00",
+  "duration_ms": 12932,
   "environment": {
     "go_version": "go1.27.4",
     "os": "windows",
@@ -18,7 +18,7 @@
     "checks_passed": 47,
     "checks_failed": 0,
     "verdict": "PASS",
-    "duration_ms": 11570
+    "duration_ms": 12932
   },
   "checks": [
     {
@@ -284,7 +284,7 @@
       "id": "control.recovery_latency",
       "suite": "control",
       "label": "recovery within 2s of release",
-      "value": 132,
+      "value": 131,
       "unit": "ms",
       "op": "\u003c=",
       "threshold": 2000,
@@ -294,7 +294,7 @@
       "id": "control.handover_metric",
       "suite": "control",
       "label": "engine recorded a handover latency below 1s",
-      "value": 9,
+      "value": 8,
       "unit": "ms",
       "op": "\u003c=",
       "threshold": 1000,
@@ -304,7 +304,7 @@
       "id": "control.intervention_latency",
       "suite": "control",
       "label": "constraint applied within 1s",
-      "value": 9,
+      "value": 10,
       "unit": "ms",
       "op": "\u003c=",
       "threshold": 1000,
@@ -445,7 +445,7 @@
       "id": "localmodel.ttft",
       "suite": "localmodel",
       "label": "first token under 500ms",
-      "value": 10,
+      "value": 1,
       "unit": "ms",
       "op": "\u003c=",
       "threshold": 500,
@@ -455,7 +455,7 @@
       "id": "localmodel.tps",
       "suite": "localmodel",
       "label": "decode speed at least 20 tokens/sec",
-      "value": 106.77101754114355,
+      "value": 95.08200228434511,
       "unit": "tps",
       "op": "\u003e=",
       "threshold": 20,
@@ -509,7 +509,7 @@
       "id": "perception",
       "title": "Perception accuracy under renderer noise",
       "status": "pass",
-      "duration_ms": 914,
+      "duration_ms": 1110,
       "metrics": [
         {
           "id": "perception.noise_0.000.hp_accuracy",
@@ -774,7 +774,7 @@
       "id": "learning",
       "title": "Learning convergence across episodes",
       "status": "pass",
-      "duration_ms": 8967,
+      "duration_ms": 8963,
       "metrics": [
         {
           "id": "learning.episodes_completed",
@@ -1053,7 +1053,7 @@
       "id": "memory",
       "title": "Memory recall under a 256KB budget",
       "status": "pass",
-      "duration_ms": 411,
+      "duration_ms": 717,
       "metrics": [
         {
           "id": "memory.eviction.budget_bytes",
@@ -1313,7 +1313,7 @@
       "id": "control",
       "title": "Human takeover and intervention boundaries",
       "status": "pass",
-      "duration_ms": 434,
+      "duration_ms": 441,
       "metrics": [
         {
           "id": "control.takeover_latency_ms",
@@ -1330,13 +1330,13 @@
         {
           "id": "control.recovery_latency_ms",
           "label": "Release -\u003e running and acting",
-          "value": 132,
+          "value": 131,
           "unit": "ms"
         },
         {
           "id": "control.handover_metric_avg_ms",
           "label": "engine handover_latency_ms average",
-          "value": 9,
+          "value": 8,
           "unit": "ms",
           "note": "recorded by engine on the first human tick"
         },
@@ -1349,7 +1349,7 @@
         {
           "id": "control.intervention_latency_ms",
           "label": "Submit constraint -\u003e applied to Control",
-          "value": 9,
+          "value": 10,
           "unit": "ms"
         },
         {
@@ -1404,7 +1404,7 @@
         {
           "id": "control.recovery_latency",
           "label": "recovery within 2s of release",
-          "value": 132,
+          "value": 131,
           "unit": "ms",
           "threshold": 2000,
           "op": "\u003c=",
@@ -1413,7 +1413,7 @@
         {
           "id": "control.handover_metric",
           "label": "engine recorded a handover latency below 1s",
-          "value": 9,
+          "value": 8,
           "unit": "ms",
           "threshold": 1000,
           "op": "\u003c=",
@@ -1422,7 +1422,7 @@
         {
           "id": "control.intervention_latency",
           "label": "constraint applied within 1s",
-          "value": 9,
+          "value": 10,
           "unit": "ms",
           "threshold": 1000,
           "op": "\u003c=",
@@ -1483,14 +1483,14 @@
               "preference": "你太激进了 | hint: play less aggressively",
               "outcome": "applied",
               "reason": "converted to soft weights",
-              "at": "2026-11-23T20:09:13.774493+08:00"
+              "at": "2026-11-23T23:57:01.3219061+08:00"
             }
           ],
           "constraints": 1,
           "hints": [
             "你太激进了 | hint: play less aggressively"
           ],
-          "intervention_latency_ms": 9,
+          "intervention_latency_ms": 10,
           "play_continues": true,
           "post_constraint_actions": 5,
           "post_constraint_attacks": 0,
@@ -1500,9 +1500,9 @@
         "takeover": {
           "actions_after_freeze": 5,
           "actions_before_freeze": 5,
-          "handover_avg_ms": 9,
+          "handover_avg_ms": 8,
           "human_takeovers": 1,
-          "recovery_latency_ms": 132,
+          "recovery_latency_ms": 131,
           "takeover_latency_ms": 9
         }
       },
@@ -1516,7 +1516,7 @@
       "id": "concurrency",
       "title": "Concurrent instance isolation",
       "status": "pass",
-      "duration_ms": 708,
+      "duration_ms": 716,
       "metrics": [
         {
           "id": "concurrency.2.min_actions",
@@ -1611,11 +1611,11 @@
             "min_actions": 6,
             "action_counts": [
               6,
-              34
+              33
             ],
             "progress": [
               0.15000000000000002,
-              0.5441666666666667
+              0.515
             ],
             "crosstalk_violations": 0,
             "isolation_violations": 0
@@ -1650,12 +1650,12 @@
       "id": "localmodel",
       "title": "Local model TTFT/TPS metric chain",
       "status": "pass",
-      "duration_ms": 132,
+      "duration_ms": 982,
       "metrics": [
         {
           "id": "localmodel.stream_ttft_ms",
           "label": "SSE first-token latency",
-          "value": 10,
+          "value": 1,
           "unit": "ms",
           "note": "measured by llm.OpenAI.CompleteStream"
         },
@@ -1674,7 +1674,7 @@
         {
           "id": "localmodel.stream_tps",
           "label": "decode tokens per second after first token",
-          "value": 106.77101754114355,
+          "value": 95.08200228434511,
           "unit": "tps",
           "note": "tokens / (latency - TTFT)"
         },
@@ -1687,7 +1687,7 @@
         {
           "id": "localmodel.metrics_tps_gauge",
           "label": "LocalTPS gauge value",
-          "value": 106.77101754114355,
+          "value": 95.08200228434511,
           "unit": "tps"
         },
         {
@@ -1699,14 +1699,14 @@
         {
           "id": "localmodel.warmup_ms",
           "label": "preflight request including first loopback connect",
-          "value": 2,
+          "value": 855,
           "unit": "ms",
           "note": "absorbed before TTFT timing"
         },
         {
           "id": "localmodel.ttft",
           "label": "first token under 500ms",
-          "value": 10,
+          "value": 1,
           "unit": "ms",
           "threshold": 500,
           "op": "\u003c=",
@@ -1715,7 +1715,7 @@
         {
           "id": "localmodel.tps",
           "label": "decode speed at least 20 tokens/sec",
-          "value": 106.77101754114355,
+          "value": 95.08200228434511,
           "unit": "tps",
           "threshold": 20,
           "op": "\u003e=",
@@ -1767,10 +1767,10 @@
         "mock_latency_ms": 15,
         "mock_text": "{\"kind\":\"attack\",\"reason\":\"mock\"}",
         "stream_latency_ms": 85,
-        "tps": 106.77101754114355,
-        "ttft_ms": 10,
+        "tps": 95.08200228434511,
+        "ttft_ms": 1,
         "want_text": "alpha beta gamma delta alpha beta gamma delta ",
-        "warmup_ms": 2
+        "warmup_ms": 855
       },
       "notes": [
         "The SSE server is local httptest; no external network or real model is required.",

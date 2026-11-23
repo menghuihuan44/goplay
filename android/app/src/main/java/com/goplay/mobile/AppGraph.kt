@@ -10,6 +10,7 @@ import com.goplay.mobile.data.LogBus
 import com.goplay.mobile.data.Metrics
 import com.goplay.mobile.data.SessionState
 import com.goplay.mobile.data.SettingsStore
+import com.goplay.mobile.local.LocalCore
 import com.goplay.mobile.net.CoreClient
 import com.goplay.mobile.net.CoreRest
 import kotlinx.coroutines.CoroutineScope
@@ -45,6 +46,9 @@ class AppGraph(context: Context) {
     )
     val rest = CoreRest(settingsStore = settingsStore, logs = logs)
     val actions = ActionRouter(client = client, metrics = metrics, logs = logs)
+
+    /** Bundled Go core; starts as a child process on first launch. */
+    val localCore = LocalCore(appContext, settingsStore, logs)
 
     private val _session = MutableStateFlow(SessionState())
     val session: StateFlow<SessionState> = _session.asStateFlow()

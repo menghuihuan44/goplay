@@ -87,6 +87,11 @@ func (s *Scheduler) Submit(msg Message) {
 		msg.ID = fmt.Sprintf("msg-%d", time.Now().UnixNano())
 	}
 	s.buffer.Submit(msg)
+	// Acknowledge in the transcript immediately so the user can see that the
+	// instruction is queued even when the instance is stopped. Classification,
+	// constraints and preference writes still happen at the next boundary.
+	s.AddChat(ChatMessage{ID: msg.ID, Role: "user", Text: msg.Text, Kind: "queued", At: msg.At})
+	s.AddChat(ChatMessage{ID: msg.ID + "-r", Role: "assistant", Text: "已收到，将在下一个决策周期生效。", Kind: "queued"})
 }
 
 func (s *Scheduler) Pending() int { return s.buffer.Len() }
@@ -99,6 +104,13 @@ func (s *Scheduler) AddChat(m ChatMessage) {
 		m.At = time.Now()
 	}
 	s.mu.Lock()
+	for i := range s.chat {
+		if s.chat[i].ID == m.ID {
+			s.chat[i] = m
+			s.mu.Unlock()
+			return
+		}
+	}
 	s.chat = append(s.chat, m)
 	if len(s.chat) > 200 {
 		s.chat = s.chat[len(s.chat)-200:]

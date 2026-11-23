@@ -2,8 +2,8 @@
 
 - **Schema**: eval-v1
 - **Mode**: quick
-- **Generated**: 2026-11-23T20:09:03+08:00
-- **Duration**: 11570 ms
+- **Generated**: 2026-11-23T23:56:50+08:00
+- **Duration**: 12932 ms
 - **Environment**: windows/amd64, Go go1.27.4, 16 CPUs
 
 ## Verdict: PASS
@@ -39,9 +39,9 @@ suites: 6 passed / 0 failed; threshold checks: 47 passed / 0 failed
 | 23 | memory | must-remember event Recall@5 after compression | 1.0000 | >= 0.9500 | PASS |
 | 24 | control | human takeover applied within 1s | 9.00 ms | <= 1000.00 ms | PASS |
 | 25 | control | no actions execute while the human is in control | 1 | == 1 | PASS |
-| 26 | control | recovery within 2s of release | 132.00 ms | <= 2000.00 ms | PASS |
-| 27 | control | engine recorded a handover latency below 1s | 9.00 ms | <= 1000.00 ms | PASS |
-| 28 | control | constraint applied within 1s | 9.00 ms | <= 1000.00 ms | PASS |
+| 26 | control | recovery within 2s of release | 131.00 ms | <= 2000.00 ms | PASS |
+| 27 | control | engine recorded a handover latency below 1s | 8.00 ms | <= 1000.00 ms | PASS |
+| 28 | control | constraint applied within 1s | 10.00 ms | <= 1000.00 ms | PASS |
 | 29 | control | no attack after the constraint boundary | 0 | == 0 | PASS |
 | 30 | control | play continues after constraint | 5 | >= 3 | PASS |
 | 31 | control | preference applied within 1s | 11.00 ms | <= 1000.00 ms | PASS |
@@ -55,14 +55,14 @@ suites: 6 passed / 0 failed; threshold checks: 47 passed / 0 failed
 | 39 | concurrency | 4 instances: no cross-talk on human takeover | 0 | == 0 | PASS |
 | 40 | concurrency | 4 instances: no shared game/memory/ID | 0 | == 0 | PASS |
 | 41 | concurrency | 4 instances: every instance keeps acting | 6 | >= 5 | PASS |
-| 42 | localmodel | first token under 500ms | 10.00 ms | <= 500.00 ms | PASS |
-| 43 | localmodel | decode speed at least 20 tokens/sec | 106.8 | >= 20.0 | PASS |
+| 42 | localmodel | first token under 500ms | 1.00 ms | <= 500.00 ms | PASS |
+| 43 | localmodel | decode speed at least 20 tokens/sec | 95.1 | >= 20.0 | PASS |
 | 44 | localmodel | all 8 stream deltas parsed | 8 | == 8 | PASS |
 | 45 | localmodel | streamed text matches the mock | 1 | == 1 | PASS |
 | 46 | localmodel | TTFT histogram and TPS gauge are wired | 1 | == 1 | PASS |
 | 47 | localmodel | llm.Mock completes offline | 1 | == 1 | PASS |
 
-## Perception accuracy under renderer noise (pass, 914 ms)
+## Perception accuracy under renderer noise (pass, 1110 ms)
 
 | Metric | Value | Threshold |
 |--------|-------|-----------|
@@ -184,7 +184,7 @@ suites: 6 passed / 0 failed; threshold checks: 47 passed / 0 failed
 
 </details>
 
-## Learning convergence across episodes (pass, 8967 ms)
+## Learning convergence across episodes (pass, 8963 ms)
 
 | Metric | Value | Threshold |
 |--------|-------|-----------|
@@ -420,7 +420,7 @@ suites: 6 passed / 0 failed; threshold checks: 47 passed / 0 failed
 
 </details>
 
-## Memory recall under a 256KB budget (pass, 411 ms)
+## Memory recall under a 256KB budget (pass, 717 ms)
 
 | Metric | Value | Threshold |
 |--------|-------|-----------|
@@ -527,16 +527,16 @@ suites: 6 passed / 0 failed; threshold checks: 47 passed / 0 failed
 
 </details>
 
-## Human takeover and intervention boundaries (pass, 434 ms)
+## Human takeover and intervention boundaries (pass, 441 ms)
 
 | Metric | Value | Threshold |
 |--------|-------|-----------|
 | Touch -> human_control latency | 9.00 ms | - |
 | Actions frozen during human control (1 = yes) | 1 | - |
-| Release -> running and acting | 132.00 ms | - |
-| engine handover_latency_ms average | 9.00 ms | - |
+| Release -> running and acting | 131.00 ms | - |
+| engine handover_latency_ms average | 8.00 ms | - |
 | HumanTakeovers counter | 1 | - |
-| Submit constraint -> applied to Control | 9.00 ms | - |
+| Submit constraint -> applied to Control | 10.00 ms | - |
 | attack actions after constraint (grace: first action) | 0 | - |
 | actions executed after constraint | 5 | - |
 | Submit preference -> risk_aversion weight | 11.00 ms | - |
@@ -544,9 +544,9 @@ suites: 6 passed / 0 failed; threshold checks: 47 passed / 0 failed
 | actions still advance after preference (1 = yes) | 1 | - |
 | human takeover applied within 1s | 9.00 ms | <= 1000.00 ms |
 | no actions execute while the human is in control | 1 | == 1 |
-| recovery within 2s of release | 132.00 ms | <= 2000.00 ms |
-| engine recorded a handover latency below 1s | 9.00 ms | <= 1000.00 ms |
-| constraint applied within 1s | 9.00 ms | <= 1000.00 ms |
+| recovery within 2s of release | 131.00 ms | <= 2000.00 ms |
+| engine recorded a handover latency below 1s | 8.00 ms | <= 1000.00 ms |
+| constraint applied within 1s | 10.00 ms | <= 1000.00 ms |
 | no attack after the constraint boundary | 0 | == 0 |
 | play continues after constraint | 5 | >= 3 |
 | preference applied within 1s | 11.00 ms | <= 1000.00 ms |
@@ -568,14 +568,14 @@ suites: 6 passed / 0 failed; threshold checks: 47 passed / 0 failed
         "preference": "你太激进了 | hint: play less aggressively",
         "outcome": "applied",
         "reason": "converted to soft weights",
-        "at": "2026-11-23T20:09:13.774493+08:00"
+        "at": "2026-11-23T23:57:01.3219061+08:00"
       }
     ],
     "constraints": 1,
     "hints": [
       "你太激进了 | hint: play less aggressively"
     ],
-    "intervention_latency_ms": 9,
+    "intervention_latency_ms": 10,
     "play_continues": true,
     "post_constraint_actions": 5,
     "post_constraint_attacks": 0,
@@ -585,9 +585,9 @@ suites: 6 passed / 0 failed; threshold checks: 47 passed / 0 failed
   "takeover": {
     "actions_after_freeze": 5,
     "actions_before_freeze": 5,
-    "handover_avg_ms": 9,
+    "handover_avg_ms": 8,
     "human_takeovers": 1,
-    "recovery_latency_ms": 132,
+    "recovery_latency_ms": 131,
     "takeover_latency_ms": 9
   }
 }
@@ -595,7 +595,7 @@ suites: 6 passed / 0 failed; threshold checks: 47 passed / 0 failed
 
 </details>
 
-## Concurrent instance isolation (pass, 708 ms)
+## Concurrent instance isolation (pass, 716 ms)
 
 | Metric | Value | Threshold |
 |--------|-------|-----------|
@@ -624,11 +624,11 @@ suites: 6 passed / 0 failed; threshold checks: 47 passed / 0 failed
       "min_actions": 6,
       "action_counts": [
         6,
-        34
+        33
       ],
       "progress": [
         0.15000000000000002,
-        0.5441666666666667
+        0.515
       ],
       "crosstalk_violations": 0,
       "isolation_violations": 0
@@ -658,20 +658,20 @@ suites: 6 passed / 0 failed; threshold checks: 47 passed / 0 failed
 
 </details>
 
-## Local model TTFT/TPS metric chain (pass, 132 ms)
+## Local model TTFT/TPS metric chain (pass, 982 ms)
 
 | Metric | Value | Threshold |
 |--------|-------|-----------|
-| SSE first-token latency | 10.00 ms | - |
+| SSE first-token latency | 1.00 ms | - |
 | SSE full stream latency | 85.00 ms | - |
 | streamed completion tokens | 8 | - |
-| decode tokens per second after first token | 106.8 | - |
+| decode tokens per second after first token | 95.1 | - |
 | LocalTTFTMS histogram samples | 1 | - |
-| LocalTPS gauge value | 106.8 | - |
+| LocalTPS gauge value | 95.1 | - |
 | llm.Mock latency | 15.00 ms | - |
-| preflight request including first loopback connect | 2.00 ms | - |
-| first token under 500ms | 10.00 ms | <= 500.00 ms |
-| decode speed at least 20 tokens/sec | 106.8 | >= 20.0 |
+| preflight request including first loopback connect | 855.00 ms | - |
+| first token under 500ms | 1.00 ms | <= 500.00 ms |
+| decode speed at least 20 tokens/sec | 95.1 | >= 20.0 |
 | all 8 stream deltas parsed | 8 | == 8 |
 | streamed text matches the mock | 1 | == 1 |
 | TTFT histogram and TPS gauge are wired | 1 | == 1 |
@@ -691,10 +691,10 @@ suites: 6 passed / 0 failed; threshold checks: 47 passed / 0 failed
   "mock_latency_ms": 15,
   "mock_text": "{\"kind\":\"attack\",\"reason\":\"mock\"}",
   "stream_latency_ms": 85,
-  "tps": 106.77101754114355,
-  "ttft_ms": 10,
+  "tps": 95.08200228434511,
+  "ttft_ms": 1,
   "want_text": "alpha beta gamma delta alpha beta gamma delta ",
-  "warmup_ms": 2
+  "warmup_ms": 855
 }
 ```
 

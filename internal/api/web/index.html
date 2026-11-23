@@ -2,124 +2,254 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>GoPlay · 外部 AI 游戏代理</title>
-<link rel="stylesheet" href="/static/style.css">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0d0a">
+<title>GoPlay · 手机上的 AI 游戏代理</title>
+<link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
-<header class="topbar">
-  <a class="brand" href="/">
-    <span class="brand-mark"><i></i><i></i><i></i></span>
-    <span class="brand-name">GoPlay</span>
-    <span class="brand-sub">外部 AI 游戏代理</span>
-  </a>
-  <div class="top-meta">
-    <span class="live"><span class="live-dot"></span> daemon <b id="daemonAddr">127.0.0.1:8420</b></span>
-    <span class="top-stat"><b id="statRunning">0</b> 运行中</span>
-    <span class="top-stat"><b id="statInstances">0</b> 实例</span>
-    <span class="top-stat"><b id="statActions">0</b> 动作</span>
-    <a class="ghost-btn" href="/overlay" target="_blank">灵动岛</a>
-    <button class="ghost-btn hidden" id="desktopData">数据目录</button>
-    <button class="ghost-btn hidden" id="desktopQuit">退出</button>
-    <button class="primary-btn" id="newBtn">＋ 新实例</button>
+<div class="app">
+  <aside class="sidebar">
+    <a class="brand" href="#" data-page="overview">
+      <span class="brand-mark"><i></i><i></i><i></i></span>
+      <span><b>GoPlay</b><small>外部 AI 游戏代理</small></span>
+    </a>
+    <nav class="nav" aria-label="主导航">
+      <button class="nav-item active" data-page="overview"><span class="ico">◉</span>总览</button>
+      <button class="nav-item" data-page="games"><span class="ico">▤</span>游戏</button>
+      <button class="nav-item" data-page="ai"><span class="ico">✦</span>AI 大脑</button>
+      <button class="nav-item" data-page="memory"><span class="ico">◫</span>记忆</button>
+      <button class="nav-item" data-page="settings"><span class="ico">⚙</span>设置</button>
+    </nav>
+    <div class="side-foot">
+      <div class="side-live"><span class="dot" id="sideDot"></span><span id="sideState">连接核心中</span></div>
+      <div class="side-note">纯外部感知 · 不注入游戏</div>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <button class="icon-btn menu-btn" id="menuBtn" aria-label="菜单">☰</button>
+      <div class="top-title" id="topTitle">总览</div>
+      <div class="top-meta">
+        <span class="live" title="本机核心地址"><span class="dot" id="daemonDot"></span><b id="daemonAddr">127.0.0.1:8420</b></span>
+        <span class="top-stat"><b id="statRunning">0</b> 运行中</span>
+        <span class="top-stat hide-sm"><b id="statActions">0</b> 动作</span>
+        <button class="pill-btn hide-sm" id="overlayBtn">灵动岛</button>
+        <button class="primary-btn" id="newBtn">＋ 新游戏</button>
+      </div>
+    </header>
+
+    <main class="content">
+      <section class="page active" id="page-overview">
+        <div class="page-head">
+          <div>
+            <p class="eyebrow" id="modeEyebrow">外部感知 · 本机运行</p>
+            <h1>今天玩什么？</h1>
+            <p class="lede">选一个游戏，AI 自己看画面、做决策、打下去。你随时可以接管，也可以直接和它说话。</p>
+          </div>
+          <button class="primary-btn big" data-new-game>开始自动游玩</button>
+        </div>
+
+        <div class="setup" id="setupSteps"></div>
+
+        <div class="metrics-strip">
+          <div class="metric"><span>决策延迟 P95</span><b id="mDecision">—</b><small>ms</small></div>
+          <div class="metric"><span>感知延迟 P95</span><b id="mPerception">—</b><small>ms</small></div>
+          <div class="metric"><span>动作延迟 P95</span><b id="mAction">—</b><small>ms</small></div>
+          <div class="metric"><span>接管延迟 P50</span><b id="mHandover">—</b><small>ms</small></div>
+        </div>
+
+        <div class="section-head">
+          <div><h2>正在玩</h2><p>每个游戏独立决策、独立记忆；人工操作会立即交还控制权。</p></div>
+          <button class="link-btn" data-page="games">全部游戏 →</button>
+        </div>
+        <div id="overviewInstances" class="overview-grid"><div class="empty">还没有游戏。点右上角「＋ 新游戏」开始。</div></div>
+
+        <div class="two-col">
+          <section class="panel">
+            <div class="panel-head"><div><h3>最近发生</h3><p>决策边界、动作、接管和回合结果。</p></div><span class="live small"><span class="dot"></span>实时</span></div>
+            <div id="eventFeed" class="event-feed"><div class="muted">等待事件…</div></div>
+          </section>
+          <section class="panel">
+            <div class="panel-head"><div><h3>跨游戏偏好</h3><p>只存风格和安全约束，经适配层变成软权重。</p></div><button class="link-btn" data-page="memory">管理 →</button></div>
+            <div id="globalMini" class="mini-prefs"><span class="muted">暂无偏好</span></div>
+          </section>
+        </div>
+      </section>
+
+      <section class="page" id="page-games">
+        <div class="page-head compact">
+          <div><p class="eyebrow">游戏实例</p><h1>游戏</h1><p class="lede">一个游戏一个实例。Android 上选择已安装的游戏，创建后自动启动并开始看画面。</p></div>
+          <button class="primary-btn" data-new-game>＋ 新游戏</button>
+        </div>
+        <div class="section-head">
+          <div class="filters">
+            <button class="chip active" data-filter="all">全部</button>
+            <button class="chip" data-filter="running">运行中</button>
+            <button class="chip" data-filter="human">人工接管</button>
+            <button class="chip" data-filter="stopped">已停止</button>
+          </div>
+        </div>
+        <div id="gameList" class="game-grid"><div class="empty">加载中…</div></div>
+        <div class="section-head"><div><h2>可用的游戏配置</h2><p>Lua 描述游戏语义；不熟悉的游戏会从零开始试探和学习。</p></div></div>
+        <div id="profileGrid" class="profile-grid"></div>
+      </section>
+
+      <section class="page" id="page-ai">
+        <div class="page-head compact">
+          <div><p class="eyebrow">两种使用方式</p><h1>AI 大脑</h1><p class="lede">用 API Key 接云端模型，或用本机小模型。本机模型按设备档位推荐、首次使用时下载，不打包进安装包。</p></div>
+        </div>
+        <div id="brainCard" class="brain-card"></div>
+
+        <div class="ai-grid">
+          <section class="panel">
+            <div class="panel-head"><div><h3>API Key</h3><p>OpenAI 兼容接口，可填任意中转地址。</p></div><span class="tag" id="apiTag">未配置</span></div>
+            <form id="apiForm" class="form">
+              <label>接口地址<input id="apiBase" placeholder="https://api.openai.com/v1" autocomplete="off"></label>
+              <label>模型名<input id="apiModel" placeholder="gpt-4o-mini" autocomplete="off"></label>
+              <label>API Key<input id="apiKey" type="password" placeholder="sk-...（留空则不修改）" autocomplete="new-password"></label>
+              <div class="form-row">
+                <label>温度<input id="apiTemp" type="number" step="0.1" min="0" max="2" placeholder="0.2"></label>
+                <label>最大 token<input id="apiTokens" type="number" min="32" max="8192" placeholder="512"></label>
+              </div>
+              <label class="check"><input id="apiVision" type="checkbox"> 支持图片输入（视觉模型）</label>
+              <div class="form-actions">
+                <button type="submit" class="primary-btn">保存并启用 API</button>
+                <button type="button" class="pill-btn" id="apiTest">测试连接</button>
+                <button type="button" class="link-btn danger-text" id="apiClear">清除 Key</button>
+              </div>
+              <p class="form-note">Key 只保存在本机数据目录，接口永远不会把它回传到页面。</p>
+            </form>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head"><div><h3>本机小模型</h3><p>感知过滤 → 策略推理 → 规则校验，三个角色分工，不是模型投票。</p></div><span class="tag" id="localTag">未启动</span></div>
+            <div id="localSummary" class="local-summary"></div>
+            <div id="localModels" class="model-list"></div>
+            <div class="form-actions wrap">
+              <button class="primary-btn" id="localStart">启用本机 AI</button>
+              <button class="pill-btn" id="localStop">停止</button>
+              <button class="link-btn" id="localRefresh">刷新状态</button>
+            </div>
+            <div id="localNote" class="form-note"></div>
+          </section>
+        </div>
+
+        <section class="panel info-panel">
+          <h3>为什么不是一个很大的模型？</h3>
+          <p>手机 RAM 和算力有限。GoPlay 把任务拆开：轻量模型或规则做状态过滤，推理级小模型只做策略选择，规则引擎做输出校验和动作序列化。下载的是与设备档位匹配的一个策略模型，不是把所有模型塞进安装包。</p>
+        </section>
+      </section>
+
+      <section class="page" id="page-memory">
+        <div class="page-head compact">
+          <div><p class="eyebrow">分层记忆</p><h1>记忆</h1><p class="lede">全局只存跨游戏偏好；具体游戏状态留在各自实例。工作记忆、摘要层、可检索事实会在预算内自动压缩。</p></div>
+        </div>
+        <div class="two-col">
+          <section class="panel">
+            <div class="panel-head"><div><h3>跨游戏偏好</h3><p>进入决策前经过实例适配层，冲突时游戏规则优先。</p></div></div>
+            <form id="prefForm" class="form compact-form">
+              <label>偏好<textarea id="prefText" rows="2" maxlength="120" placeholder="例如：宁可保守，也不要频繁送死"></textarea></label>
+              <div class="form-row">
+                <label>权重<select id="prefWeight">
+                  <option value="risk_aversion">更谨慎</option>
+                  <option value="aggression">更激进</option>
+                  <option value="exploration">偏好探索</option>
+                  <option value="resource_aversion">节省资源</option>
+                </select></label>
+                <button type="submit" class="primary-btn">写入全局</button>
+              </div>
+            </form>
+            <div id="prefList" class="pref-list"></div>
+          </section>
+          <section class="panel">
+            <div class="panel-head"><div><h3>各游戏记忆</h3><p>固定在存储预算内，优先保留「必须记住」的事件。</p></div></div>
+            <div id="memoryInstances" class="memory-list"></div>
+          </section>
+        </div>
+      </section>
+
+      <section class="page" id="page-settings">
+        <div class="page-head compact"><div><p class="eyebrow">本机核心</p><h1>设置</h1><p class="lede">GoPlay 是外部软件：不注入进程、不读写游戏内存、不挂钩图形 API。</p></div></div>
+        <div class="settings-grid">
+          <section class="panel">
+            <h3>连接</h3>
+            <div class="kv"><span>核心地址</span><b id="setAddr">—</b></div>
+            <div class="kv"><span>数据目录</span><b id="setData">—</b></div>
+            <div class="kv"><span>版本</span><b id="setVersion">—</b></div>
+            <div class="kv"><span>AI 模式</span><b id="setMode">—</b></div>
+            <div class="form-actions"><button class="pill-btn" id="overlayBtn2">打开灵动岛</button><button class="pill-btn" id="reconnectBtn">重新连接</button></div>
+          </section>
+          <section class="panel">
+            <h3>安全边界</h3>
+            <ul class="check-list">
+              <li>只通过截屏 / 录屏 API 获取画面</li>
+              <li>不调用 OpenProcess / ReadProcessMemory</li>
+              <li>不挂钩图形 API，不注入 DLL / so</li>
+              <li>不加载未签名内核驱动</li>
+              <li>人工输入优先，立即交还控制权</li>
+            </ul>
+          </section>
+          <section class="panel" id="hostPanel">
+            <h3>这台设备</h3>
+            <div id="hostInfo" class="muted">浏览器模式。</div>
+            <div class="form-actions">
+              <button class="pill-btn hidden" id="desktopData">数据目录</button>
+              <button class="pill-btn hidden" id="desktopQuit">退出 GoPlay</button>
+            </div>
+          </section>
+          <section class="panel hidden" id="androidPermPanel">
+            <h3>Android 权限</h3>
+            <div class="kv"><span>本机核心</span><b id="andCore">—</b></div>
+            <div class="kv"><span>截屏 / 录屏</span><b id="andCapture">—</b></div>
+            <div class="kv"><span>无障碍服务</span><b id="andAccess">—</b></div>
+            <div class="kv"><span>悬浮窗</span><b id="andOverlay">—</b></div>
+            <div class="kv"><span>通知</span><b id="andNotif">—</b></div>
+            <div class="kv"><span>当前游戏</span><b id="andInstance">—</b></div>
+            <div class="form-actions">
+              <button class="pill-btn" id="androidCapture">开始截屏</button>
+              <button class="pill-btn" id="androidStopCapture">停止截屏</button>
+              <button class="pill-btn" id="androidAccessibility">无障碍设置</button>
+              <button class="pill-btn" id="androidOverlayPerm">悬浮窗权限</button>
+              <button class="pill-btn" id="androidNotification">通知权限</button>
+              <button class="pill-btn" id="androidAppSettings">应用设置</button>
+            </div>
+            <p class="muted" style="margin:10px 0 0;font-size:11.5px;line-height:1.6">第一次使用请依次授权：悬浮窗 → 无障碍 → 开始截屏。悬浮球可展开对话；桌面图标与悬浮球里的「面板」都能回到这里。</p>
+          </section>
+        </div>
+      </section>
+    </main>
   </div>
-</header>
+</div>
 
-<main class="shell">
-  <section class="hero">
-    <div class="hero-copy">
-      <p class="eyebrow"><span>纯外部感知</span> / 不注入 / 不读内存 / 不挂钩图形 API</p>
-      <h1>让 AI 自己学会玩，<br><em>你随时可以接管。</em></h1>
-      <p class="lede">截屏理解画面，Lua 描述游戏语义，策略层在事件边界决策。人工输入触发即时交还；对话先进入缓冲区，下一决策周期才生效。</p>
-      <div class="hero-badges">
-        <span>Android 优先</span><span>Windows 原生浮窗</span><span>本地小模型分工</span><span>分层记忆</span>
-      </div>
-    </div>
-    <div class="hero-metrics">
-      <div class="metric">
-        <span class="metric-label">决策延迟 P95</span>
-        <strong id="mDecision">—</strong><small>ms</small>
-      </div>
-      <div class="metric">
-        <span class="metric-label">感知延迟 P95</span>
-        <strong id="mPerception">—</strong><small>ms</small>
-      </div>
-      <div class="metric">
-        <span class="metric-label">动作延迟 P95</span>
-        <strong id="mAction">—</strong><small>ms</small>
-      </div>
-      <div class="metric">
-        <span class="metric-label">接管延迟 P50</span>
-        <strong id="mHandover">—</strong><small>ms</small>
-      </div>
-      <div class="metric wide">
-        <span class="metric-label">全局记忆 / 跨游戏偏好</span>
-        <div id="globalMini" class="mini-prefs"><span class="muted">暂无偏好</span></div>
-      </div>
-    </div>
-  </section>
-
-  <section class="section-head">
-    <div>
-      <h2>游戏实例</h2>
-      <p>每个实例拥有独立 Lua 状态、独立记忆空间和独立决策循环。</p>
-    </div>
-    <div class="section-tools">
-      <button class="chip active" data-filter="all">全部</button>
-      <button class="chip" data-filter="running">运行中</button>
-      <button class="chip" data-filter="human">人工接管</button>
-    </div>
-  </section>
-  <section id="instances" class="grid"><div class="empty">正在连接 daemon…</div></section>
-
-  <section class="lower">
-    <div class="panel">
-      <div class="panel-head">
-        <div><h3>全局偏好</h3><p>只保存跨游戏风格与安全约束；不保存任何具体游戏状态。</p></div>
-        <button class="ghost-btn small" id="prefToggle">＋ 添加</button>
-      </div>
-      <form id="prefForm" class="pref-form hidden">
-        <input id="prefText" placeholder="例如：宁可保守，也不要频繁送死" maxlength="120">
-        <select id="prefWeight">
-          <option value="risk_aversion">更谨慎</option>
-          <option value="aggression">更激进</option>
-          <option value="exploration">偏好探索</option>
-          <option value="resource_aversion">节省资源</option>
-        </select>
-        <button class="primary-btn small" type="submit">写入全局</button>
-        <p class="form-note">进入实例决策前会经过适配层：冲突时实例规则优先，其余转成软权重。</p>
-      </form>
-      <div id="prefList" class="pref-list"></div>
-    </div>
-    <div class="panel">
-      <div class="panel-head">
-        <div><h3>事件流</h3><p>调度边界、接管、动作与回合结果。</p></div>
-        <span class="live small"><span class="live-dot"></span> websocket</span>
-      </div>
-      <div id="eventFeed" class="event-feed"><div class="muted">等待事件…</div></div>
-    </div>
-  </section>
-
-  <footer class="footer">
-    <span>GoPlay 0.1 · 外部软件，不注入游戏进程</span>
-    <span>指标：感知准确率 / 收敛局数 / Recall@K / 接管延迟 / 本地 TTFT·TPS</span>
-  </footer>
-</main>
-
-<div id="modal" class="modal hidden">
+<div id="modal" class="modal hidden" role="dialog" aria-modal="true">
   <div class="modal-card">
-    <div class="modal-head"><h3>新建游戏实例</h3><button class="icon-btn" id="closeModal">×</button></div>
-    <form id="createForm" class="create-form">
-      <label>实例 ID<input id="fId" required pattern="[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}" value="dungeon"></label>
-      <label>显示名称<input id="fName" placeholder="地牢试炼"></label>
+    <div class="modal-head"><div><h3>新游戏</h3><p>选择在哪玩，剩下的交给 AI。</p></div><button class="icon-btn" id="closeModal">×</button></div>
+    <form id="createForm" class="form">
+      <label>游戏运行在
+        <select id="fSource">
+          <option value="android">这台手机（推荐）</option>
+          <option value="windows">这台电脑（全屏感知）</option>
+          <option value="mock">Mock 地下城（演示 / 评测）</option>
+        </select>
+      </label>
+      <div id="androidPickWrap" class="hidden">
+        <label>手机上的游戏
+          <select id="fAndroidGame"><option value="">加载已安装游戏…</option></select>
+        </label>
+        <button type="button" class="link-btn" id="refreshGames">刷新游戏列表</button>
+      </div>
+      <label>显示名称<input id="fName" placeholder="例如：地牢试炼"></label>
       <label>游戏配置<select id="fProfile"></select></label>
       <div class="form-row">
-        <label>随机种子<input id="fSeed" type="number" value="7"></label>
-        <label>回合上限<input id="fEpisodes" type="number" min="1" max="1000" value="10"></label>
+        <label>实例 ID<input id="fId" pattern="[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}" placeholder="game-xxxx"></label>
+        <label>回合上限<input id="fEpisodes" type="number" min="1" max="1000" value="1"></label>
       </div>
       <label class="check"><input id="fAuto" type="checkbox" checked> 创建后立即开始自动游玩</label>
-      <p class="form-note">Mock 地下城用于离线演示与评测：像素感知 → Lua 语义 → UCB/LLM 决策 → 动作执行 → 记忆压缩。</p>
-      <div class="modal-actions"><button type="button" class="ghost-btn" id="cancelCreate">取消</button><button class="primary-btn" type="submit">创建并开始</button></div>
+      <label class="check" id="launchWrap"><input id="fLaunch" type="checkbox" checked> 创建后自动启动这个游戏</label>
+      <p class="form-note" id="createNote">Android 上需要先授予录屏和无障碍权限；悬浮球可随时打开对话。</p>
+      <div class="modal-actions"><button type="button" class="pill-btn" id="cancelCreate">取消</button><button class="primary-btn" type="submit">创建并开始</button></div>
     </form>
   </div>
 </div>
