@@ -107,6 +107,15 @@ class ScreenCaptureService : Service() {
             // made the island vanish with no way back short of reopening the app.
             if (!stopping) onProjectionLost("系统结束了投屏")
         }
+
+        /**
+         * Android 14+ tells us the captured content changed size. This is the
+         * authoritative signal for rotation/foldables; handle it the same way
+         * as a display change instead of creating a second VirtualDisplay.
+         */
+        override fun onCapturedContentResize(width: Int, height: Int) {
+            if (!stopping) scheduleDisplayReconfigure("投屏内容尺寸变化 " + width + "x" + height)
+        }
     }
 
     private val displayListener = object : DisplayManager.DisplayListener {
@@ -115,21 +124,31 @@ class ScreenCaptureService : Service() {
 
         override fun onDisplayChanged(displayId: Int) {
             if (displayId != Display.DEFAULT_DISPLAY) return
-            val now = SystemClock.elapsedRealtime()
-            if (now - lastDisplayRestart < 800L) return
-            lastDisplayRestart = now
-            mainHandler.postDelayed({
-                if (projection != null && !stopping && !paused) {
-                    graph.logs.log("显示尺寸/旋转变化，重建虚拟显示")
-                    teardownDisplay()
-                    if (!setupCapture()) {
-                        failAndStop("旋转后重建截屏失败")
-                    } else {
-                        publishStatus()
-                    }
-                }
-            }, 450L)
+            scheduleDisplayReconfigure("显示尺寸/旋转变化")
         }
+    }
+
+    /**
+     * Coalesces the burst of display callbacks that arrives during a rotation
+     * animation, then reconfigures the *existing* VirtualDisplay.
+     *
+     * A MediaProjection consent token may create only one VirtualDisplay. The
+     * old code released that display and called createVirtualDisplay() again
+     * with the same token, which always fails on Android 14 ("旋转后重建截屏
+     * 失败") and made the recovery loop: consent -> game -> rotate -> fail.
+     */
+    private fun scheduleDisplayReconfigure(reason: String) {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastDisplayRestart < 800L) return
+        lastDisplayRestart = now
+        mainHandler.postDelayed({
+            if (projection == null || stopping || paused) return@postDelayed
+            if (reconfigureDisplay(reason)) {
+                publishStatus()
+                overlay?.setStatus(null, isError = false)
+                updateOverlayState(connected = graph.client.isConnected)
+            }
+        }, 450L)
     }
 
     override fun onCreate() {
@@ -155,6 +174,7 @@ class ScreenCaptureService : Service() {
             ACTION_RESUME -> resumeCapture()
             ACTION_RELOAD_SETTINGS -> reloadSettings()
             ACTION_EXPAND_OVERLAY -> expandOverlay()
+            ACTION_RECOVER -> recoverCapture()
             // No action means a system restart (START_NOT_STICKY, so in practice
             // never) — only give up when there is nothing left worth keeping.
             else -> if (projection == null && overlay == null) stopSelf()
@@ -253,22 +273,33 @@ class ScreenCaptureService : Service() {
         }
     }
 
-    private fun setupCapture(): Boolean {
-        val projection = projection ?: return false
+    private data class DisplayTarget(val width: Int, val height: Int)
+
+    /** Physical screen size, scaled down to maxEdge and aligned to even pixels. */
+    private fun targetDisplaySize(): DisplayTarget? {
         val metrics = realDisplayMetrics()
         val screenWidth = metrics.widthPixels
         val screenHeight = metrics.heightPixels
-        if (screenWidth < 16 || screenHeight < 16) {
-            STATE.update { it.copy(error = "屏幕尺寸异常") }
-            return false
-        }
-        rotation = currentRotation()
+        if (screenWidth < 16 || screenHeight < 16) return null
         val scale = min(1f, maxEdge.toFloat() / maxOf(screenWidth, screenHeight).toFloat())
         var width = (screenWidth * scale).roundToInt().coerceAtLeast(16)
         var height = (screenHeight * scale).roundToInt().coerceAtLeast(16)
         width = width - (width % 2)
         height = height - (height % 2)
-        if (width < 16 || height < 16) return false
+        if (width < 16 || height < 16) return null
+        return DisplayTarget(width, height)
+    }
+
+    private fun setupCapture(): Boolean {
+        val projection = projection ?: return false
+        val target = targetDisplaySize()
+        if (target == null) {
+            STATE.update { it.copy(error = "屏幕尺寸异常") }
+            return false
+        }
+        rotation = currentRotation()
+        val width = target.width
+        val height = target.height
 
         val thread = HandlerThread("goplay-capture").also { it.start() }
         val handler = Handler(thread.looper)
@@ -313,6 +344,97 @@ class ScreenCaptureService : Service() {
         lastSentAt = 0L
         fpsWindowStart = SystemClock.elapsedRealtime()
         fpsFrames = 0
+        return true
+    }
+
+    /**
+     * Resizes the running display without touching the MediaProjection token.
+     *
+     * Rotation must never call createVirtualDisplay() again: the consent token
+     * is single-use. We resize the surface and, only if that works, swap in a
+     * new ImageReader. Any failure keeps the previous reader and dimensions, so
+     * the AI keeps receiving frames instead of stopping the capture entirely.
+     */
+    private fun reconfigureDisplay(reason: String): Boolean {
+        val display = virtualDisplay ?: return false
+        val target = targetDisplaySize() ?: return false
+        val newRotation = currentRotation()
+        if (target.width == captureWidth && target.height == captureHeight) {
+            rotation = newRotation
+            graph.logs.log(reason + "：尺寸未变 " + captureWidth + "x" + captureHeight + "，保持投屏")
+            return true
+        }
+
+        val oldReader = imageReader
+        val oldThread = captureThread
+        val oldWidth = captureWidth
+        val oldHeight = captureHeight
+        val density = resources.displayMetrics.densityDpi.coerceAtLeast(160)
+        val thread = HandlerThread("goplay-capture").also { it.start() }
+        val handler = Handler(thread.looper)
+        val reader = try {
+            ImageReader.newInstance(target.width, target.height, PixelFormat.RGBA_8888, 2)
+        } catch (e: Exception) {
+            graph.logs.error(reason + "：创建新 ImageReader 失败，保持旧画面", e)
+            thread.quitSafely()
+            return false
+        }
+        reader.setOnImageAvailableListener({ r -> onImageAvailable(r) }, handler)
+
+        val resized = try {
+            display.resize(target.width, target.height, density)
+            true
+        } catch (e: Exception) {
+            graph.logs.error(reason + "：调整虚拟显示尺寸失败，保持旧画面", e)
+            false
+        }
+        if (!resized) {
+            try {
+                reader.close()
+            } catch (_: Exception) {
+            }
+            thread.quitSafely()
+            return false
+        }
+
+        val surfaceSet = try {
+            display.setSurface(reader.surface)
+            true
+        } catch (e: Exception) {
+            graph.logs.error(reason + "：切换画面 Surface 失败，回退旧尺寸", e)
+            false
+        }
+        if (!surfaceSet) {
+            try {
+                display.resize(oldWidth, oldHeight, density)
+            } catch (_: Exception) {
+            }
+            try {
+                reader.close()
+            } catch (_: Exception) {
+            }
+            thread.quitSafely()
+            return false
+        }
+
+        imageReader = reader
+        captureThread = thread
+        captureHandler = handler
+        captureWidth = target.width
+        captureHeight = target.height
+        rotation = newRotation
+        lastSentAt = 0L
+        fpsWindowStart = SystemClock.elapsedRealtime()
+        fpsFrames = 0
+        try {
+            oldReader?.close()
+        } catch (_: Exception) {
+        }
+        oldThread?.quitSafely()
+        graph.logs.log(
+            reason + "：投屏已调整为 " + target.width + "x" + target.height +
+                " rotation=" + rotation,
+        )
         return true
     }
 
@@ -438,13 +560,10 @@ class ScreenCaptureService : Service() {
         targetFps = settings.targetFps
         maxEdge = settings.maxEdge
         if (applyToDisplay && projection != null && oldMaxEdge != maxEdge) {
-            graph.logs.log("截图长边变更 " + oldMaxEdge + " -> " + maxEdge + "，重建虚拟显示")
-            teardownDisplay()
-            if (!setupCapture()) {
-                failAndStop("应用新设置时重建截屏失败")
-                return
+            graph.logs.log("截图长边变更 " + oldMaxEdge + " -> " + maxEdge + "，调整虚拟显示")
+            if (reconfigureDisplay("应用截图设置")) {
+                publishStatus()
             }
-            publishStatus()
         }
         if (projection != null) {
             updateOverlayState(connected = graph.client.isConnected)
@@ -480,20 +599,7 @@ class ScreenCaptureService : Service() {
                 }
 
                 override fun onRecoverCapture() {
-                    graph.logs.log("悬浮球恢复截屏：打开主界面重新授权")
-                    try {
-                        startActivity(
-                            Intent(this@ScreenCaptureService, MainActivity::class.java).apply {
-                                addFlags(
-                                    Intent.FLAG_ACTIVITY_NEW_TASK or
-                                        Intent.FLAG_ACTIVITY_SINGLE_TOP,
-                                )
-                                putExtra(MainActivity.EXTRA_START_CAPTURE, true)
-                            },
-                        )
-                    } catch (e: Exception) {
-                        graph.logs.log("从悬浮球恢复截屏失败: " + e.message)
-                    }
+                    mainHandler.post { recoverCapture() }
                 }
 
                 override fun onMessage(text: String) {
@@ -531,6 +637,46 @@ class ScreenCaptureService : Service() {
             updateOverlayState(connected = graph.client.isConnected)
         } else {
             graph.logs.log("悬浮球添加失败")
+        }
+    }
+
+    /**
+     * Pill "recover" action. If the projection is still alive we can rebuild
+     * the surface in place; only a genuinely revoked projection needs the
+     * system consent dialog again.
+     */
+    private fun recoverCapture() {
+        if (stopping) return
+        if (projection != null && virtualDisplay != null) {
+            if (reconfigureDisplay("手动恢复截屏")) {
+                degraded = false
+                lastStopReason = null
+                paused = false
+                publishStatus()
+                overlay?.setStatus(null, isError = false)
+                updateOverlayState(connected = graph.client.isConnected)
+                updateNotification(describeCapture(), paused = false)
+                graph.logs.log("截屏已原位恢复")
+                return
+            }
+        }
+        graph.logs.log("投屏授权已失效，打开主界面重新选择录屏范围")
+        openMainForCapture()
+    }
+
+    private fun openMainForCapture() {
+        try {
+            startActivity(
+                Intent(this, MainActivity::class.java).apply {
+                    addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_ACTIVITY_SINGLE_TOP,
+                    )
+                    putExtra(MainActivity.EXTRA_START_CAPTURE, true)
+                },
+            )
+        } catch (e: Exception) {
+            graph.logs.log("从悬浮球恢复截屏失败: " + (e.message ?: e.javaClass.simpleName))
         }
     }
 
@@ -714,6 +860,7 @@ class ScreenCaptureService : Service() {
         const val ACTION_RESUME = "com.goplay.mobile.action.RESUME_CAPTURE"
         const val ACTION_RELOAD_SETTINGS = "com.goplay.mobile.action.RELOAD_SETTINGS"
         const val ACTION_EXPAND_OVERLAY = "com.goplay.mobile.action.EXPAND_OVERLAY"
+        const val ACTION_RECOVER = "com.goplay.mobile.action.RECOVER_CAPTURE"
 
         const val EXTRA_RESULT_CODE = "result_code"
         const val EXTRA_DATA = "result_data"
