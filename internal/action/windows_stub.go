@@ -18,6 +18,8 @@ func NewWindowsExecutor(dll string, width, height int) (*WindowsExecutor, error)
 	return nil, errors.New("windows executor is only available on Windows")
 }
 
+func (e *WindowsExecutor) SetTargetTitles([]string) {}
+
 func (e *WindowsExecutor) Describe() string { return "windows-sendinput (unavailable)" }
 
 func (e *WindowsExecutor) Close() error { return nil }

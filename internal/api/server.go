@@ -176,6 +176,7 @@ type createRequest struct {
 	Name          string `json:"name"`
 	ProfileID     string `json:"profile_id"`
 	SourceKind    string `json:"source_kind"`
+	TargetWindow  string `json:"target_window"`
 	Seed          int64  `json:"seed"`
 	MaxEpisodes   int    `json:"max_episodes"`
 	TickMS        int    `json:"tick_ms"`
@@ -193,9 +194,14 @@ func (s *Server) createInstance(w http.ResponseWriter, r *http.Request) {
 	if req.AutoStart != nil {
 		auto = *req.AutoStart
 	}
+	if req.SourceKind == app.SourceWindows && strings.TrimSpace(req.TargetWindow) == "" {
+		writeError(w, http.StatusBadRequest, "Windows 实例必须填写游戏窗口标题（target_window）。只在这个窗口前台时才会发送键鼠，避免误操作到聊天窗口或其它程序。")
+		return
+	}
 	spec := app.Spec{
 		ID: req.ID, Name: req.Name, ProfileID: req.ProfileID, SourceKind: req.SourceKind,
-		Seed: req.Seed, MaxEpisodes: req.MaxEpisodes, TickMS: req.TickMS,
+		TargetWindow: req.TargetWindow,
+		Seed:         req.Seed, MaxEpisodes: req.MaxEpisodes, TickMS: req.TickMS,
 		HumanResumeMS: req.HumanResumeMS, AutoStart: auto,
 	}
 	view, err := s.mgr.Create(spec)

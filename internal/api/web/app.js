@@ -289,7 +289,7 @@ function fullCard(v){
   return '<article class="game-card" data-card="'+esc(v.id)+'">'
     +'<div class="gc-head"><div style="min-width:0;flex:1"><h3>'+esc(v.name||v.id)+'</h3><div class="gc-meta">'+sourceIcon(v.source_kind)+' '+esc(v.profile||'')+' · seed '+esc(v.seed||0)+'</div></div>'+outcome+'<span class="status '+st.key+'">'+st.label+'</span></div>'
     +(errorActive(v)?errorCard(v):'')
-    +(v.waiting?'<p class="gc-notes wait-note">AI 正在等待手机画面：'+esc(v.wait_reason||'连接暂时中断')+'。核心保持运行并自动重连，恢复后会继续操作；这不是动作错误。</p>':'')
+    +(v.waiting?'<p class="gc-notes wait-note">AI 正在等待：'+esc(v.wait_reason||'连接暂时中断')+'。核心保持运行并自动恢复，恢复后会继续操作；这不是动作错误。</p>':'')
     +'<div class="gc-summary"><span class="dot '+(running?'on':'')+'"></span><span>'+esc(disp.summary||'等待第一帧…')+'</span></div>'
     +(progress!==null?'<div class="progress"><div class="labels"><span>'+esc(disp.progressLabel)+'</span><b>'+fmtPct(progress)+'</b></div><div class="bar"><i style="width:'+fmtPct(progress)+'%"></i></div></div>':'')
     +'<div class="gc-stats mini-stats"><div><span>动作</span><b>'+Math.round(stat(v,'actions',0))+'</b></div><div><span>决策</span><b>'+Math.round(stat(v,'decisions',0))+'</b></div><div><span>错误</span><b class="'+(stat(v,'errors',0)?'danger-text':'')+'">'+Math.round(stat(v,'errors',0))+'</b></div></div>'
@@ -782,7 +782,7 @@ function openModal(profileId){
   if(!S.staticLoaded) loadStatic();
   var src=S.isAndroid?'android':(window.goplayDesktop?'windows':'mock');
   $('#fSource').value=src;
-  $('#fName').value=''; $('#fId').value=nextID();
+  $('#fName').value=''; $('#fTargetWindow').value=''; $('#fId').value=nextID();
   $('#fEpisodes').value='1'; $('#fAuto').checked=true; $('#fLaunch').checked=true;
   $('#fAndroidGame').innerHTML='<option value="">加载已安装游戏…</option>';
   $('#fWindowsGame').innerHTML='<option value="">加载已安装游戏…</option>';
@@ -834,12 +834,14 @@ async function createGame(ev){
   var id=$('#fId').value.trim();
   var profile=$('#fProfile').value;
   if(src==='android'&&!pkg){toast('先选择一个已安装的游戏',true);return}
+  if(src==='windows'&&!($('#fTargetWindow').value||'').trim()){toast('Windows 游戏必须填写游戏窗口标题，AI 只在这个窗口前台时才会操作',true);return}
   if(!name&&pkg){var opt=$('#fAndroidGame').selectedOptions[0];name=opt?opt.getAttribute('data-label')||pkg:''}
   if(!name&&winGame){var wopt=$('#fWindowsGame').selectedOptions[0];name=wopt?wopt.getAttribute('data-name')||'':''}
   if(!name){toast('给这个游戏起个名字',true);return}
   if(!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(id)){toast('实例 ID 只能包含字母、数字、下划线和短横线',true);return}
   var auto=$('#fAuto').checked, launch=$('#fLaunch').checked;
-  var body={id:id,name:name,profile_id:profile,source_kind:src,seed:0,max_episodes:Math.max(1,parseInt($('#fEpisodes').value||'1',10)),auto_start:(src==='android'||src==='windows')?false:auto};
+  var targetWindow=($('#fTargetWindow').value||'').trim();
+  var body={id:id,name:name,profile_id:profile,source_kind:src,target_window:src==='windows'?targetWindow:'',seed:0,max_episodes:Math.max(1,parseInt($('#fEpisodes').value||'1',10)),auto_start:(src==='android'||src==='windows')?false:auto};
   var btn=$('#createForm button[type="submit"]'); btn.disabled=true; btn.textContent='创建中…';
   try{
     await api('/api/instances',{method:'POST',body:body});
@@ -996,6 +998,11 @@ function appendText(el,text){
   if(!el) return;
   el.value=(el.value?el.value+' ':'')+text;
   el.focus();
+}
+function speakNarration(text){
+  if(!text) return;
+  try{if(localStorage.getItem('goplay_narration')==='off') return}catch(e){}
+  speakReply(text);
 }
 function speakReply(text){
   if(!text) return;
@@ -1296,7 +1303,7 @@ function bind(){
     }
   });
   $('#fSource').addEventListener('change',function(){updateSourceUI();if(this.value==='android')loadAndroidGames();if(this.value==='windows')loadWindowsGames()});
-  $('#fWindowsGame').addEventListener('change',function(){var o=this.selectedOptions[0];if(o&&o.getAttribute('data-name')){$('#fName').value=o.getAttribute('data-name');$('#fProfile').value='generic'}});
+  $('#fWindowsGame').addEventListener('change',function(){var o=this.selectedOptions[0];if(o&&o.getAttribute('data-name')){$('#fName').value=o.getAttribute('data-name');$('#fProfile').value='generic';if(!($('#fTargetWindow').value||'').trim())$('#fTargetWindow').value=o.getAttribute('data-name')}});
   $('#fAndroidGame').addEventListener('change',function(){
     var opt=this.selectedOptions[0]; if(!opt||!this.value) return;
     var label=opt.getAttribute('data-label')||this.value;
@@ -1335,6 +1342,7 @@ function connectEvents(){
         var e=JSON.parse(ev.data);
         S.events.unshift(e); if(S.events.length>30) S.events.length=30;
         renderEvents();
+        if(e.type==='instance.narration'&&e.data&&e.data.text) speakNarration(e.data.text);
         if(e.type==='instance.error'&&e.instance_id) ensureDiag(e.instance_id,true);
       }catch(err){}
     };

@@ -16,6 +16,11 @@ import (
 
 var ErrHumanControl = errors.New("human has control; agent action suppressed")
 
+// ErrTargetNotFocused means the game window is not foreground, so injecting
+// input would land in another application. The engine treats it as a safe pause,
+// not as a game action failure.
+var ErrTargetNotFocused = errors.New("target game window is not focused")
+
 type Executor interface {
 	Do(ctx context.Context, a domain.Action) error
 	Describe() string
@@ -32,6 +37,13 @@ type HumanState struct {
 
 type HumanDetector interface {
 	State(ctx context.Context) HumanState
+}
+
+// InjectedInputMarker is implemented by detectors that can distinguish the
+// agent's own synthesized input from a real human keystroke. The engine calls
+// MarkInjected immediately after a successful SendInput action.
+type InjectedInputMarker interface {
+	MarkInjected()
 }
 
 // MockHuman simulates a user grabbing the controls. Tests and demos can call

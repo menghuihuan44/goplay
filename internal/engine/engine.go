@@ -93,6 +93,7 @@ type Runner struct {
 	humanSince   time.Time
 	humanAt      time.Time
 	waiting      bool
+	waitKind     string
 	waitReason   string
 	waitSince    time.Time
 	lastActions  []domain.Action
@@ -171,6 +172,7 @@ func (r *Runner) Start() {
 	r.mu.Unlock()
 
 	r.emit("instance.started", map[string]any{"profile": r.opts.Profile.ID})
+	r.narrate(fmt.Sprintf("我开始玩「%s」了。我会先看画面，边玩边学。", r.opts.Name))
 	r.frameWG.Add(1)
 	go func() {
 		defer r.frameWG.Done()
@@ -517,6 +519,13 @@ func (r *Runner) tick(ctx context.Context) {
 	}
 }
 
+// narrate publishes a short, factual self-talk line. The Android client speaks it
+// through TTS even when no voice conversation is active, and the web console
+// shows it in the event feed.
+func (r *Runner) narrate(text string) {
+	r.emit("instance.narration", map[string]any{"text": text})
+}
+
 func (r *Runner) markHuman(hs action.HumanState, now time.Time) {
 	r.mu.Lock()
 	first := !r.human
@@ -559,16 +568,24 @@ func (r *Runner) drain(kind scheduler.BoundaryKind, now time.Time) scheduler.Bou
 // waiting state instead of a terminal error. It reports whether the error was
 // transient so callers can return without marking the instance failed.
 func (r *Runner) noteWaiting(err error) bool {
-	if !errors.Is(err, domain.ErrTransient) {
+	transient := errors.Is(err, domain.ErrTransient)
+	unfocused := errors.Is(err, action.ErrTargetNotFocused)
+	if !transient && !unfocused {
 		return false
 	}
 	reason := err.Error()
 	reason = strings.TrimPrefix(reason, domain.ErrTransient.Error()+": ")
 	reason = strings.TrimSuffix(reason, ": "+domain.ErrTransient.Error())
+	reason = strings.TrimPrefix(reason, action.ErrTargetNotFocused.Error()+": ")
 	now := time.Now()
 	r.mu.Lock()
-	first := !r.waiting
+	kind := "capture"
+	if unfocused {
+		kind = "target"
+	}
+	first := !r.waiting || r.waitKind != kind
 	r.waiting = true
+	r.waitKind = kind
 	r.waitReason = reason
 	if first {
 		r.waitSince = now
@@ -586,6 +603,7 @@ func (r *Runner) clearWaiting() {
 	was := r.waiting
 	since := r.waitSince
 	r.waiting = false
+	r.waitKind = ""
 	r.waitReason = ""
 	r.waitSince = time.Time{}
 	r.mu.Unlock()
@@ -594,8 +612,32 @@ func (r *Runner) clearWaiting() {
 	}
 }
 
+// clearCaptureWaiting ends a screen-loss wait but deliberately leaves a
+// game-window-focus wait in place until an action actually succeeds. Otherwise
+// a successful screenshot would make the UI flap between waiting and running on
+// every tick while the game is in the background.
+func (r *Runner) clearCaptureWaiting() {
+	r.mu.Lock()
+	isCapture := r.waiting && r.waitKind == "capture"
+	r.mu.Unlock()
+	if isCapture {
+		r.clearWaiting()
+	}
+}
+
 func (r *Runner) step(ctx context.Context) error {
 	start := time.Now()
+	// A desktop executor can require its game window to be foreground. Check
+	// before grabbing: otherwise a background game would make us capture and
+	// analyze whatever private window the user is actually using.
+	if guard, ok := r.opts.Executor.(interface {
+		TargetFocused() (bool, string)
+	}); ok {
+		if focused, why := guard.TargetFocused(); !focused {
+			r.noteWaiting(fmt.Errorf("%w: %s", action.ErrTargetNotFocused, why))
+			return nil
+		}
+	}
 	frame, err := r.opts.Source.Grab(ctx)
 	if err != nil {
 		if r.noteWaiting(err) {
@@ -603,7 +645,7 @@ func (r *Runner) step(ctx context.Context) error {
 		}
 		return fmt.Errorf("capture: %w", err)
 	}
-	r.clearWaiting()
+	r.clearCaptureWaiting()
 	r.offerFrame(frame)
 	st, world, err := r.opts.Analyzer.Analyze(frame)
 	if err != nil {
@@ -698,14 +740,32 @@ func (r *Runner) step(ctx context.Context) error {
 		}
 		return fmt.Errorf("execute %q: %w", dec.Action.Key(), err)
 	}
+	if marker, ok := r.opts.Human.(action.InjectedInputMarker); ok && dec.Action.Input != nil && dec.Action.Input.Type != "wait" {
+		// Tell the detector that the input it is about to see came from us.
+		// Without this every agent click looks like a human takeover.
+		marker.MarkInjected()
+	}
+	r.clearWaiting()
 	lat := float64(time.Since(actStart).Milliseconds())
 	r.opts.Metrics.Observe(metrics.ActionLatencyMS, lat)
 	r.opts.Metrics.Inc(metrics.ActionsTotal, 1)
 	r.mu.Lock()
 	r.stats.Actions++
+	actionCount := r.stats.Actions
 	r.stats.LastAction = dec.Action.Key()
 	r.mu.Unlock()
 	r.emit("instance.action", map[string]any{"action": dec.Action, "source": dec.Source, "latency_ms": lat})
+	if n := actionCount; n > 0 && n%10 == 0 {
+		reason := strings.TrimSpace(dec.Reason)
+		if len([]rune(reason)) > 60 {
+			reason = string([]rune(reason)[:60]) + "…"
+		}
+		line := fmt.Sprintf("我在玩「%s」，已经操作了 %d 次，刚才是 %s。", r.opts.Name, n, dec.Action.Key())
+		if reason != "" {
+			line += "理由：" + reason
+		}
+		r.narrate(line)
+	}
 
 	// Observe the aftermath through the same pixel pipeline.
 	after, err := r.opts.Source.Grab(ctx)

@@ -45,10 +45,14 @@ var idPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`)
 // Spec is the persisted description of one game instance. Runtime objects are
 // rebuilt from it when the daemon starts.
 type Spec struct {
-	ID            string    `json:"id"`
-	Name          string    `json:"name"`
-	ProfileID     string    `json:"profile_id"`
-	SourceKind    string    `json:"source_kind"`
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	ProfileID  string `json:"profile_id"`
+	SourceKind string `json:"source_kind"`
+	// TargetWindow is an optional window-title substring. When set, only input
+	// while that window is foreground counts as human takeover; the agent's own
+	// console and other programs are ignored.
+	TargetWindow  string    `json:"target_window,omitempty"`
 	Seed          int64     `json:"seed"`
 	MaxEpisodes   int       `json:"max_episodes"`
 	TickMS        int       `json:"tick_ms"`
@@ -297,7 +301,14 @@ func (m *Manager) build(spec Spec) error {
 			prof.Close()
 			return err
 		}
-		human = action.NewSystemHuman()
+		if t := strings.TrimSpace(spec.TargetWindow); t != "" {
+			we.SetTargetTitles([]string{t})
+		}
+		sh := action.NewSystemHuman()
+		if t := strings.TrimSpace(spec.TargetWindow); t != "" {
+			sh.SetTargetTitles([]string{t})
+		}
+		human = sh
 		src = &ctxSource{inner: ns}
 		an = perception.NewVisionAnalyzer(m.router.For(llm.RolePerception), perception.GenericAnalyzer{})
 		ex = we

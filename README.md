@@ -4,14 +4,15 @@
 
 GoPlay 是一个**外部运行**的 AI 自动游玩软件：它只通过截屏/录屏获取画面，通过系统输入或移动端无障碍服务执行动作，不注入游戏进程、不读写游戏内存、不挂钩图形 API、不加载内核驱动。核心用 Go，游戏语义用 Lua 描述，Windows 采集/输入/浮窗用 C++，Android 客户端用 Kotlin。
 
-当前仓库是**可运行、可评测、可打包发布的 v0.4.3 实现**：
+当前仓库是**可运行、可评测、可打包发布的 v0.4.4 实现**：
 
 - 桌面 GUI：一个原生窗口（Windows WebView2 / macOS WebKit / Linux WebKitGTK），内嵌同一个面板，双击即用；也可退回系统浏览器。
 - Windows：真实桌面截屏（GDI/DXGI）+ SendInput 输入 + 无边框置顶浮窗/托盘。
 - Android（优先目标，v0.4「手机完全独立」）：Go 核心与 llama-server 以 arm64 原生库随 APK 安装，在本机子进程运行；Kotlin 壳只负责 WebView、MediaProjection 截屏、AccessibilityService 手势、系统悬浮球/灵动岛和连续语音。核心、模型下载、五页控制台（总览/游戏/AI 大脑/记忆/设置）都在手机上，不再依赖电脑。v0.4 增加权限中心、创建前准备流程、可操作的错误诊断卡、录屏中断后悬浮球保活、三档人工接管灵敏度、交还 AI、动态画面属性与实时预览；v0.4.1 修复进入游戏/旋转后重复报「旋转后重建截屏失败」的问题（改为复用同一个 MediaProjection 虚拟显示并调整 Surface，不再二次创建）。v0.4.2 修复启动时核心先于 WebSocket 连接就下发动作而报「no Android client connected」的竞态：客户端只在桥接就绪后开始，核心等待传输并在断线后不再复用旧帧。v0.4.3 针对游玩一段时间后断流：核心把断线/无帧视为「等待画面」而不是动作错误，WebSocket 每次收到帧或控制消息都重新绑定当前实例，录屏服务每 3 秒自动重连；通用触摸游戏连续两次等待/返回后强制点击或滑动，不再只空等。AI 大脑每层增加「自动」判断说明、运行时调用统计与已下载模型下拉，并在顶部直接回答「现在到底是什么在跑 / 哪些层尚未接入」；灵动岛显示 AI 是否在决策、最近动作/理由/进度，设置页增加持续实时通话入口（AI 说话时自动暂停麦克风，避免把自己的 TTS 当成用户指令）。
 - 自动游玩：内置 mock_dungeon 像素级演示游戏，从零学习并在评测中达到 10 关通关；任何未知游戏可切换到通用 Lua profile + 视觉 LLM 描述。
 - 本地模型：按设备 RAM/芯片三档推荐，模型权重不进安装包；可下载、启动、切换、删除多个模型，并按感知/分析/决策/对话/记忆/校验六层分别选择 API、本机模型或自动回退。Android APK 内置 arm64 llama-server 运行时与 Go 核心。
-- Windows 游戏选择：新游戏弹窗会列出开始菜单与 Steam 已安装条目，选中后可自动启动，再用全屏截屏 + SendInput 游玩。
+- Windows 游戏选择：新游戏弹窗会列出开始菜单与 Steam 已安装条目，选中后自动填窗口标题并可启动。实例必须绑定游戏窗口标题，只有该窗口在前台时才会截屏和 SendInput；切到聊天/浏览器会自动暂停，既不截屏也不注入。
+- v0.4.4 安全修复：AI 自己注入的键鼠不再触发人工接管（此前每个动作后都会误判，导致约 1.4–3.7 秒才能做一个动作）；目标窗口不在前台时实例进入等待，绝不把 w/a/s/d 打进当前聊天窗口；开局与每 10 个动作会生成语音自言自语（Android TTS / 桌面浏览器语音）。
 
 ## 目录
 
@@ -273,13 +274,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File native/build.ps1
 
 产物在 native/build/：goplay_native.dll（截屏 + SendInput）与 goplay-overlay.exe（无边框 always-on-top 浮窗 + 托盘）。Go 通过纯 syscall 加载 DLL，不使用 cgo。详见 [native/README.md](native/README.md)。
 
-创建 Windows 实例（需要已构建 DLL）：
+创建 Windows 实例（需要已构建 DLL）。API/界面必须提供游戏窗口标题；只有该标题对应的窗口在前台时才会截屏和发送键鼠：
 
-```powershell
-go run ./cmd/goplay create -id desktop -name "Desktop" -source windows -profile generic
+```json
+{"id":"desktop","name":"Desktop","profile_id":"generic","source_kind":"windows","target_window":"Scarlet Devil"}
 ```
 
-Windows 实例用 SystemHuman（GetLastInputInfo）检测人工操作，不使用任何钩子。
+Windows 实例用 SystemHuman（GetLastInputInfo）检测人工操作，不使用任何钩子；AI 自己注入的输入通过 MarkInjected 排除，不会误判成人工接管。**游戏窗口不在前台时实例进入“等待画面”，既不截屏分析也不发送输入**，避免把按键打进聊天窗口或其它程序。当前 Windows 版因此不支持“用户继续用电脑、AI 在同一桌面后台玩”；后台窗口 PrintWindow 抓取对 DirectDraw 旧游戏实测只得到标题栏/空白，不能作为可靠感知源。要同时使用电脑，需要独立 Windows 会话/虚拟机，暂未实现。
 
 ## Android
 
