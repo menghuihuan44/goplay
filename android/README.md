@@ -6,6 +6,8 @@ v0.4 新增：设置页权限中心（悬浮窗/无障碍/通知/录屏逐项状
 
 v0.4.1 修复进入游戏/旋转后反复报「截屏已停止：旋转后重建屏幕失败」：MediaProjection 授权 token 只能创建一次 VirtualDisplay，旧代码在旋转时销毁并重建，必然失败。现在复用同一个 VirtualDisplay，只在 `onCapturedContentResize`/显示变化时调整尺寸和 Surface；调整失败也会保留旧画面继续运行，不再停掉截屏。
 
+v0.4.2 修复启动竞态：旧版在录屏服务刚启动、WebSocket 尚未 attach 时就允许核心开始第一轮决策，核心会报 `execute 'wait|screen': bridge: no Android client connected`。现在控制台把「手机桥接」纳入就绪条件，准备好后 900ms 轮询确认 WS 已连才启动实例；核心侧动作最多等待 5 秒传输就绪，断线后的旧帧也不再复用。设置页可看到桥接状态并点「重新连接」。
+
 包名：`com.goplay.mobile`。协议：[`PROTOCOL.md`](PROTOCOL.md)。
 
 ---
@@ -16,7 +18,7 @@ v0.4.1 修复进入游戏/旋转后反复报「截屏已停止：旋转后重建
 
 - 环境：JDK 17.0.21 (Temurin)、Gradle 8.10.2（wrapper）、AGP 8.7.3、Kotlin 2.0.21、cmdline-tools 23.0、Platform 35、Build-Tools 35.0.0；SDK 位于仓库外的 `C:\Android\sdk`。
 - 原生核心：`CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build -buildmode=pie -ldflags "-s -w"` 产出 `libgoplaycore.so`（v0.4 约 10.3MB）；llama-server 已 strip 为 `libllama-server.so`（13,174,768B）。两者放入 `app/src/main/jniLibs/arm64-v8a/`；`cmd/goplay-release -target android` 会自动重建/布置它们。
-- 产物：`:app:assembleDebug` / `:app:assembleRelease` **BUILD SUCCESSFUL**；v0.4.1 release APK 约 13.1MB、debug APK 约 14.9MB，包内 `lib/arm64-v8a/` 两个原生库存在，`aapt` 显示 versionCode 5 / versionName 0.4.1 / native-code arm64-v8a。精确大小与 SHA256 以 `dist/release.json`、`dist/SHA256SUMS.txt` 为准。
+- 产物：`:app:assembleDebug` / `:app:assembleRelease` **BUILD SUCCESSFUL**；v0.4.2 release APK 约 13.1MB、debug APK 约 14.9MB，包内 `lib/arm64-v8a/` 两个原生库存在，`aapt` 显示 versionCode 6 / versionName 0.4.2 / native-code arm64-v8a。精确大小与 SHA256 以 `dist/release.json`、`dist/SHA256SUMS.txt` 为准。
 - 签名：未提供 release 密钥时按设计回退 debug 签名（CN=Android Debug），可本地安装，**不可用于商店发布**。
 - 测试：`:app:testDebugUnitTest` 的 30 个 JVM 测试全部通过；本目录未包含 MediaProjection/无障碍/悬浮窗/语音的 instrumentation 测试。
 - **尚未在真机或模拟器上安装运行**：本机 SDK 没有 emulator/system-images，也没有连接设备。MediaProjection、AccessibilityService、悬浮球展开、本机核心子进程、模型下载仍需要设备验证。

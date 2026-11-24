@@ -746,6 +746,7 @@ class MainActivity : AppCompatActivity() {
             return false
         }
         val current = graph.settingsStore.load()
+        val sameInstance = current.instanceId == clean
         val port = graph.localCore.port.takeIf { it > 0 } ?: current.port
         val saved = graph.settingsStore.save(
             current.copy(host = "127.0.0.1", port = port, instanceId = clean),
@@ -755,17 +756,25 @@ class MainActivity : AppCompatActivity() {
             return false
         }
         if (ScreenCaptureService.state.value.running) {
-            graph.client.reconnectIfActive()
-            graph.client.ensureConnected()
-            runCatching {
-                startService(
-                    ScreenCaptureService.commandIntent(
-                        this,
-                        ScreenCaptureService.ACTION_RELOAD_SETTINGS,
-                    ),
-                )
+            if (sameInstance) {
+                // Re-selecting the same card must not tear down a healthy socket;
+                // only nudge it when a previous reconnect failed.
+                graph.client.ensureConnected()
+            } else {
+                graph.client.reconnectIfActive()
+                graph.client.ensureConnected()
+                runCatching {
+                    startService(
+                        ScreenCaptureService.commandIntent(
+                            this,
+                            ScreenCaptureService.ACTION_RELOAD_SETTINGS,
+                        ),
+                    )
+                }
             }
-            graph.logs.log("已切换活动实例：" + clean)
+            graph.logs.log(
+                (if (sameInstance) "继续使用活动实例：" else "已切换活动实例：") + clean,
+            )
         }
         return true
     }
@@ -1040,6 +1049,9 @@ class MainActivity : AppCompatActivity() {
             .put("corePort", core.port)
             .put("coreError", core.error ?: JSONObject.NULL)
             .put("coreLog", core.logPath)
+            .put("wsConnected", graph.client.isConnected)
+            .put("wsState", graph.client.state.value.name.lowercase())
+            .put("wsError", graph.client.lastError.value ?: JSONObject.NULL)
             .put("captureRunning", capture.running)
             .put("capturePaused", capture.paused)
             .put("captureWidth", capture.width)
@@ -1118,6 +1130,20 @@ class MainActivity : AppCompatActivity() {
         fun setActiveInstance(id: String): String = uiJson {
             val ok = applyActiveInstance(id)
             JSONObject().put("ok", ok).put("instanceId", id.trim()).toString()
+        }
+
+        /** Force a fresh WebSocket handshake for the active instance. */
+        @JavascriptInterface
+        fun reconnectCore(): String = uiJson {
+            // The user pressed reconnect: drop whatever half-open socket exists
+            // instead of only reconnecting when the supervisor thinks it is live.
+            graph.client.disconnect()
+            graph.client.ensureConnected()
+            JSONObject()
+                .put("ok", true)
+                .put("wsConnected", graph.client.isConnected)
+                .put("wsState", graph.client.state.value.name.lowercase())
+                .toString()
         }
 
         @JavascriptInterface

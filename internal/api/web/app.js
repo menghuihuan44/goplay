@@ -509,6 +509,9 @@ function renderAndroidBanner(){
         var key=n==='无障碍'?'accessibility':n==='悬浮窗'?'overlay':'capture';
         return '<button class="pill-btn" data-perm="'+key+'">授权'+esc(n)+'</button>';
       }).join('')+'<button class="primary-btn" data-prepare="1">按顺序准备</button></div>';
+  }else if(s.captureRunning&&!s.wsConnected){
+    html='<div class="ab-main"><b>正在连接核心…</b><p>录屏已开，等待手机与核心的 WebSocket 握手；连上后才会启动 AI。</p></div>'
+      +'<div class="ab-actions"><button class="pill-btn" data-reconnect="1">重新连接</button><button class="primary-btn" data-prepare="1">按顺序准备</button></div>';
   }
   boxes.forEach(function(b){
     if(!html){b.classList.add('hidden');return}
@@ -524,9 +527,15 @@ function refreshHostStatus(){
   if(!s){renderAndroidBanner();return}
   var core=$('#andCore'); if(core) core.textContent=s.coreReady?('运行中 · 127.0.0.1:'+s.corePort):(s.coreError?'启动失败：'+s.coreError:'启动中');
   var cap=$('#andCapture'); if(cap) cap.textContent=s.captureRunning?((s.capturePaused?'已暂停':'运行中')+(s.captureWidth?' · '+s.captureWidth+'×'+s.captureHeight:'')):'未开始';
+  var bridge=$('#andBridge');
+  if(bridge){
+    var wsState=String(s.wsState||'').toLowerCase();
+    bridge.textContent=s.wsConnected?'已连接 · 可下发操作':(wsState==='connecting'||wsState==='reconnecting'?'连接中…':(s.wsError?'未连接：'+s.wsError:'未连接'));
+  }
   var list=$('#androidPermList'); if(list) list.innerHTML=permissionRows(s);
   var miss=missingPermissions(s);
-  var ready=$('#andReady'); if(ready){ready.textContent=miss.length?('还差 '+miss.length+' 项'):'已就绪';ready.className='tag '+(miss.length?'warn':'ok')}
+  var missCount=miss.length+(s.wsConnected?0:1);
+  var ready=$('#andReady'); if(ready){ready.textContent=missCount?('还差 '+missCount+' 项'):'已就绪';ready.className='tag '+(missCount?'warn':'ok')}
   var ce=$('#andCaptureError');
   if(ce){var err=s.captureError||s.capture_error||'';ce.textContent=err?('截屏错误：'+err):'';ce.classList.toggle('hidden',!err)}
   var sel=$('#takeoverSens');
@@ -761,7 +770,7 @@ async function createGame(ev){
   finally{btn.disabled=false;btn.textContent='创建并开始'}
 }
 function hostReady(s){
-  return !!(s&&s.coreReady&&(s.captureRunning||permValue(s,'capture'))&&permValue(s,'accessibility'));
+  return !!(s&&s.coreReady&&s.wsConnected&&(s.captureRunning||permValue(s,'capture'))&&permValue(s,'accessibility'));
 }
 function missingForStart(s){
   var miss=[];
@@ -769,6 +778,7 @@ function missingForStart(s){
   if(!permValue(s,'accessibility')) miss.push('无障碍');
   if(!permValue(s,'capture')) miss.push('录屏');
   if(!permValue(s,'overlay')) miss.push('悬浮窗');
+  if(s&&s.coreReady&&!s.wsConnected) miss.push('连接核心');
   return miss;
 }
 async function prepareAndStart(id,pkg,launch,auto){
@@ -1022,6 +1032,16 @@ async function addPref(ev){
 async function deletePref(id){
   try{await api('/api/memory/global/preferences/'+encodeURIComponent(id),{method:'DELETE'});toast('已删除偏好');refresh()}catch(e){toast(e.message,true)}
 }
+function reconnectHost(){
+  if(!window.GoPlayHost||!window.GoPlayHost.reconnectCore){
+    toast('当前环境没有手机桥接，正在刷新连接');loadStatic();refresh();return;
+  }
+  try{
+    var r=JSON.parse(window.GoPlayHost.reconnectCore()||'{}');
+    toast(r.wsConnected?'手机桥接已连接':'正在重新连接手机桥接…',!r.wsConnected);
+  }catch(e){toast('重连失败：'+e.message,true)}
+  setTimeout(refreshHostStatus,800);
+}
 function hostSetActive(id){
   if(!window.GoPlayHost||!window.GoPlayHost.setActiveInstance) return true;
   try{
@@ -1114,7 +1134,7 @@ function bind(){
     if(ev.target.closest('#apiVision')){S.visionDirty=true;return}
     if(ev.target.closest('#desktopData')){try{window.goplayDesktop('data')}catch(e){}return}
     if(ev.target.closest('#desktopQuit')){try{window.goplayDesktop('quit')}catch(e){}return}
-    if(ev.target.closest('#reconnectBtn')){loadStatic();refresh();toast('正在重新连接');return}
+    if(ev.target.closest('#reconnectBtn,[data-reconnect]')){reconnectHost();return}
     if(ev.target.closest('#androidPrepareAll')){prepareAll();return}
     if(ev.target.closest('#androidPermissionCenter')){go('settings');return}
     if(ev.target.closest('#androidRelease')){var ai=S.host&&S.host.activeInstance;if(ai)releaseToAI(ai);else toast('先选择一个游戏',true);return}

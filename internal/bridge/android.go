@@ -264,7 +264,11 @@ func (s *Session) PushFrame(h FrameHeader, jpg []byte) error {
 // frame younger than three seconds so a 10 fps client can feed a faster loop.
 func (s *Session) Grab(ctx context.Context) (domain.Frame, error) {
 	s.mu.Lock()
-	if s.latest != nil && time.Since(s.latest.At) < 1500*time.Millisecond {
+	// A cached frame is only valid while the client is attached. After a
+	// reconnect or an instance switch the last frame predates the socket, so
+	// acting on it would race the transport and fail with "no Android client
+	// connected". Wait for a frame from the new connection instead.
+	if s.tr != nil && s.latest != nil && time.Since(s.latest.At) < 1500*time.Millisecond {
 		f := *s.latest
 		s.mu.Unlock()
 		return f, nil
@@ -318,6 +322,36 @@ func (s *Session) Ack(id string, ok bool, errCode, errText, actionType string, e
 	ch <- AckResult{ID: id, OK: ok, ErrorCode: errCode, Error: errText, ActionType: actionType, ExecutedMS: executedMS}
 }
 
+// transportWait bounds how long one action waits for the Android WebSocket.
+// The UI starts an instance right after capture consent; the socket handshake
+// can finish a few hundred milliseconds later. Failing that first action made
+// the instance look broken even though frames arrived immediately afterwards.
+const transportWait = 5 * time.Second
+
+func (s *Session) waitTransport(ctx context.Context) (Transport, error) {
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	deadline := time.NewTimer(transportWait)
+	defer deadline.Stop()
+	for {
+		s.mu.Lock()
+		tr := s.tr
+		s.mu.Unlock()
+		if tr != nil {
+			return tr, nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-s.done:
+			return nil, errors.New("bridge: session closed")
+		case <-deadline.C:
+			return nil, errors.New("bridge: no Android client connected")
+		case <-ticker.C:
+		}
+	}
+}
+
 // Do implements action.Executor.
 func (s *Session) Do(ctx context.Context, a domain.Action) error {
 	act, err := androidAction(a)
@@ -330,12 +364,14 @@ func (s *Session) Do(ctx context.Context, a domain.Action) error {
 	id := fmt.Sprintf("act-%d", atomic.AddInt64(&s.nextID, 1))
 	act["id"] = id
 	ch := make(chan AckResult, 1)
-	s.mu.Lock()
-	tr := s.tr
-	if tr == nil {
+	tr, err := s.waitTransport(ctx)
+	if err != nil {
+		s.mu.Lock()
+		s.aerrs++
 		s.mu.Unlock()
-		return errors.New("bridge: no Android client connected")
+		return err
 	}
+	s.mu.Lock()
 	s.waiters[id] = ch
 	s.actions++
 	s.mu.Unlock()
