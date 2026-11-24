@@ -2,6 +2,7 @@ package localruntime
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"goplay/internal/config"
+	"goplay/internal/localmodel"
 )
 
 func testLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
@@ -79,5 +81,99 @@ func TestStatusModelPathsStayInsideModelsDir(t *testing.T) {
 		if _, err := os.Stat(m.Path); err == nil && !m.Present {
 			t.Fatalf("existing model not marked present: %+v", m)
 		}
+	}
+}
+func TestStatusListsPlanAndCatalogModels(t *testing.T) {
+	cfg := config.Default().Local
+	cfg.ModelsDir = t.TempDir()
+	rt := New(cfg, "offline", testLogger())
+	st := rt.Status()
+	cat := localmodel.DefaultCatalog()
+	if len(st.Catalog) != len(cat.Models) {
+		t.Fatalf("catalog models = %d, want %d", len(st.Catalog), len(cat.Models))
+	}
+	if len(st.Models) == 0 {
+		t.Fatal("plan models should be listed")
+	}
+	planIDs := make(map[string]bool, len(st.Models))
+	for _, m := range st.Models {
+		planIDs[m.ID] = true
+		if m.ID == "" || m.File == "" || m.Path == "" {
+			t.Fatalf("incomplete model entry: %+v", m)
+		}
+	}
+	catalogIDs := make(map[string]bool, len(st.Catalog))
+	for _, m := range st.Catalog {
+		if catalogIDs[m.ID] {
+			t.Fatalf("duplicate catalog model %s", m.ID)
+		}
+		catalogIDs[m.ID] = true
+	}
+	for id := range planIDs {
+		if !catalogIDs[id] {
+			t.Fatalf("plan model %s missing from catalog", id)
+		}
+	}
+	if st.Selected != "" {
+		t.Fatalf("selected = %q, want empty initially", st.Selected)
+	}
+}
+
+func TestDeleteModelGuards(t *testing.T) {
+	cfg := config.Default().Local
+	cfg.ModelsDir = t.TempDir()
+	rt := New(cfg, "offline", testLogger())
+	spec := localmodel.DefaultCatalog().Models[0]
+
+	if err := rt.DeleteModel("not-a-model"); !errors.Is(err, ErrUnknownModel) {
+		t.Fatalf("unknown delete err = %v, want ErrUnknownModel", err)
+	}
+
+	rt.mu.Lock()
+	rt.srv = &localmodel.Server{}
+	rt.modelID = spec.ID
+	rt.mu.Unlock()
+	if err := rt.DeleteModel(spec.ID); !errors.Is(err, ErrModelInUse) {
+		t.Fatalf("in-use delete err = %v, want ErrModelInUse", err)
+	}
+	rt.mu.Lock()
+	rt.srv = nil
+	rt.modelID = ""
+	rt.mu.Unlock()
+
+	// The file is absent; deletion is idempotent and must not touch other files.
+	if err := rt.DeleteModel(spec.ID); err != nil {
+		t.Fatalf("delete absent model: %v", err)
+	}
+	if st := rt.Status(); st.Download.Error != "" || st.Download.Active {
+		t.Fatalf("download state should be reset after deletion: %+v", st.Download)
+	}
+
+	outside := filepath.Join(cfg.ModelsDir, "..", "evil.gguf")
+	if pathInside(cfg.ModelsDir, outside) {
+		t.Fatal("pathInside accepted traversal")
+	}
+	if pathInside(cfg.ModelsDir, cfg.ModelsDir) {
+		t.Fatal("pathInside accepted the models dir itself")
+	}
+	if !pathInside(cfg.ModelsDir, filepath.Join(cfg.ModelsDir, "a.gguf")) {
+		t.Fatal("pathInside rejected a direct child")
+	}
+}
+
+func TestSelectModelRequiresDownloadedFile(t *testing.T) {
+	cfg := config.Default().Local
+	cfg.ModelsDir = t.TempDir()
+	rt := New(cfg, "offline", testLogger())
+	spec := localmodel.DefaultCatalog().Models[0]
+
+	if err := rt.SelectModel(spec.ID); !errors.Is(err, ErrModelNotReady) {
+		t.Fatalf("select missing model err = %v, want ErrModelNotReady", err)
+	}
+	if err := rt.DownloadModelID("not-a-model"); !errors.Is(err, ErrUnknownModel) {
+		t.Fatalf("download unknown err = %v, want ErrUnknownModel", err)
+	}
+	if st := rt.Status(); st.Download.Active {
+		t.Fatal("unknown model must not start a download")
 	}
 }

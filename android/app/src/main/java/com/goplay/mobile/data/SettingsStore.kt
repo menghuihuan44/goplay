@@ -28,7 +28,22 @@ class SettingsStore(context: Context) {
         maxEdge = prefs.getInt(KEY_MAX_EDGE, 960).coerceIn(320, 3840),
         wifiOnlyDownloads = prefs.getBoolean(KEY_WIFI_ONLY, true),
         autoReconnect = prefs.getBoolean(KEY_AUTO_RECONNECT, true),
+        takeoverSensitivity = TakeoverSensitivity.normalize(
+            prefs.getString(TakeoverSensitivity.PREFS_KEY, TakeoverSensitivity.HIGH),
+        ),
     )
+
+    /**
+     * Writes one takeover sensitivity level. Returns the stored (normalized)
+     * level, or null when [level] is not a known value, so the bridge can
+     * reject bad input instead of silently downgrading it.
+     */
+    fun setTakeoverSensitivity(level: String): String? {
+        if (!TakeoverSensitivity.isValid(level)) return null
+        val normalized = TakeoverSensitivity.normalize(level)
+        prefs.edit().putString(TakeoverSensitivity.PREFS_KEY, normalized).apply()
+        return normalized
+    }
 
     fun save(input: AppSettings): SaveResult {
         val host = normalizeHost(input.host)
@@ -47,6 +62,7 @@ class SettingsStore(context: Context) {
             jpegQuality = input.jpegQuality.coerceIn(10, 95),
             targetFps = input.targetFps.coerceIn(1, 30),
             maxEdge = input.maxEdge.coerceIn(320, 3840),
+            takeoverSensitivity = TakeoverSensitivity.normalize(input.takeoverSensitivity),
         )
         prefs.edit()
             .putString(KEY_HOST, normalized.host)
@@ -57,6 +73,7 @@ class SettingsStore(context: Context) {
             .putInt(KEY_MAX_EDGE, normalized.maxEdge)
             .putBoolean(KEY_WIFI_ONLY, normalized.wifiOnlyDownloads)
             .putBoolean(KEY_AUTO_RECONNECT, normalized.autoReconnect)
+            .putString(TakeoverSensitivity.PREFS_KEY, TakeoverSensitivity.normalize(normalized.takeoverSensitivity))
             .apply()
         return SaveResult(true, settings = normalized)
     }

@@ -3,10 +3,21 @@
 var S={
   page:'overview', instances:[], metrics:null, prefs:[], profiles:[], llm:null, local:null,
   cfg:null, health:null, events:[], filter:'all', loading:false, suspendGames:false,
-  voiceTarget:null, eventsAt:0, ws:null, poll:null, staticLoaded:false, visionDirty:false
+  voiceTarget:null, voice:null, eventsAt:0, ws:null, poll:null, staticLoaded:false,
+  visionDirty:false, isAndroid:false, host:null, aiRoutes:null, diag:{}, diagAt:{},
+  diagBusy:{}, starting:{}, pkgs:{}, frameNonce:0
 };
 var $=function(sel,root){return (root||document).querySelector(sel)};
 var $$=function(sel,root){return Array.prototype.slice.call((root||document).querySelectorAll(sel))};
+var ROLES=[
+  {key:'perception',label:'感知',desc:'看画面、OCR、识别状态'},
+  {key:'analysis',label:'分析',desc:'理解局面、归纳发生了什么'},
+  {key:'strategy',label:'决策',desc:'在事件边界选择动作'},
+  {key:'language',label:'对话',desc:'聊天、解释、语音回复'},
+  {key:'memory',label:'记忆',desc:'压缩、摘要、检索长期知识'},
+  {key:'validation',label:'校验',desc:'检查动作是否合法安全'}
+];
+var ROLE_LABEL={perception:'感知',analysis:'分析',strategy:'决策',language:'对话',memory:'记忆',validation:'校验',validator:'校验'};
 
 function esc(v){
   return String(v===undefined||v===null?'':v)
@@ -15,11 +26,11 @@ function esc(v){
 }
 function num(v,d){v=Number(v);return isFinite(v)?v:(d||0)}
 function pct(v){
-  if(v===undefined||v===null) return 0;
-  v=Number(v); if(!isFinite(v)) return 0;
+  if(v===undefined||v===null) return null;
+  v=Number(v); if(!isFinite(v)) return null;
   return Math.max(0,Math.min(100, v<=1 ? v*100 : v));
 }
-function fmtPct(v){return Math.round(pct(v))+'%'}
+function fmtPct(v){var p=pct(v);return p===null?'—':Math.round(p)+'%'}
 function fmtMS(v){if(v===undefined||v===null||!isFinite(Number(v))) return '—'; return (Math.round(Number(v)*10)/10).toFixed(1)}
 function fmtSize(b){
   b=Number(b)||0;
@@ -37,11 +48,12 @@ function ago(at){
   if(s<86400) return Math.floor(s/3600)+' 小时前';
   return Math.floor(s/86400)+' 天前';
 }
+function sleep(ms){return new Promise(function(r){setTimeout(r,ms)})}
 function toast(msg,isErr){
   var t=$('#toast'); if(!t) return;
   t.textContent=msg; t.className='toast show'+(isErr?' err':'');
   clearTimeout(toast._timer);
-  toast._timer=setTimeout(function(){t.className='toast'+(isErr?' err':'')},2600);
+  toast._timer=setTimeout(function(){t.className='toast'+(isErr?' err':'')},3200);
 }
 async function api(path,opts){
   opts=opts||{};
@@ -53,7 +65,7 @@ async function api(path,opts){
   if(text){try{data=JSON.parse(text)}catch(e){data={error:text}}}
   if(!res.ok){
     var msg=data&&data.error?data.error:('HTTP '+res.status);
-    throw new Error(msg);
+    var err=new Error(msg); err.status=res.status; throw err;
   }
   return data;
 }
@@ -70,7 +82,7 @@ function statusInfo(v){
   if(s==='running') return {key:'running',label:'AUTO'};
   if(s==='paused') return {key:'paused',label:'已暂停'};
   if(s==='starting') return {key:'running',label:'启动中'};
-  if(s==='error') return {key:'error',label:'错误'};
+  if(s==='error') return {key:'error',label:'需处理'};
   return {key:'stopped',label:'已停止'};
 }
 function modeLabel(m){
@@ -85,14 +97,212 @@ function instanceName(id){
   return id||'';
 }
 function weightLabel(k){
-  return ({risk_aversion:'更谨慎',aggression:'更激进',exploration:'偏好探索',resource_aversion:'节省资源',aggression_bias:'更激进'})[k]||k;
+  return ({risk_aversion:'更谨慎',aggression:'更激进',exploration:'偏好探索',resource_aversion:'节省资源'})[k]||k;
 }
 function vals(v){return (v&&v.state&&v.state.values)||{}}
 function stat(v,k,d){var s=(v&&v.stats)||{};return num(s[k],d)}
 
+function displayOf(v){
+  var d=(v&&v.display)||{};
+  var fields=Array.isArray(d.fields)?d.fields.slice(0):[];
+  if(!fields.length){
+    var vs=vals(v), tx=(v&&v.state&&v.state.text)||{};
+    Object.keys(vs).slice(0,8).forEach(function(k){
+      fields.push({key:k,label:k,value:vs[k],kind:'number'});
+    });
+    Object.keys(tx).slice(0,4).forEach(function(k){
+      if(fields.length>=10) return;
+      fields.push({key:k,label:k,value:tx[k],kind:'text'});
+    });
+  }
+  var summary=d.summary||(v&&v.state&&v.state.summary)||'';
+  var tags=Array.isArray(d.tags)?d.tags:((v&&v.state&&v.state.tags)||[]);
+  return {
+    summary:summary, fields:fields, tags:tags,
+    outcome:(d.outcome===undefined?null:d.outcome),
+    progress:(d.progress===undefined?null:d.progress),
+    progressLabel:d.progress_label||'进度',
+    notes:d.notes||'',
+    lastAction:d.last_action||((v&&v.stats&&v.stats.last_action)||''),
+    lastReason:d.last_reason||((v&&v.decision&&v.decision.reason)||'')
+  };
+}
+function fieldValue(f){
+  var v=f&&f.value;
+  if(v===undefined||v===null||v==='') return '—';
+  if(typeof v==='number'){
+    if(f.kind==='percent') return fmtPct(v);
+    return (Math.round(v*10)/10).toString();
+  }
+  return String(v);
+}
+function highlightFields(disp,n){
+  var list=disp.fields.filter(function(f){return f&&f.highlight});
+  var rest=disp.fields.filter(function(f){return f&&!f.highlight});
+  return list.concat(rest).slice(0,n);
+}
+
+function errorRaw(v){
+  return (v&&v.stats&&v.stats.last_error)||(v&&v.last_error)||'';
+}
+function errorActive(v){var d=S.diag[v.id];return statusInfo(v).key==='error'||!!errorRaw(v)||(d&&d.ok===false&&d.code&&d.code!=='ok')}
+function ensureDiag(id,force){
+  if(S.diagBusy[id]) return;
+  if(!force&&S.diag[id]&&Date.now()-num(S.diagAt[id],0)<10000) return;
+  if(!force&&S.diagAt[id]&&Date.now()-num(S.diagAt[id],0)<25000&&S.diagErr&&S.diagErr[id]) return;
+  S.diagBusy[id]=true; S.diagAt[id]=Date.now();
+  api('/api/instances/'+encodeURIComponent(id)+'/diagnostics').then(function(d){
+    S.diag[id]=d||{}; delete S.diagErr[id];
+  }).catch(function(e){
+    S.diagErr=S.diagErr||{}; S.diagErr[id]=e.message;
+  }).then(function(){
+    delete S.diagBusy[id];
+    if(S.page==='games') renderGames(); else if(S.page==='overview') renderOverview();
+  });
+}
+function diagText(v){
+  var d=S.diag[v.id]||{};
+  return ['GoPlay 诊断','实例: '+(v.name||v.id),'状态: '+v.status,'错误: '+(d.detail||d.error||errorRaw(v)),'代码: '+(d.code||''),'日志: '+(d.log_path||''),'时间: '+new Date().toISOString()].join('\n');
+}
+function copyDiag(v){
+  var text=diagText(v);
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(function(){toast('诊断信息已复制')}).catch(function(){toast('复制失败，请长按选择文字',true)});
+  }else{
+    var ta=document.createElement('textarea'); ta.value=text; document.body.appendChild(ta); ta.select();
+    try{document.execCommand('copy');toast('诊断信息已复制')}catch(e){toast('复制失败',true)}
+    ta.remove();
+  }
+}
+function diagActions(v){
+  var d=S.diag[v.id]||{};
+  var list=Array.isArray(d.actions)?d.actions:[];
+  var out=[];
+  list.forEach(function(a){
+    if(typeof a==='string') out.push({id:a,label:({open_permissions:'去授权',start_capture:'开始截屏',retry_start:'重新开始',open_ai:'AI 设置',release_human:'交还 AI',open_logs:'复制诊断'})[a]||a});
+    else if(a&&a.id) out.push({id:a.id,label:a.label||a.id});
+  });
+  if(!out.length){
+    if(d.code==='android_no_client'||d.code==='android_ack_timeout'||d.code==='capture_failed') out=[{id:'open_permissions',label:'去授权'},{id:'start_capture',label:'开始截屏'},{id:'retry_start',label:'重新开始'}];
+    else if(d.code==='llm_unavailable'||d.code==='model_missing') out=[{id:'open_ai',label:'AI 设置'}];
+    else if(d.code==='external_control') out=[{id:'release_human',label:'交还 AI'}];
+    else out=[{id:'retry_start',label:'重新开始'},{id:'open_permissions',label:'检查权限'}];
+  }
+  return out;
+}
+function errorCard(v){
+  var d=S.diag[v.id]||{};
+  var raw=errorRaw(v);
+  var title=d.title||'AI 停下来了';
+  var detail=d.detail||d.summary||raw||'没有拿到错误详情。可以重新开始，或复制诊断信息排查。';
+  var checks=Array.isArray(d.checks)?d.checks:[];
+  var suggestions=Array.isArray(d.suggestions)?d.suggestions:[];
+  var html='<div class="diag-card">'
+    +'<div class="diag-head"><span class="diag-icon">!</span><div><b>'+esc(title)+'</b><small>'+esc(d.code||'unknown')+'</small></div><button class="link-btn" data-copy="'+esc(v.id)+'">复制诊断</button></div>'
+    +'<p class="diag-detail">'+esc(detail)+'</p>';
+  if(checks.length){
+    html+='<div class="diag-checks">'+checks.map(function(c){
+      var ok=c.ok===true; var name=c.name||c.label||c.key||'检查项';
+      var val=c.detail||c.value||'';
+      return '<div class="diag-check '+(ok?'ok':'bad')+'"><span>'+(ok?'✓':'✗')+'</span><div><b>'+esc(name)+'</b>'+(val?'<small>'+esc(val)+'</small>':'')+'</div></div>';
+    }).join('')+'</div>';
+  }
+  if(suggestions.length){
+    html+='<ul class="diag-suggest">'+suggestions.slice(0,5).map(function(s){
+      var t=typeof s==='string'?s:(s.text||s.label||'');
+      return '<li>'+esc(t)+'</li>';
+    }).join('')+'</ul>';
+  }
+  var acts=diagActions(v);
+  html+='<div class="diag-actions">'+acts.map(function(a){
+    return '<button class="pill-btn" data-diagact="'+esc(a.id)+'" data-id="'+esc(v.id)+'">'+esc(a.label)+'</button>';
+  }).join('')+'<button class="link-btn" data-diagload="'+esc(v.id)+'">重新诊断</button></div>';
+  if(!S.diag[v.id]&&!S.diagBusy[v.id]) html+='<p class="form-note">正在分析原因…</p>';
+  if(raw) html+='<details class="diag-raw"><summary>原始错误</summary><pre>'+esc(raw)+'</pre></details>';
+  html+='</div>';
+  ensureDiag(v.id,false);
+  return html;
+}
+
+function fieldChips(disp,n){
+  var f=highlightFields(disp,n||3);
+  if(!f.length) return '<span class="muted small">还没识别出属性</span>';
+  return f.map(function(x){
+    return '<span class="field-chip"><span>'+esc(x.label||x.key)+'</span><b>'+esc(fieldValue(x))+'</b></span>';
+  }).join('');
+}
+function compactCard(v){
+  var st=statusInfo(v), disp=displayOf(v), progress=pct(disp.progress);
+  var action=disp.lastAction||((v.decision&&v.decision.action&&v.decision.action.kind)||'等待决策');
+  var outcome=disp.outcome?('<span class="outcome">'+esc(disp.outcome)+'</span>'):'';
+  return '<article class="icard" data-card="'+esc(v.id)+'">'
+    +'<div class="icard-top"><span class="dot '+(st.key==='running'?'on':'')+'"></span><h3>'+esc(v.name||v.id)+'</h3>'+outcome+'<span class="status '+st.key+'">'+st.label+'</span></div>'
+    +'<div class="icard-sub">'+esc(v.profile||'')+' · '+esc(v.id)+'</div>'
+    +(errorActive(v)?'<div class="icard-error">'+esc((errorRaw(v)||'需要处理').slice(0,110))+'<button class="link-btn" data-goto="'+esc(v.id)+'">看原因</button></div>':'')
+    +'<div class="icard-fields">'+fieldChips(disp,3)+'</div>'
+    +(progress!==null?'<div class="progline"><span>'+esc(disp.progressLabel)+'</span><b>'+fmtPct(progress)+'</b></div>':'')
+    +'<div class="action-line"><b>'+esc(action)+'</b>'+(disp.lastReason?' · '+esc(disp.lastReason):'')+'</div>'
+    +'<div class="icard-actions">'
+      +(st.key==='running'?'<button class="pill-btn" data-act="pause" data-id="'+esc(v.id)+'">暂停</button><button class="pill-btn" data-act="stop" data-id="'+esc(v.id)+'">停止</button>':'<button class="pill-btn" data-act="start" data-id="'+esc(v.id)+'">开始</button>')
+      +'<button class="pill-btn" data-goto="'+esc(v.id)+'">打开</button>'
+    +'</div></article>';
+}
+function screenPanel(v){
+  var url='/api/instances/'+encodeURIComponent(v.id)+'/frame?t='+Math.floor(Date.now()/3000);
+  return '<div class="screen-wrap">'
+    +'<div class="screen-head"><span>AI 看到的画面</span><span class="muted small">最近一帧 · 低帧率预览</span></div>'
+    +'<img class="game-screen" alt="AI 画面预览" src="'+url+'" onload="this.parentNode.classList.add(\'hasimg\')" onerror="this.parentNode.classList.add(\'noimg\')">'
+    +'<div class="screen-empty">还没有画面。检查录屏权限，并保持截屏运行。<br><button class="link-btn" data-perm="capture">开始截屏</button></div>'
+    +'</div>';
+}
+function fullCard(v){
+  var st=statusInfo(v), disp=displayOf(v), stats=v.stats||{}, memory=v.memory||{};
+  var progress=pct(disp.progress);
+  var running=st.key==='running';
+  var action=disp.lastAction||((v.decision&&v.decision.action&&v.decision.action.kind)||'等待决策');
+  var dec=v.decision||{};
+  var chat=(v.chat||[]).slice(-4).map(function(m){
+    return '<div class="chat-line '+(m.role==='user'?'user':'ai')+'"><b>'+(m.role==='user'?'你':'AI')+'</b><span>'+esc(m.text)+'</span></div>';
+  }).join('');
+  var controls='';
+  if(running){
+    controls='<button class="pill-btn" data-act="pause" data-id="'+esc(v.id)+'">暂停</button><button class="pill-btn" data-act="stop" data-id="'+esc(v.id)+'">停止</button>';
+  }else if(st.key==='human'){
+    controls='<button class="pill-btn" data-act="release" data-id="'+esc(v.id)+'">交还 AI</button><button class="pill-btn" data-act="resume" data-id="'+esc(v.id)+'">恢复 AI</button><button class="pill-btn" data-act="stop" data-id="'+esc(v.id)+'">停止</button>';
+  }else if(st.key==='paused'){
+    controls='<button class="pill-btn" data-act="resume" data-id="'+esc(v.id)+'">继续</button><button class="pill-btn" data-act="stop" data-id="'+esc(v.id)+'">停止</button>';
+  }else{
+    controls='<button class="pill-btn" data-act="start" data-id="'+esc(v.id)+'">'+(S.starting[v.id]?'准备中…':'开始')+'</button>';
+  }
+  var outcome=disp.outcome?'<span class="outcome">'+esc(disp.outcome)+'</span>':'';
+  var tags=(disp.tags||[]).slice(0,6).map(function(t){return '<span class="tag">'+esc(t)+'</span>'}).join('');
+  var notes=disp.notes?'<p class="gc-notes">'+esc(disp.notes)+'</p>':'';
+  if(st.key==='running'||st.key==='human'||st.key==='error') ensureDiag(v.id,false);
+  var fields=disp.fields.slice(0,10).map(function(f){
+    return '<div class="dyn-field '+(f.highlight?'hl':'')+'"><span>'+esc(f.label||f.key)+'</span><b>'+esc(fieldValue(f))+'</b></div>';
+  }).join('');
+  var voice=S.voice&&S.voice.id===v.id;
+  return '<article class="game-card" data-card="'+esc(v.id)+'">'
+    +'<div class="gc-head"><div style="min-width:0;flex:1"><h3>'+esc(v.name||v.id)+'</h3><div class="gc-meta">'+sourceIcon(v.source_kind)+' '+esc(v.profile||'')+' · seed '+esc(v.seed||0)+'</div></div>'+outcome+'<span class="status '+st.key+'">'+st.label+'</span></div>'
+    +(errorActive(v)?errorCard(v):'')
+    +'<div class="gc-summary"><span class="dot '+(running?'on':'')+'"></span><span>'+esc(disp.summary||'等待第一帧…')+'</span></div>'
+    +(progress!==null?'<div class="progress"><div class="labels"><span>'+esc(disp.progressLabel)+'</span><b>'+fmtPct(progress)+'</b></div><div class="bar"><i style="width:'+fmtPct(progress)+'%"></i></div></div>':'')
+    +'<div class="gc-stats mini-stats"><div><span>动作</span><b>'+Math.round(stat(v,'actions',0))+'</b></div><div><span>决策</span><b>'+Math.round(stat(v,'decisions',0))+'</b></div><div><span>错误</span><b class="'+(stat(v,'errors',0)?'danger-text':'')+'">'+Math.round(stat(v,'errors',0))+'</b></div></div>'
+    +(fields?'<div class="dyn-grid">'+fields+'</div>':'<p class="form-note">AI 还没有从这个画面里识别出可展示的属性；它会继续观察和学习。</p>')
+    +(tags?'<div class="gc-tags">'+tags+'</div>':'')
+    +screenPanel(v)
+    +'<div class="now-line"><div><span class="muted small">AI 正在做什么</span><b>'+esc(action)+'</b></div><div class="now-reason">'+esc(disp.lastReason||dec.reason||'等待决策边界')+'</div><div class="now-meta">'+esc(dec.provider||'')+(dec.model?' · '+esc(dec.model):'')+(dec.latency_ms?' · '+fmtMS(dec.latency_ms)+' ms':'')+(dec.fallback?' · 回退':'' )+'</div></div>'
+    +notes
+    +(chat?'<div class="chat-lines">'+chat+'</div>':'')
+    +'<div class="gc-chat"><textarea rows="2" maxlength="500" data-input="'+esc(v.id)+'" placeholder="说话或输入约束，例如：先别打那个 Boss"></textarea><button class="mic-btn call-btn '+(voice?'active':'')+'" data-call="'+esc(v.id)+'" title="实时语音通话">◎</button><button class="send-btn" data-send="'+esc(v.id)+'">发送</button></div>'
+    +'<div class="gc-chat-hint">Enter 发送 · Shift+Enter 换行 · 指令在下一个决策周期生效'+(voice?' · <b class="lime">通话中，说完会自动发送</b>':'')+'</div>'
+    +'<div class="card-controls">'+controls+'<button class="pill-btn" data-mem="'+esc(v.id)+'">记忆 '+Math.round(num(memory.bytes,0)/1024)+' KB</button><button class="pill-btn danger-text" data-act="delete" data-id="'+esc(v.id)+'">删除</button></div>'
+    +'</article>';
+}
+
 function setupSteps(){
   var llm=S.llm||{}; var local=llm.local||{}; var router=llm.router||{};
-  var apiOk=!!(llm.has_api_key&&router.api_available);
+  var apiOk=!!(llm.has_api_key&&router.api_available!==false);
   var localOk=!!(local.enabled||(local.server&&local.server.running));
   var aiOk=llm.mode!=='offline'&&(apiOk||localOk);
   var gameOk=S.instances.length>0;
@@ -109,62 +319,6 @@ function setupSteps(){
       +'<button data-page="'+it.page+'">'+esc(it.btn)+'</button></div>';
   }).join('');
 }
-
-function compactCard(v){
-  var st=statusInfo(v), vs=vals(v), progress=pct(stat(v,'progress',0));
-  var hp=num(vs.hp,100), maxHp=num(vs.max_hp,100), enemies=num(vs.enemies,0), rooms=num(vs.rooms,0), room=num(vs.room,0);
-  var action=stat(v,'last_action','')||((v.decision&&v.decision.action&&v.decision.action.kind)||'等待决策');
-  var extra=rooms>0?('房间 '+room+'/'+rooms):(enemies>0?('敌人 '+enemies):('来源 '+sourceLabel(v.source_kind)));
-  return '<article class="icard" data-card="'+esc(v.id)+'">'
-    +'<div class="icard-top"><span class="dot '+(st.key==='running'?'on':'')+'"></span><h3>'+esc(v.name||v.id)+'</h3><span class="status '+st.key+'">'+st.label+'</span></div>'
-    +'<div class="icard-sub">'+esc(v.profile||'')+' · '+esc(v.id)+'</div>'
-    +'<div class="vitals">'
-      +'<div class="vital"><span>生命 <b>'+hp+' / '+maxHp+'</b></span><div class="bar hp"><i style="width:'+Math.max(0,Math.min(100,hp/Math.max(1,maxHp)*100))+'%"></i></div></div>'
-      +'<div class="vital"><span>'+esc(extra)+'</span><div class="bar"><i style="width:'+progress+'%"></i></div></div>'
-    +'</div>'
-    +'<div class="progline"><span>本局进度</span><b>'+progress+'%</b></div>'
-    +'<div class="action-line"><b>'+esc(action)+'</b></div>'
-    +'<div class="icard-actions">'
-      +(st.key==='running'?'<button class="pill-btn" data-act="pause" data-id="'+esc(v.id)+'">暂停</button><button class="pill-btn" data-act="stop" data-id="'+esc(v.id)+'">停止</button>':'<button class="pill-btn" data-act="start" data-id="'+esc(v.id)+'">开始</button>')
-      +'<button class="pill-btn" data-goto="'+esc(v.id)+'">打开</button>'
-    +'</div></article>';
-}
-
-function fullCard(v){
-  var st=statusInfo(v), vs=vals(v), stats=v.stats||{}, memory=v.memory||{};
-  var hp=num(vs.hp,0), maxHp=num(vs.max_hp,0);
-  var progress=pct(stats.progress||0);
-  var action=stats.last_action||((v.decision&&v.decision.action&&v.decision.action.kind)||'等待决策');
-  var chat=(v.chat||[]).slice(-2).map(function(m){
-    return '<div class="chat-line '+(m.role==='user'?'user':'ai')+'"><b>'+(m.role==='user'?'你':'AI')+'</b>'+esc(m.text)+'</div>';
-  }).join('');
-  var running=st.key==='running';
-  var controls='';
-  if(running){
-    controls='<button class="pill-btn" data-act="pause" data-id="'+esc(v.id)+'">暂停</button><button class="pill-btn" data-act="stop" data-id="'+esc(v.id)+'">停止</button>';
-  }else if(st.key==='human'){
-    controls='<button class="pill-btn" data-act="resume" data-id="'+esc(v.id)+'">恢复 AI</button><button class="pill-btn" data-act="stop" data-id="'+esc(v.id)+'">停止</button>';
-  }else if(st.key==='paused'){
-    controls='<button class="pill-btn" data-act="resume" data-id="'+esc(v.id)+'">继续</button><button class="pill-btn" data-act="stop" data-id="'+esc(v.id)+'">停止</button>';
-  }else{
-    controls='<button class="pill-btn" data-act="start" data-id="'+esc(v.id)+'">开始</button>';
-  }
-  return '<article class="game-card" data-card="'+esc(v.id)+'">'
-    +'<div class="gc-head"><div style="min-width:0;flex:1"><h3>'+esc(v.name||v.id)+'</h3><div class="gc-meta">'+sourceIcon(v.source_kind)+' '+esc(v.profile||'')+' · seed '+esc(v.seed||0)+'</div></div><span class="status '+st.key+'">'+st.label+'</span></div>'
-    +'<div class="gc-stats">'
-      +'<div><span>生命</span><b>'+(maxHp>0?hp+' / '+maxHp:'—')+'</b></div>'
-      +'<div><span>动作</span><b>'+Math.round(stat(v,'actions',0))+'</b></div>'
-      +'<div><span>胜负</span><b class="lime">'+Math.round(stat(v,'wins',0))+' / '+Math.round(stat(v,'episodes',0))+'</b></div>'
-    +'</div>'
-    +'<div class="progress"><div class="labels"><span>本局进度 · '+esc(v.state&&v.state.summary?v.state.summary:'等待第一帧')+'</span><b>'+progress+'%</b></div><div class="bar"><i style="width:'+progress+'%"></i></div></div>'
-    +'<div class="action-line"><b>'+esc(action)+'</b>'+(v.decision&&v.decision.reason?' · '+esc(v.decision.reason):'')+'</div>'
-    +(chat?'<div class="chat-lines">'+chat+'</div>':'')
-    +'<div class="gc-chat"><textarea rows="2" maxlength="500" data-input="'+esc(v.id)+'" placeholder="说话或输入约束，例如：先别打那个 Boss"></textarea><button class="mic-btn" data-mic="'+esc(v.id)+'" title="语音输入">◉</button><button class="send-btn" data-send="'+esc(v.id)+'">发送</button></div>'
-    +'<div class="gc-chat-hint">Enter 发送 · Shift+Enter 换行 · 指令在下一个决策周期生效</div>'
-    +'<div class="card-controls">'+controls+'<button class="pill-btn" data-mem="'+esc(v.id)+'">记忆 '+Math.round(num(memory.bytes,0)/1024)+' KB</button><button class="pill-btn danger-text" data-act="delete" data-id="'+esc(v.id)+'">删除</button></div>'
-    +'</article>';
-}
-
 function renderOverview(){
   $('#setupSteps').innerHTML=setupSteps();
   var h=(S.metrics&&S.metrics.histograms)||{};
@@ -177,9 +331,8 @@ function renderOverview(){
   $('#globalMini').innerHTML=S.prefs.length?S.prefs.slice(0,4).map(function(p){
     return '<div class="mini-pref"><i></i><span>'+esc(p.text||'（仅权重）')+'</span></div>';
   }).join(''):'<span class="muted">暂无偏好</span>';
-  renderEvents();
+  renderEvents(); renderAndroidBanner();
 }
-
 function renderGames(){
   if(S.suspendGames) return;
   var list=S.instances.filter(function(v){
@@ -197,10 +350,9 @@ function renderGames(){
     }).join('');
   }
 }
-
 function renderAI(){
   var llm=S.llm||{}; var local=llm.local||{}; var router=llm.router||{};
-  var apiState=llm.has_api_key?(router.api_available?'可用':'已保存 Key'):'未配置';
+  var apiState=llm.has_api_key?(router.api_available===false?'已保存 Key':'可用'):'未配置';
   var localState=(local.server&&local.server.running)?'运行中':(local.enabled?'已就绪':(local.download&&local.download.active?'下载中':'未启动'));
   $('#brainCard').innerHTML='<div class="brain-main"><div class="blabel">当前 AI 大脑</div><h2><span class="dot '+(llm.mode==='offline'?'err':'on')+'"></span>'+esc(modeLabel(llm.mode))+'</h2><p>'+esc(llm.model||'尚未选择模型')+' · '+(llm.mode==='api'?'请求发往你填写的接口':llm.mode==='local'?'全部在本机推理':'按可用性自动切换')+'</p></div>'
     +'<div class="brain-chips">'
@@ -225,30 +377,83 @@ function renderAI(){
   if(hw.arch) chips.push('<span class="bchip">架构<b>'+esc(hw.arch)+'</b></span>');
   if(local.server&&local.server.running) chips.push('<span class="bchip">llama-server<b>127.0.0.1:'+esc(local.server.port||'')+'</b></span>');
   $('#localSummary').innerHTML=chips.join('')||'<span class="muted">正在检测设备…</span>';
-  var models=local.models||[];
+  var models=(local.models||[]).slice(0);
+  var seen={}; models.forEach(function(m){seen[m.id]=1});
+  (local.catalog||[]).forEach(function(m){ if(!seen[m.id]){ var x={}; for(var k in m){x[k]=m[k]} x.extra=true; models.push(x); seen[m.id]=1; } });
   var dl=local.download||{};
   if(!models.length){
     $('#localModels').innerHTML='<div class="muted">没有检测到可用模型档位。'+(local.error?' '+esc(local.error):'')+'</div>';
   }else{
     $('#localModels').innerHTML=models.map(function(m){
-      var active=dl.active&&(dl.model_id===m.id||!dl.model_id);
-      var needLabel=m.present?'已下载':(m.role==='strategy'?'需下载':'规则层');var canDl=m.role==='strategy'&&!m.present&&!active;var canCancel=active;var row='<div class="model-row'+(active?' dl':'')+'"><div class="mr-head"><span class="dot '+(m.present?'on':'')+'"></span><b>'+esc(m.id)+'</b><span class="tag">'+esc(m.role||'')+'</span><span class="tag '+(m.present?'ok':'')+'">'+needLabel+'</span>'+(canDl?'<button class="pill-btn model-action" data-dl="'+esc(m.id)+'">下载</button>':'')+(canCancel?'<button class="pill-btn model-action" data-cancel="1">取消</button>':'')+'</div>'
+      var active=dl.active&&(dl.model_id===m.id||dl.model===m.id||!dl.model_id);
+      var selected=!!(m.selected||(local.model===m.id));
+      var canDl=!m.present&&!active;var canCancel=active;
+      var row='<div class="model-row'+(active?' dl':'')+(selected?' selected':'')+'"><div class="mr-head"><span class="dot '+(m.present?'on':'')+'"></span><b>'+esc(m.id)+'</b><span class="tag">'+esc(m.extra?'可选':(ROLE_LABEL[m.role]||m.role||''))+'</span><span class="tag '+(m.present?'ok':'')+'">'+(m.present?(selected?'当前使用':'已下载'):'需下载')+'</span></div>'
         +'<div class="mr-meta"><span>'+esc(m.license||'')+'</span><span>'+esc(fmtSize(m.size_bytes))+'</span></div>';
       if(active){
-        row+='<div class="bar"><i style="width:'+Math.max(0,Math.min(100,num(dl.percent,0)))+'%"></i></div><div class="mr-meta"><span>'+esc(fmtSize(dl.downloaded))+' / '+esc(fmtSize(dl.total))+'</span><span>'+esc(num(dl.bytes_per_second,0).toFixed(0))+' B/s</span></div>';
+        row+='<div class="bar"><i style="width:'+Math.max(0,Math.min(100,num(dl.percent,0)))+'%"></i></div><div class="mr-meta"><span>'+esc(fmtSize(dl.downloaded))+' / '+esc(fmtSize(dl.total))+'</span><span>'+esc(num(dl.bytes_per_second,0).toFixed(0))+' B/s</span><span><button class="link-btn" data-cancel="1">取消</button></span></div>';
       }
-      row+='</div>';
+      row+='<div class="model-actions">'
+        +(canDl?'<button class="pill-btn model-action" data-dl="'+esc(m.id)+'">下载</button>':'')
+        +((m.present&&!selected&&!active)?'<button class="pill-btn model-action" data-select="'+esc(m.id)+'">用作本机推理</button>':'')
+        +(m.present&&!active?'<button class="link-btn danger-text" data-delmodel="'+esc(m.id)+'">删除</button>':'')
+        +(selected&&local.server&&local.server.running?'<span class="tag ok">运行中</span>':'')
+      +'</div></div>';
       return row;
     }).join('');
   }
-  $('#localNote').textContent=dl.error?('下载失败：'+dl.error):(local.note||'模型不入安装包，首次启用时按设备档位下载。');
+  $('#localNote').textContent=dl.error?('下载失败：'+dl.error):(local.note||'模型不入安装包。可以下载多个、切换使用或删除；感知/校验仍由规则层兜底。');
   var starting=!!(local.download&&local.download.active);
   $('#localStart').disabled=!!((local.server&&local.server.running)||starting);
   $('#localStart').textContent=starting?'正在下载模型…':(local.server&&local.server.running?'本机 AI 运行中':'启用本机 AI');
   $('#localStop').disabled=!(local.server&&local.server.running);
   $('#localRefresh').disabled=false;
+  renderRoutes();
 }
-
+function routeObj(role){
+  var r=(S.aiRoutes&&S.aiRoutes.routes)||{};
+  var x=r[role];
+  if(typeof x==='string') return {mode:x,model:''};
+  if(x&&typeof x==='object') return {mode:x.mode||'auto',model:x.model||''};
+  return {mode:'auto',model:''};
+}
+function routeStatus(role){
+  var st=(S.aiRoutes&&S.aiRoutes.status)||{};
+  return st[role]||(S.aiRoutes&&S.aiRoutes.available&&S.aiRoutes.available[role])||null;
+}
+function renderRoutes(){
+  var box=$('#aiRoutes'); if(!box) return;
+  var has=!!(S.aiRoutes&&S.aiRoutes.routes);
+  box.innerHTML=ROLES.map(function(r){
+    var cur=routeObj(r.key), st=routeStatus(r.key);
+    var statusText='';
+    if(st){ if(st.available===false) statusText='<span class="tag warn">当前不可用，将回退</span>'; else if(st.provider||st.model) statusText='<span class="tag ok">'+esc(st.provider||st.model)+'</span>'; }
+    return '<div class="route-row" data-role="'+r.key+'"><div class="route-name"><b>'+esc(r.label)+'</b><small>'+esc(r.desc)+'</small></div>'
+      +'<select data-route-mode="'+r.key+'">'
+        +'<option value="auto"'+(cur.mode==='auto'?' selected':'')+'>自动</option>'
+        +'<option value="api"'+(cur.mode==='api'?' selected':'')+'>API</option>'
+        +'<option value="local"'+(cur.mode==='local'?' selected':'')+'>本机</option>'
+        +'<option value="offline"'+(cur.mode==='offline'?' selected':'')+'>规则回退</option>'
+      +'</select>'
+      +'<input data-route-model="'+r.key+'" value="'+esc(cur.model)+'" placeholder="'+(cur.mode==='api'?'API 模型名':'本机模型 ID（可留空）')+'">'
+      +statusText+'</div>';
+  }).join('');
+  var tag=$('#routesTag'); if(tag){tag.textContent=has?'已分层':'旧版后端';tag.className='tag '+(has?'ok':'warn')}
+  var note=$('#routesNote'); if(note) note.textContent=has?'':'当前后端没有分层路由接口，只有决策层可切换；升级后这里会逐层生效。';
+}
+async function saveRoutes(){
+  var routes={};
+  $$('[data-route-mode]').forEach(function(sel){
+    var role=sel.getAttribute('data-route-mode');
+    var inp=$('[data-route-model="'+role+'"]');
+    routes[role]={mode:sel.value,model:inp?inp.value.trim():''};
+  });
+  try{
+    var r=await api('/api/ai/routes',{method:'POST',body:{routes:routes}});
+    S.aiRoutes=r||{routes:routes}; toast('分层 AI 设置已保存'); renderRoutes();
+    setTimeout(refresh,300);
+  }catch(e){toast('保存失败：'+e.message,true)}
+}
 function renderMemory(){
   var pl=$('#prefList');
   pl.innerHTML=S.prefs.length?S.prefs.map(function(p){
@@ -262,7 +467,73 @@ function renderMemory(){
     return '<div class="mem-card"><div class="mh"><span>'+esc(v.name||v.id)+'</span><span class="status '+statusInfo(v).key+'">'+statusInfo(v).label+'</span></div><div class="mm"><span>工作 '+esc(m.working||0)+'</span><span>摘要 '+esc(m.summaries||0)+'</span><span>事实 '+esc(m.facts||0)+'</span><span>'+esc(Math.round(num(m.bytes,0)/1024))+' KB / '+esc(v.memory_budget_kb||256)+' KB</span></div></div>';
   }).join(''):'<div class="muted">创建游戏后，这里会显示每个实例的分层记忆占用。</div>';
 }
-
+function permValue(s,name){
+  var p=(s&&s.permissions)||{};
+  if(name==='overlay') return !!(p.overlay||p.overlay_permission||s.overlayPermission);
+  if(name==='accessibility') return !!(p.accessibility||p.accessibility_ready||s.accessibilityReady);
+  if(name==='notification') return !!(p.notification||p.notifications||s.notificationPermission);
+  if(name==='capture') return !!(p.capture||s.captureRunning);
+  return false;
+}
+function permissionRows(s){
+  var rows=[
+    {key:'overlay',label:'悬浮窗 / 灵动岛',need:'没有它就没有悬浮球，也看不到实时对话入口',btn:'去授权'},
+    {key:'accessibility',label:'无障碍服务',need:'AI 通过它点击、滑动、返回；没有它只能看不能动',btn:'去开启'},
+    {key:'notification',label:'通知权限',need:'Android 13+ 后台保活与录屏前台服务提示',btn:'去开启'},
+    {key:'capture',label:'屏幕录制',need:'AI 只能通过录屏看画面；停止后实例会报错',btn:'开始截屏'}
+  ];
+  return rows.map(function(r){
+    var ok=permValue(s,r.key);
+    return '<div class="perm-row '+(ok?'ok':'')+'"><span class="perm-ico">'+(ok?'✓':'!')+'</span><div><b>'+esc(r.label)+'</b><small>'+esc(ok?'已就绪':r.need)+'</small></div>'
+      +(ok?'<span class="tag ok">已开启</span>':'<button class="pill-btn" data-perm="'+r.key+'">'+esc(r.btn)+'</button>')+'</div>';
+  }).join('');
+}
+function missingPermissions(s){
+  var miss=[];
+  if(!permValue(s,'accessibility')) miss.push('无障碍');
+  if(!permValue(s,'overlay')) miss.push('悬浮窗');
+  if(!permValue(s,'capture')) miss.push('录屏');
+  return miss;
+}
+function renderAndroidBanner(){
+  var boxes=[$('#androidBanner'),$('#androidBannerGames')].filter(Boolean);
+  var s=S.host;
+  if(!boxes.length) return;
+  if(!s){boxes.forEach(function(b){b.classList.add('hidden')});return}
+  var miss=missingPermissions(s);
+  var capErr=s.captureError||s.capture_error||'';
+  var html='';
+  if(miss.length||capErr){
+    html='<div class="ab-main"><b>'+(miss.length?'还不能玩：缺少 '+esc(miss.join('、')):'截屏已停止')+'</b><p>'+esc(capErr||'按顺序授权；缺少无障碍时 AI 只能看画面，不能点击。')+'</p></div>'
+      +'<div class="ab-actions">'+miss.map(function(n){
+        var key=n==='无障碍'?'accessibility':n==='悬浮窗'?'overlay':'capture';
+        return '<button class="pill-btn" data-perm="'+key+'">授权'+esc(n)+'</button>';
+      }).join('')+'<button class="primary-btn" data-prepare="1">按顺序准备</button></div>';
+  }
+  boxes.forEach(function(b){
+    if(!html){b.classList.add('hidden');return}
+    b.classList.remove('hidden');b.innerHTML=html;
+  });
+}
+function refreshHostStatus(){
+  var panel=$('#androidPermPanel'); if(!panel) return;
+  var s=hostStatus();
+  S.host=s;
+  panel.classList.toggle('hidden',!s);
+  var tp=$('#takeoverPanel'); if(tp) tp.classList.toggle('hidden',!s);
+  if(!s){renderAndroidBanner();return}
+  var core=$('#andCore'); if(core) core.textContent=s.coreReady?('运行中 · 127.0.0.1:'+s.corePort):(s.coreError?'启动失败：'+s.coreError:'启动中');
+  var cap=$('#andCapture'); if(cap) cap.textContent=s.captureRunning?((s.capturePaused?'已暂停':'运行中')+(s.captureWidth?' · '+s.captureWidth+'×'+s.captureHeight:'')):'未开始';
+  var list=$('#androidPermList'); if(list) list.innerHTML=permissionRows(s);
+  var miss=missingPermissions(s);
+  var ready=$('#andReady'); if(ready){ready.textContent=miss.length?('还差 '+miss.length+' 项'):'已就绪';ready.className='tag '+(miss.length?'warn':'ok')}
+  var ce=$('#andCaptureError');
+  if(ce){var err=s.captureError||s.capture_error||'';ce.textContent=err?('截屏错误：'+err):'';ce.classList.toggle('hidden',!err)}
+  var sel=$('#takeoverSens');
+  if(sel&&document.activeElement!==sel) sel.value=s.takeoverSensitivity||s.takeover_sensitivity||'medium';
+  var vs=$('#androidVoiceState'); if(vs) vs.textContent=S.voice?('通话中：'+instanceName(S.voice.id)):'实时语音在游戏卡片上开启：点麦克风即可边聊边玩。';
+  renderAndroidBanner();
+}
 function renderSettings(){
   var cfg=S.cfg||{};
   $('#setAddr').textContent=cfg.addr||location.host||'—';
@@ -270,7 +541,7 @@ function renderSettings(){
   $('#setVersion').textContent=(cfg.version||(S.health&&S.health.version)||'—');
   $('#setMode').textContent=modeLabel((S.llm&&S.llm.mode)||cfg.llm&&cfg.llm.mode);
   var host=$('#hostInfo');
-  if(window.GoPlayHost){host.textContent='Android 原生壳 · 核心与模型都在本机运行';}
+  if(window.GoPlayHost){host.textContent='Android 原生壳 · 核心与模型都在本机运行'+(S.host&&S.host.device?' · '+S.host.device:'');}
   else if(window.goplayDesktop){host.textContent='桌面 WebView · 核心在同一进程';}
   else{host.textContent='浏览器模式 · 连接到本机或局域网核心';}
   var hasDesktop=!!window.goplayDesktop;
@@ -278,7 +549,6 @@ function renderSettings(){
   $('#desktopQuit').classList.toggle('hidden',!hasDesktop);
   refreshHostStatus();
 }
-
 function renderEvents(){
   var feed=$('#eventFeed'); if(!feed) return;
   if(!S.events.length){feed.innerHTML='<div class="muted">等待事件…开始一个游戏后，这里会实时显示决策和动作。</div>';return}
@@ -289,6 +559,7 @@ function renderEvents(){
     else if(kind==='instance.stopped') text='已停止';
     else if(kind==='instance.paused') text='已暂停';
     else if(kind==='human.takeover'||kind==='instance.human') text='检测到人工操作，已交还控制权';
+    else if(kind==='instance.error') text='出现错误：'+esc(d.error||'').slice(0,80);
     else if(kind==='global.preference_added') text='新增跨游戏偏好';
     else if(kind==='instance.constraint_added') text='新增实例硬约束';
     else if(d.action) text=esc(d.action.kind||d.action);
@@ -298,7 +569,6 @@ function renderEvents(){
     return '<div class="event"><span class="t">'+esc(ago(e.at))+'</span><span class="m"><span class="kind">'+esc(kind.split('.').pop())+'</span><b>'+esc(name)+'</b> '+text+'</span></div>';
   }).join('');
 }
-
 function renderShell(){
   var running=0;
   S.instances.forEach(function(v){var k=statusInfo(v).key;if(k==='running'||k==='human')running++});
@@ -313,11 +583,9 @@ function renderShell(){
   $('#sideState').textContent=on?'本机核心在线':'核心离线';
   $('#modeEyebrow').textContent=on?('外部感知 · '+modeLabel((S.llm&&S.llm.mode)||'auto')):'正在连接本机核心';
 }
-
 function renderAll(){
   renderShell(); renderOverview(); renderGames(); renderAI(); renderMemory(); renderSettings();
 }
-
 function go(page){
   S.page=page;
   $$('.page').forEach(function(p){p.classList.toggle('active',p.id==='page-'+page)});
@@ -331,7 +599,6 @@ function go(page){
   if(page==='settings') renderSettings();
   window.scrollTo({top:0,behavior:'smooth'});
 }
-
 async function refresh(){
   if(S.loading) return;
   S.loading=true;
@@ -340,14 +607,17 @@ async function refresh(){
       api('/api/instances'),
       api('/api/metrics'),
       api('/api/memory/global'),
-      api('/api/llm')
+      api('/api/llm'),
+      api('/api/ai/routes').catch(function(){return null})
     ]);
     S.instances=(pack[0]&&pack[0].instances)||[];
     S.metrics=pack[1]||null;
     S.prefs=(pack[2]&&pack[2].preferences)||[];
     S.llm=pack[3]||null;
     S.local=(pack[3]&&pack[3].local)||null;
+    if(pack[4]) S.aiRoutes=pack[4];
     S.health=S.health||{addr:(S.cfg&&S.cfg.addr)||location.host};
+    S.frameNonce=Math.floor(Date.now()/3000);
     renderAll();
     refreshHostStatus();
     if(Date.now()-S.eventsAt>5000) refreshEvents();
@@ -360,7 +630,6 @@ async function refresh(){
     S.loading=false;
   }
 }
-
 async function loadStatic(){
   try{
     var pack=await Promise.all([api('/api/health'),api('/api/config')]);
@@ -373,7 +642,6 @@ async function loadStatic(){
     toast('无法连接本机核心：'+e.message,true);
   }
 }
-
 async function refreshEvents(){
   S.eventsAt=Date.now();
   var ids=S.instances.slice(0,4).map(function(v){return v.id});
@@ -386,21 +654,19 @@ async function refreshEvents(){
     renderEvents();
   }catch(e){}
 }
-
 function populateProfiles(){
   var sel=$('#fProfile'); if(!sel) return;
   sel.innerHTML=(S.profiles||[]).map(function(p){return '<option value="'+esc(p.id)+'">'+esc(p.name||p.id)+'</option>'}).join('');
 }
-
 function updateSourceUI(){
   var src=$('#fSource').value;
   $('#androidPickWrap').classList.toggle('hidden',src!=='android');
-  $('#launchWrap').classList.toggle('hidden',src!=='android');
-  $('#createNote').textContent=src==='android'?'Android 上需要先授予录屏和无障碍权限；悬浮球可随时打开对话。':src==='windows'?'电脑端使用全屏截屏 + SendInput，不注入游戏进程。':'Mock 地下城用于跑通流程和评测，不需要真实游戏。';
+  $('#windowsPickWrap').classList.toggle('hidden',src!=='windows');
+  $('#launchWrap').classList.toggle('hidden',src==='mock');
+  $('#createNote').textContent=src==='android'?'Android 会先检查悬浮窗、无障碍、通知和录屏；缺什么就打开系统设置，全部就绪后才开始 AI。':src==='windows'?'电脑端从开始菜单或 Steam 选择游戏，创建后可自动启动。AI 使用全屏截屏 + SendInput，不注入游戏进程。':'Mock 地下城用于跑通流程和评测，不需要真实游戏。';
   var def=src==='mock'?'mock_dungeon':src==='windows'?'generic':'generic_touch';
   if($('#fProfile').querySelector('option[value="'+def+'"]')) $('#fProfile').value=def;
 }
-
 function openModal(profileId){
   if(!S.staticLoaded) loadStatic();
   var src=S.isAndroid?'android':(window.goplayDesktop?'windows':'mock');
@@ -408,15 +674,28 @@ function openModal(profileId){
   $('#fName').value=''; $('#fId').value=nextID();
   $('#fEpisodes').value='1'; $('#fAuto').checked=true; $('#fLaunch').checked=true;
   $('#fAndroidGame').innerHTML='<option value="">加载已安装游戏…</option>';
+  $('#fWindowsGame').innerHTML='<option value="">加载已安装游戏…</option>';
   updateSourceUI();
   if(profileId&&$('#fProfile').querySelector('option[value="'+profileId+'"]')) $('#fProfile').value=profileId;
   $('#modal').classList.remove('hidden');
   if(src==='android') loadAndroidGames();
+  if(src==='windows') loadWindowsGames();
   setTimeout(function(){$('#fName').focus()},50);
 }
 function closeModal(){$('#modal').classList.add('hidden')}
 function nextID(){return 'game-'+Date.now().toString(36)+Math.floor(Math.random()*900+100).toString(36)}
-
+async function loadWindowsGames(){
+  var sel=$('#fWindowsGame'); if(!sel) return;
+  sel.innerHTML='<option value="">读取中…</option>';
+  try{
+    var d=await api('/api/games/windows');
+    var list=(d&&d.games)||[];
+    if(!list.length){sel.innerHTML='<option value="">没有找到开始菜单或 Steam 游戏，可手动填写名称</option>';return}
+    sel.innerHTML='<option value="">选择已安装游戏（可选）…</option>'+list.map(function(g){
+      return '<option value="'+esc(g.id)+'" data-name="'+esc(g.name)+'" data-kind="'+esc(g.kind)+'">'+esc(g.name)+' · '+esc(g.source||g.kind)+'</option>';
+    }).join('');
+  }catch(e){sel.innerHTML='<option value="">读取失败：'+esc(e.message)+'</option>'}
+}
 async function loadAndroidGames(){
   var sel=$('#fAndroidGame'); if(!sel) return;
   if(!window.GoPlayHost||!window.GoPlayHost.installedGames){
@@ -435,91 +714,245 @@ async function loadAndroidGames(){
     sel.innerHTML='<option value="">读取游戏列表失败：'+esc(e.message)+'</option>';
   }
 }
-
 async function createGame(ev){
   ev.preventDefault();
   var src=$('#fSource').value;
   var pkg=$('#fAndroidGame').value;
+  var winGame=$('#fWindowsGame').value;
   var name=$('#fName').value.trim();
   var id=$('#fId').value.trim();
   var profile=$('#fProfile').value;
   if(src==='android'&&!pkg){toast('先选择一个已安装的游戏',true);return}
   if(!name&&pkg){var opt=$('#fAndroidGame').selectedOptions[0];name=opt?opt.getAttribute('data-label')||pkg:''}
+  if(!name&&winGame){var wopt=$('#fWindowsGame').selectedOptions[0];name=wopt?wopt.getAttribute('data-name')||'':''}
   if(!name){toast('给这个游戏起个名字',true);return}
   if(!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(id)){toast('实例 ID 只能包含字母、数字、下划线和短横线',true);return}
-  var body={id:id,name:name,profile_id:profile,source_kind:src,seed:0,max_episodes:Math.max(1,parseInt($('#fEpisodes').value||'1',10)),auto_start:$('#fAuto').checked};
+  var auto=$('#fAuto').checked, launch=$('#fLaunch').checked;
+  var body={id:id,name:name,profile_id:profile,source_kind:src,seed:0,max_episodes:Math.max(1,parseInt($('#fEpisodes').value||'1',10)),auto_start:(src==='android'||src==='windows')?false:auto};
   var btn=$('#createForm button[type="submit"]'); btn.disabled=true; btn.textContent='创建中…';
   try{
     await api('/api/instances',{method:'POST',body:body});
+    if(pkg) S.pkgs[id]=pkg;
     if(src==='android') hostSetActive(id);
     closeModal();
-    toast('已创建，AI 开始接管');
-    if(src==='android'&&$('#fLaunch').checked&&window.GoPlayHost&&window.GoPlayHost.launchGame){
-      setTimeout(function(){try{window.GoPlayHost.launchGame(pkg)}catch(e){toast('启动游戏失败：'+e.message,true)}},350);
+    if(src==='android'){
+      if(auto){
+        toast('已创建，先检查权限与画面');
+        prepareAndStart(id,pkg,launch,true);
+      }else{
+        if(launch&&pkg&&window.GoPlayHost&&window.GoPlayHost.launchGame){try{window.GoPlayHost.launchGame(pkg)}catch(e){}}
+        toast('已创建；需要时点「开始」会先检查权限');
+        setTimeout(function(){refresh();go('games')},300);
+      }
+    }else if(src==='windows'){
+      if(launch&&winGame){
+        try{var lg=await api('/api/games/windows/launch',{method:'POST',body:{id:winGame}});toast('已启动 '+(lg.name||'游戏')+'，等待窗口…')}catch(e){toast('启动游戏失败：'+e.message,true)}
+      }
+      if(auto){
+        toast('已创建，稍后开始自动游玩');
+        setTimeout(function(){startInstance(id);refresh();go('games')},launch&&winGame?1500:200);
+      }else{toast('已创建');setTimeout(function(){refresh();go('games')},300)}
+    }else{
+      toast('已创建');
+      setTimeout(function(){refresh();go('games')},300);
     }
-    setTimeout(function(){refresh();go('games')},350);
+    setTimeout(refresh,400);
   }catch(e){toast('创建失败：'+e.message,true)}
   finally{btn.disabled=false;btn.textContent='创建并开始'}
 }
-
+function hostReady(s){
+  return !!(s&&s.coreReady&&(s.captureRunning||permValue(s,'capture'))&&permValue(s,'accessibility'));
+}
+function missingForStart(s){
+  var miss=[];
+  if(!s||!s.coreReady) miss.push('本机核心');
+  if(!permValue(s,'accessibility')) miss.push('无障碍');
+  if(!permValue(s,'capture')) miss.push('录屏');
+  if(!permValue(s,'overlay')) miss.push('悬浮窗');
+  return miss;
+}
+async function prepareAndStart(id,pkg,launch,auto){
+  if(!window.GoPlayHost){return startInstance(id)}
+  if(S.starting[id]) return;
+  S.starting[id]=true; hostSetActive(id); renderGames();
+  try{
+    var s=hostStatus()||{};
+    if(window.GoPlayHost.prepareGame){
+      try{
+        var raw=window.GoPlayHost.prepareGame(id,pkg||'');
+        var res=raw?JSON.parse(raw):{};
+        if(res&&res.message) toast(res.message);
+      }catch(e){toast('权限准备调用失败：'+e.message,true)}
+      if(launch&&pkg&&window.GoPlayHost.launchGame){
+        try{window.GoPlayHost.launchGame(pkg)}catch(e){toast('启动游戏失败：'+e.message,true)}
+      }
+    }else{
+      if(launch&&pkg&&window.GoPlayHost.launchGame){
+        try{window.GoPlayHost.launchGame(pkg)}catch(e){toast('启动游戏失败：'+e.message,true)}
+      }
+      if(!permValue(s,'capture')){
+        try{window.GoPlayHost.startCapture()}catch(e){}
+      }
+    }
+    var deadline=Date.now()+45000; var warned=false; var last=[];
+    while(Date.now()<deadline){
+      await sleep(900);
+      s=hostStatus()||{};
+      last=missingForStart(s);
+      if(hostReady(s)) break;
+      if(!warned&&Date.now()>deadline-32000){
+        warned=true;
+        toast('还需要：'+last.join('、')+'。请按提示授权，完成后会自动继续',true);
+        if(S.page!=='settings') go('settings');
+      }
+    }
+    if(!hostReady(s)){
+      toast('准备未完成：'+(last.join('、')||'未知')+'。授权后再点开始',true);
+      go('settings'); refreshHostStatus(); return;
+    }
+    if(auto) await startInstance(id);
+  }finally{
+    delete S.starting[id]; renderGames(); refreshHostStatus(); refresh();
+  }
+}
+async function startInstance(id){
+  try{
+    await api('/api/instances/'+encodeURIComponent(id)+'/start',{method:'POST'});
+    toast('AI 开始游玩');
+    setTimeout(refresh,300);
+  }catch(e){toast('启动失败：'+e.message,true); throw e}
+}
+async function releaseToAI(id){
+  hostSetActive(id);
+  var hostMsg='';
+  if(window.GoPlayHost&&window.GoPlayHost.releaseHuman){
+    try{
+      var raw=window.GoPlayHost.releaseHuman(); var hr=raw?JSON.parse(raw):{};
+      if(hr&&hr.ok===false) hostMsg=hr.message||hr.error||'';
+    }catch(e){hostMsg=e.message||''}
+  }
+  try{
+    await api('/api/instances/'+encodeURIComponent(id)+'/release',{method:'POST'});
+  }catch(e){}
+  try{
+    await api('/api/instances/'+encodeURIComponent(id)+'/resume',{method:'POST'});
+    toast(hostMsg?('已恢复实例，但手机端交还失败：'+hostMsg):'已交还 AI',!!hostMsg);
+  }catch(e){toast(e.message,true)}
+  setTimeout(refresh,250);
+}
 async function act(id,action){
   if(action==='delete'){
     if(!confirm('删除这个游戏实例？它的专属记忆也会被删除。')) return;
     try{await api('/api/instances/'+encodeURIComponent(id),{method:'DELETE'});toast('已删除');refresh()}catch(e){toast(e.message,true)}
     return;
   }
-  var path=action==='start'?'start':action==='stop'?'stop':action==='pause'?'pause':'resume';
-  if((action==='start'||action==='resume')&&window.GoPlayHost) hostSetActive(id);
+  if(action==='start'){
+    var v=null; for(var i=0;i<S.instances.length;i++){if(S.instances[i].id===id)v=S.instances[i]}
+    if(v&&v.source_kind==='android'){
+      await prepareAndStart(id,S.pkgs[id]||v.package||v.pkg||'',true,true); return;
+    }
+    try{await startInstance(id)}catch(e){} return;
+  }
+  if(action==='release'){await releaseToAI(id);return}
+  if((action==='resume')&&window.GoPlayHost) hostSetActive(id);
+  var path=action==='stop'?'stop':action==='pause'?'pause':'resume';
   try{
     await api('/api/instances/'+encodeURIComponent(id)+'/'+path,{method:'POST'});
-    toast(action==='start'?'开始自动游玩':action==='stop'?'已停止':action==='pause'?'已暂停':'已继续');
+    toast(action==='stop'?'已停止':action==='pause'?'已暂停':'已继续');
     setTimeout(refresh,250);
   }catch(e){toast(e.message,true)}
 }
-
-async function sendChat(id){
-  var ta=$('[data-input="'+id+'"]'); if(!ta) return;
-  var text=ta.value.trim(); if(!text) return;
+async function sendChat(id,textOverride){
+  var ta=$('[data-input="'+id+'"]');
+  var text=(textOverride!==undefined?textOverride:(ta?ta.value:'')).trim(); if(!text) return;
   var btn=$('[data-send="'+id+'"]'); if(btn) btn.disabled=true;
   try{
-    await api('/api/instances/'+encodeURIComponent(id)+'/message',{method:'POST',body:{text:text}});
-    ta.value=''; toast('已进入指令缓冲，下一个决策周期生效');
+    var r=null;
+    try{
+      r=await api('/api/instances/'+encodeURIComponent(id)+'/chat',{method:'POST',body:{text:text}});
+    }catch(e){
+      if(e.status===404) r=await api('/api/instances/'+encodeURIComponent(id)+'/message',{method:'POST',body:{text:text}});
+      else throw e;
+    }
+    if(ta) ta.value=''; toast('已进入指令缓冲，下一个决策周期生效');
+    if(r&&r.reply) speakReply(r.reply);
+    setTimeout(refresh,450);
   }catch(e){toast(e.message,true)}
   finally{if(btn) btn.disabled=false}
 }
-
 function appendText(el,text){
   if(!el) return;
   el.value=(el.value?el.value+' ':'')+text;
   el.focus();
 }
-
-function startVoice(id){
-  S.voiceTarget=id;
-  if(window.GoPlayHost&&window.GoPlayHost.startVoice){
-    try{window.GoPlayHost.startVoice();toast('请说话…');return}catch(e){}
+function speakReply(text){
+  if(!text) return;
+  if(window.GoPlayHost&&window.GoPlayHost.speak){try{window.GoPlayHost.speak(text);return}catch(e){}}
+  if(window.speechSynthesis){
+    try{var u=new SpeechSynthesisUtterance(text);u.lang='zh-CN';window.speechSynthesis.cancel();window.speechSynthesis.speak(u)}catch(e){}
   }
-  var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-  if(!SR){toast('当前环境不支持语音输入，请用键盘输入',true);return}
-  try{
-    var rec=new SR(); rec.lang='zh-CN'; rec.interimResults=false; rec.maxAlternatives=1;
-    rec.onresult=function(ev){
-      var text='';
-      for(var i=ev.resultIndex;i<ev.results.length;i++) text+=ev.results[i][0].transcript;
-      var ta=$('[data-input="'+S.voiceTarget+'"]');
-      appendText(ta,text.trim()); toast('已识别');
-    };
-    rec.onerror=function(){toast('语音识别失败，请用键盘输入',true)};
-    rec.start(); toast('请说话…');
-  }catch(e){toast('语音启动失败：'+e.message,true)}
 }
-
-window.goplayVoice=function(text){
-  if(!S.voiceTarget) return;
-  var ta=$('[data-input="'+S.voiceTarget+'"]');
-  appendText(ta,String(text||'').trim());
-  toast('已识别语音');
+function updateCallUI(){
+  $$('[data-call]').forEach(function(b){
+    var on=S.voice&&S.voice.id===b.getAttribute('data-call');
+    b.classList.toggle('active',!!on);
+    b.title=on?'结束实时语音':'实时语音通话';
+  });
+  var vs=$('#androidVoiceState'); if(vs) vs.textContent=S.voice?('通话中：'+instanceName(S.voice.id)+' · 说完自动发送'):'实时语音在游戏卡片上开启：点麦克风即可边聊边玩。';
+}
+function webSpeechStart(){
+  var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  if(!SR){toast('当前环境不支持语音，请用键盘输入',true);return false}
+  try{
+    if(S.voice.rec){try{S.voice.rec.stop()}catch(e){}}
+    var rec=new SR(); rec.lang='zh-CN'; rec.continuous=true; rec.interimResults=true; rec.maxAlternatives=1;
+    rec.onresult=function(ev){
+      var interim='', final='';
+      for(var i=ev.resultIndex;i<ev.results.length;i++){
+        var t=ev.results[i][0].transcript;
+        if(ev.results[i].isFinal) final+=t; else interim+=t;
+      }
+      if(interim&&S.voice){var ta=$('[data-input="'+S.voice.id+'"]');if(ta)ta.placeholder='听到：'+interim}
+      if(final) window.goplayVoiceFinal(final.trim());
+    };
+    rec.onend=function(){if(S.voice&&S.voice.active){try{rec.start()}catch(e){}}};
+    rec.onerror=function(){};
+    S.voice.rec=rec; rec.start();
+    return true;
+  }catch(e){toast('语音启动失败：'+e.message,true);return false}
+}
+function startCall(id){
+  hostSetActive(id);
+  if(S.voice&&S.voice.id!==id) stopCall();
+  S.voiceTarget=id; S.voice={id:id,active:true,rec:null};
+  if(window.GoPlayHost&&window.GoPlayHost.startConversation){
+    try{window.GoPlayHost.startConversation();toast('实时通话中，说完会自动发送')}catch(e){toast('原生语音启动失败：'+e.message,true)}
+  }else{
+    if(webSpeechStart()) toast('实时通话中，说完会自动发送');
+  }
+  updateCallUI();
+}
+function stopCall(){
+  if(window.GoPlayHost&&window.GoPlayHost.stopConversation){try{window.GoPlayHost.stopConversation()}catch(e){}}
+  if(window.GoPlayHost&&window.GoPlayHost.stopSpeaking){try{window.GoPlayHost.stopSpeaking()}catch(e){}}
+  if(S.voice&&S.voice.rec){try{S.voice.rec.onend=null;S.voice.rec.stop()}catch(e){}}
+  if(window.speechSynthesis){try{window.speechSynthesis.cancel()}catch(e){}}
+  S.voice=null; S.voiceTarget=null; updateCallUI(); toast('已结束通话');
+}
+function toggleCall(id){if(S.voice&&S.voice.id===id) stopCall(); else startCall(id)}
+window.goplayFocus=function(where){
+  if(String(where||'')==='permissions'){ go('settings'); setTimeout(refreshHostStatus,80); }
 };
+window.goplayVoice=function(text){if(!S.voiceTarget)return;var ta=$('[data-input="'+S.voiceTarget+'"]');appendText(ta,String(text||'').trim());toast('已识别语音')};
+window.goplayVoiceFinal=function(text){
+  if(!S.voiceTarget) return;
+  var t=String(text||'').trim(); if(!t) return;
+  var ta=$('[data-input="'+S.voiceTarget+'"]'); if(ta){ta.value=t;ta.placeholder='说话或输入约束…'}
+  sendChat(S.voiceTarget,t);
+};
+window.goplayVoicePartial=function(text){if(!S.voiceTarget)return;var ta=$('[data-input="'+S.voiceTarget+'"]');if(ta)ta.placeholder='听到：'+String(text||'')};
+window.goplayVoiceError=function(msg){toast('语音错误：'+(msg||'未知'),true)};
+window.goplaySpeaking=function(on){var vs=$('#androidVoiceState');if(vs&&S.voice)vs.textContent=on?'AI 正在说话…':'通话中：说完自动发送'};
 
 async function saveAPI(ev){
   ev.preventDefault();
@@ -531,10 +964,9 @@ async function saveAPI(ev){
   try{
     var res=await api('/api/llm',{method:'POST',body:body});
     S.llm=res; $('#apiKey').value=''; S.visionDirty=false;
-    toast('API 已保存并启用'); renderAI();
+    toast('API 已保存并启用'); renderAI(); refresh();
   }catch(e){toast('保存失败：'+e.message,true)}
 }
-
 async function testAPI(){
   var b=$('#apiTest'); b.disabled=true; b.textContent='测试中…';
   try{
@@ -543,7 +975,6 @@ async function testAPI(){
   }catch(e){toast('连接失败：'+e.message,true)}
   finally{b.disabled=false;b.textContent='测试连接'}
 }
-
 async function clearAPI(){
   if(!confirm('清除保存在本机的 API Key？本机模型不受影响。')) return;
   try{
@@ -552,7 +983,6 @@ async function clearAPI(){
     S.llm=res; toast('已清除 API Key'); renderAI();
   }catch(e){toast(e.message,true)}
 }
-
 async function enableLocal(){
   try{
     var res=await api('/api/llm',{method:'POST',body:{mode:'local'}});
@@ -560,16 +990,25 @@ async function enableLocal(){
     setTimeout(refresh,1200); setTimeout(refresh,4000);
   }catch(e){toast(e.message,true)}
 }
+async function startLocal(){
+  try{await api('/api/local/start',{method:'POST'});toast('正在启动本机模型');setTimeout(refresh,700)}catch(e){toast(e.message,true)}
+}
 async function stopLocal(){
   try{await api('/api/local/stop',{method:'POST'});toast('本机模型已停止');setTimeout(refresh,300)}catch(e){toast(e.message,true)}
 }
-async function downloadModel(){
-  try{await api('/api/local/download',{method:'POST'});toast('开始下载策略模型');setTimeout(refresh,800)}catch(e){toast(e.message,true)}
+async function downloadModel(id){
+  try{await api('/api/local/download',{method:'POST',body:{model_id:id}});toast('开始下载 '+(id||'推荐模型'));setTimeout(refresh,800)}catch(e){toast(e.message,true)}
 }
 async function cancelDownload(){
   try{await api('/api/local/cancel',{method:'POST'});toast('已请求取消下载');setTimeout(refresh,500)}catch(e){toast(e.message,true)}
 }
-
+async function selectModel(id){
+  try{await api('/api/local/select',{method:'POST',body:{model_id:id}});toast('已切换本机模型');setTimeout(refresh,500)}catch(e){toast(e.message,true)}
+}
+async function deleteModel(id){
+  if(!confirm('从手机/电脑删除模型 '+id+'？之后可以重新下载。')) return;
+  try{await api('/api/local/models/'+encodeURIComponent(id),{method:'DELETE'});toast('已删除');setTimeout(refresh,400)}catch(e){toast(e.message,true)}
+}
 async function addPref(ev){
   ev.preventDefault();
   var text=$('#prefText').value.trim(); if(!text){toast('写一句偏好再提交',true);return}
@@ -583,7 +1022,6 @@ async function addPref(ev){
 async function deletePref(id){
   try{await api('/api/memory/global/preferences/'+encodeURIComponent(id),{method:'DELETE'});toast('已删除偏好');refresh()}catch(e){toast(e.message,true)}
 }
-
 function hostSetActive(id){
   if(!window.GoPlayHost||!window.GoPlayHost.setActiveInstance) return true;
   try{
@@ -592,38 +1030,40 @@ function hostSetActive(id){
     return true;
   }catch(e){return false}
 }
-
 function hostStatus(){
   if(!window.GoPlayHost||!window.GoPlayHost.statusJson) return null;
   try{return JSON.parse(window.GoPlayHost.statusJson()||'{}')}catch(e){return null}
 }
-
-function refreshHostStatus(){
-  var panel=$('#androidPermPanel'); if(!panel) return;
-  var s=hostStatus();
-  panel.classList.toggle('hidden',!s);
-  if(!s) return;
-  $('#andCore').textContent=s.coreReady?('运行中 · 127.0.0.1:'+s.corePort):(s.coreError?'启动失败':'启动中');
-  $('#andCapture').textContent=s.captureRunning?((s.capturePaused?'已暂停':'运行中')+(s.captureWidth?' · '+s.captureWidth+'×'+s.captureHeight:'')):'未开始';
-  $('#andAccess').textContent=s.accessibilityReady?'已开启':'未开启（AI 无法点击/滑动）';
-  $('#andOverlay').textContent=s.overlayPermission?'已授权':'未授权（没有悬浮球）';
-  $('#andNotif').textContent=s.notificationPermission?'已授权':'未授权';
-  $('#andInstance').textContent=s.activeInstance||'—';
-}
-
 function hostCall(method,okMessage){
   if(!window.GoPlayHost||typeof window.GoPlayHost[method]!=='function'){
     toast('当前环境没有这个原生功能',true);return;
   }
-  try{window.GoPlayHost[method]();if(okMessage)toast(okMessage)}catch(e){toast('原生调用失败：'+e.message,true)}
+  try{window.GoPlayHost[method]();if(okMessage)toast(okMessage);setTimeout(refreshHostStatus,600)}catch(e){toast('原生调用失败：'+e.message,true)}
 }
-
+function grantPerm(kind){
+  if(kind==='overlay') return hostCall('openOverlaySettings','请在系统页允许「显示在其他应用上层」');
+  if(kind==='accessibility') return hostCall('openAccessibility','请在系统页开启 GoPlay 无障碍服务');
+  if(kind==='notification') return hostCall('requestNotification','请允许通知');
+  if(kind==='capture') return hostCall('startCapture','如果弹出录屏授权，请点「立即开始」');
+}
+function prepareAll(){
+  var s=hostStatus()||{};
+  var inst=s.activeInstance;
+  if(window.GoPlayHost&&window.GoPlayHost.prepareGame&&inst){
+    try{var raw=window.GoPlayHost.prepareGame(inst,S.pkgs[inst]||'');var r=raw?JSON.parse(raw):{};if(r.message)toast(r.message)}catch(e){}
+  }else{
+    var miss=missingPermissions(s);
+    if(miss.indexOf('悬浮窗')>=0) return grantPerm('overlay');
+    if(miss.indexOf('无障碍')>=0) return grantPerm('accessibility');
+    if(miss.indexOf('录屏')>=0) return grantPerm('capture');
+  }
+  toast('按提示完成授权；状态会自动刷新'); setTimeout(refreshHostStatus,900);
+}
 function openOverlay(){
   if(window.GoPlayHost&&window.GoPlayHost.openOverlay){try{window.GoPlayHost.openOverlay();return}catch(e){}}
   if(window.goplayDesktop){window.goplayDesktop('overlay');return}
   window.open('/overlay','goplay-overlay','width=430,height=660');
 }
-
 function bind(){
   document.addEventListener('click',function(ev){
     var page=ev.target.closest('[data-page]');
@@ -638,35 +1078,51 @@ function bind(){
     if(got){go('games');var id=got.getAttribute('data-goto');setTimeout(function(){var c=document.querySelector('[data-card="'+id+'"]');if(c)c.scrollIntoView({behavior:'smooth',block:'center'})},100);return}
     var send=ev.target.closest('[data-send]');
     if(send){sendChat(send.getAttribute('data-send'));return}
-    var mic=ev.target.closest('[data-mic]');
-    if(mic){startVoice(mic.getAttribute('data-mic'));return}
+    var call=ev.target.closest('[data-call]');
+    if(call){toggleCall(call.getAttribute('data-call'));return}
     var prof=ev.target.closest('[data-profile]');
     if(prof){openModal(prof.getAttribute('data-profile'));return}
     var pref=ev.target.closest('[data-pref]');
     if(pref){deletePref(pref.getAttribute('data-pref'));return}
     var mem=ev.target.closest('[data-mem]');
     if(mem){go('memory');return}
+    var diagAct=ev.target.closest('[data-diagact]');
+    if(diagAct){diagAction(diagAct.getAttribute('data-diagact'),diagAct.getAttribute('data-id'));return}
+    var diagLoad=ev.target.closest('[data-diagload]');
+    if(diagLoad){ensureDiag(diagLoad.getAttribute('data-diagload'),true);toast('重新诊断中…');return}
+    var copy=ev.target.closest('[data-copy]');
+    if(copy){for(var ci=0;ci<S.instances.length;ci++){if(S.instances[ci].id===copy.getAttribute('data-copy')){copyDiag(S.instances[ci]);break}}return}
+    var perm=ev.target.closest('[data-perm]');
+    if(perm){grantPerm(perm.getAttribute('data-perm'));return}
+    if(ev.target.closest('[data-prepare]')){prepareAll();return}
     if(ev.target.closest('#overlayBtn,#overlayBtn2')){openOverlay();return}
     if(ev.target.closest('#newBtn')){openModal();return}
     if(ev.target.closest('#closeModal,#cancelCreate')){closeModal();return}
     if(ev.target.id==='modal'){closeModal();return}
     if(ev.target.closest('#refreshGames')){loadAndroidGames();return}
+    if(ev.target.closest('#refreshWinGames')){loadWindowsGames();return}
     if(ev.target.closest('#apiClear')){clearAPI();return}
     if(ev.target.closest('#apiTest')){testAPI();return}
-    if(ev.target.closest('#localStart')){enableLocal();return}
+    if(ev.target.closest('#localStart')){startLocal();return}
     if(ev.target.closest('#localStop')){stopLocal();return}
     if(ev.target.closest('#localRefresh')){refresh();return}
-    var dl=ev.target.closest('[data-dl]'); if(dl){downloadModel();return}
+    if(ev.target.closest('#saveRoutes')){saveRoutes();return}
+    var dl=ev.target.closest('[data-dl]'); if(dl){downloadModel(dl.getAttribute('data-dl'));return}
+    var selm=ev.target.closest('[data-select]'); if(selm){selectModel(selm.getAttribute('data-select'));return}
+    var delm=ev.target.closest('[data-delmodel]'); if(delm){deleteModel(delm.getAttribute('data-delmodel'));return}
     if(ev.target.closest('[data-cancel]')){cancelDownload();return}
     if(ev.target.closest('#apiVision')){S.visionDirty=true;return}
     if(ev.target.closest('#desktopData')){try{window.goplayDesktop('data')}catch(e){}return}
     if(ev.target.closest('#desktopQuit')){try{window.goplayDesktop('quit')}catch(e){}return}
     if(ev.target.closest('#reconnectBtn')){loadStatic();refresh();toast('正在重新连接');return}
-    if(ev.target.closest('#androidCapture')){hostCall('startCapture','如果弹出录屏授权，请点「立即开始」');return}
+    if(ev.target.closest('#androidPrepareAll')){prepareAll();return}
+    if(ev.target.closest('#androidPermissionCenter')){go('settings');return}
+    if(ev.target.closest('#androidRelease')){var ai=S.host&&S.host.activeInstance;if(ai)releaseToAI(ai);else toast('先选择一个游戏',true);return}
+    if(ev.target.closest('#androidCapture')){grantPerm('capture');return}
     if(ev.target.closest('#androidStopCapture')){hostCall('stopCapture','已请求停止截屏');return}
-    if(ev.target.closest('#androidAccessibility')){hostCall('openAccessibility');return}
-    if(ev.target.closest('#androidOverlayPerm')){hostCall('openOverlaySettings');return}
-    if(ev.target.closest('#androidNotification')){hostCall('requestNotification');return}
+    if(ev.target.closest('#androidAccessibility')){grantPerm('accessibility');return}
+    if(ev.target.closest('#androidOverlayPerm')){grantPerm('overlay');return}
+    if(ev.target.closest('#androidNotification')){grantPerm('notification');return}
     if(ev.target.closest('#androidAppSettings')){hostCall('openAppSettings');return}
   });
   document.addEventListener('focusin',function(ev){if(ev.target.closest('#gameList')){S.suspendGames=true}});
@@ -683,7 +1139,8 @@ function bind(){
       if(ev.key==='Enter'&&!ev.shiftKey){ev.preventDefault();sendChat(ev.target.getAttribute('data-input'))}
     }
   });
-  $('#fSource').addEventListener('change',function(){updateSourceUI();if(this.value==='android')loadAndroidGames()});
+  $('#fSource').addEventListener('change',function(){updateSourceUI();if(this.value==='android')loadAndroidGames();if(this.value==='windows')loadWindowsGames()});
+  $('#fWindowsGame').addEventListener('change',function(){var o=this.selectedOptions[0];if(o&&o.getAttribute('data-name')){$('#fName').value=o.getAttribute('data-name');$('#fProfile').value='generic'}});
   $('#fAndroidGame').addEventListener('change',function(){
     var opt=this.selectedOptions[0]; if(!opt||!this.value) return;
     var label=opt.getAttribute('data-label')||this.value;
@@ -693,8 +1150,23 @@ function bind(){
   $('#createForm').addEventListener('submit',createGame);
   $('#apiForm').addEventListener('submit',saveAPI);
   $('#prefForm').addEventListener('submit',addPref);
+  var sel=$('#takeoverSens');
+  if(sel) sel.addEventListener('change',function(){
+    if(window.GoPlayHost&&window.GoPlayHost.setTakeoverSensitivity){
+      try{window.GoPlayHost.setTakeoverSensitivity(this.value);toast('接管灵敏度已更新')}catch(e){toast(e.message,true)}
+    }else toast('当前环境不能调整接管灵敏度',true);
+  });
 }
-
+function diagAction(action,id){
+  if(action==='open_permissions') {go('settings');setTimeout(function(){var p=$('#androidPermPanel');if(p)p.scrollIntoView({behavior:'smooth'})},120);return}
+  if(action==='start_capture'){grantPerm('capture');return}
+  if(action==='retry_start'){act(id,'start');return}
+  if(action==='open_ai'){go('ai');return}
+  if(action==='release_human'){releaseToAI(id);return}
+  if(action==='open_logs'){for(var i=0;i<S.instances.length;i++){if(S.instances[i].id===id){copyDiag(S.instances[i]);break}}return}
+  if(action==='open_app'){var v=null;for(var j=0;j<S.instances.length;j++){if(S.instances[j].id===id)v=S.instances[j]}
+    if(v&&window.GoPlayHost&&window.GoPlayHost.launchGame){try{window.GoPlayHost.launchGame(S.pkgs[id]||v.package||'');toast('正在打开游戏')}catch(e){toast(e.message,true)}}return}
+}
 function connectEvents(){
   if(!window.WebSocket) return;
   var proto=location.protocol==='https:'?'wss':'ws';
@@ -707,21 +1179,21 @@ function connectEvents(){
         var e=JSON.parse(ev.data);
         S.events.unshift(e); if(S.events.length>30) S.events.length=30;
         renderEvents();
+        if(e.type==='instance.error'&&e.instance_id) ensureDiag(e.instance_id,true);
       }catch(err){}
     };
     ws.onclose=function(){setTimeout(connectEvents,2500)};
     ws.onerror=function(){try{ws.close()}catch(e){}};
   }catch(e){}
 }
-
 async function init(){
   S.isAndroid=/Android/i.test(navigator.userAgent||'');
   bind();
   await loadStatic();
   await refresh();
+  refreshHostStatus();
   connectEvents();
   S.poll=setInterval(refresh,2500);
 }
-
 init();
 })();

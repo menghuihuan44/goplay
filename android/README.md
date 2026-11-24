@@ -1,6 +1,8 @@
 # GoPlay Mobile（Android 外部 AI 游玩客户端）
 
-v0.3「手机完全独立」：Go 核心（`libgoplaycore.so`）和 llama-server（`libllama-server.so`）随 APK 安装为 arm64 原生库，由 Kotlin 壳以**独立子进程**启动在 `127.0.0.1`；Kotlin 壳只负责 WebView 控制台、**MediaProjection** 截屏、**AccessibilityService** 手势、系统悬浮球/灵动岛和语音入口。核心返回 JSON 动作，客户端合成点击/滑动/长按/返回/文本。全程不 root、不注入游戏进程、不读写游戏内存、不挂钩图形 API、不加载内核驱动。
+v0.4「手机完全独立」：Go 核心（`libgoplaycore.so`）和 llama-server（`libllama-server.so`）随 APK 安装为 arm64 原生库，由 Kotlin 壳以**独立子进程**启动在 `127.0.0.1`；Kotlin 壳负责 WebView 控制台、**MediaProjection** 截屏、**AccessibilityService** 手势、系统悬浮球/灵动岛、连续语音和权限中心。核心返回 JSON 动作，客户端合成点击/滑动/长按/返回/文本。全程不 root、不注入游戏进程、不读写游戏内存、不挂钩图形 API、不加载内核驱动。
+
+v0.4 新增：设置页权限中心（悬浮窗/无障碍/通知/录屏逐项状态）、创建游戏前准备流程、错误的可操作诊断卡（code/检查项/建议/复制诊断）、录屏中断后悬浮球保活与恢复入口、三档人工接管灵敏度、交还 AI、动态属性卡与低帧率实时画面、连续语音识别 + TTS、多模型下载/切换/删除、六层 AI 路由。
 
 包名：`com.goplay.mobile`。协议：[`PROTOCOL.md`](PROTOCOL.md)。
 
@@ -8,15 +10,15 @@ v0.3「手机完全独立」：Go 核心（`libgoplaycore.so`）和 llama-server
 
 ## 验证状态（重要）
 
-本目录已在 Windows 上完成 v0.3 的命令行构建 + JVM 单元测试（2026-11 实测）：
+本目录已在 Windows 上完成 v0.4 的命令行构建 + JVM 单元测试（2026-11 实测）：
 
 - 环境：JDK 17.0.21 (Temurin)、Gradle 8.10.2（wrapper）、AGP 8.7.3、Kotlin 2.0.21、cmdline-tools 23.0、Platform 35、Build-Tools 35.0.0；SDK 位于仓库外的 `C:\Android\sdk`。
-- 原生核心：`CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build -buildmode=pie -ldflags "-s -w"` 产出 `libgoplaycore.so`（10,158,374B）；llama-server 已 strip 为 `libllama-server.so`（13,174,768B）。两者放入 `app/src/main/jniLibs/arm64-v8a/`。
-- 产物：`:app:assembleDebug` **BUILD SUCCESSFUL**；debug APK 14,829,414B，SHA256 `BF66E61781C7C78139AC2669C6147C52746D4F6AE8337B39162213D20595F2C9`，包内 `lib/arm64-v8a/` 两个原生库存在，`aapt` 显示 versionCode 3 / versionName 0.3.0 / native-code arm64-v8a。
+- 原生核心：`CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build -buildmode=pie -ldflags "-s -w"` 产出 `libgoplaycore.so`（v0.4 约 10.3MB）；llama-server 已 strip 为 `libllama-server.so`（13,174,768B）。两者放入 `app/src/main/jniLibs/arm64-v8a/`；`cmd/goplay-release -target android` 会自动重建/布置它们。
+- 产物：`:app:assembleDebug` / `:app:assembleRelease` **BUILD SUCCESSFUL**；v0.4 release APK 约 13.1MB、debug APK 约 14.9MB，包内 `lib/arm64-v8a/` 两个原生库存在，`aapt` 显示 versionCode 4 / versionName 0.4.0 / native-code arm64-v8a。精确大小与 SHA256 以 `dist/release.json`、`dist/SHA256SUMS.txt` 为准。
 - 签名：未提供 release 密钥时按设计回退 debug 签名（CN=Android Debug），可本地安装，**不可用于商店发布**。
-- 测试：`:app:testDebugUnitTest` 的 30 个 JVM 测试需在每次改动后重跑；本目录未包含 MediaProjection/无障碍/悬浮窗的 instrumentation 测试。
+- 测试：`:app:testDebugUnitTest` 的 30 个 JVM 测试全部通过；本目录未包含 MediaProjection/无障碍/悬浮窗/语音的 instrumentation 测试。
 - **尚未在真机或模拟器上安装运行**：本机 SDK 没有 emulator/system-images，也没有连接设备。MediaProjection、AccessibilityService、悬浮球展开、本机核心子进程、模型下载仍需要设备验证。
-- x86_64 模拟器未打包：Go 的 `android/amd64` 目标要求 cgo + NDK，而本机没有安装 NDK；v0.3 只包含 arm64-v8a，覆盖真实 Android 手机。
+- x86_64 模拟器未打包：Go 的 `android/amd64` 目标要求 cgo + NDK，而本机没有安装 NDK；v0.4 只包含 arm64-v8a，覆盖真实 Android 手机。
 
 构建环境提示（AGP 8.7.3 与新版 cmdline-tools 的兼容性）：cmdline-tools 23.0 写出的 `package.xml` 是 SDK XML v4，而 AGP 8.7.3 只识别到 v3，会把已安装的 Platform 35 / Build-Tools 35 当作缺失并尝试重新下载。任选其一解决：安装较旧的 cmdline-tools（如 19.0）来装 SDK；或把这两个包的 `package.xml` 改写为 v3 可解析的格式（本次构建机采用后者，仅属机器本地修复，不在仓库内）。另外本机访问 dl.google.com / Maven Central 很慢，`android/settings.gradle.kts` 已把阿里云镜像排在官方仓库之前。
 
@@ -128,16 +130,16 @@ Manifest 声明：
 | `QUERY_ALL_PACKAGES` + `<queries>` | 列出用户已安装游戏，供“新游戏”选择 | 安装时授予；上架前需按商店政策说明用途 |
 | MediaProjection | 截屏授权 | 点“开始截屏”后系统弹窗确认；每次会话需重新确认 |
 | AccessibilityService（`BIND_ACCESSIBILITY_SERVICE` + 系统绑定） | 合成手势/返回/文本 | 设置页“无障碍服务”→ 系统无障碍页手动启用 |
-| `RECORD_AUDIO` | 不直接申请；语音走系统 `RecognizerIntent` | 由系统语音识别界面自行申请 |
+| `RECORD_AUDIO` | 连续语音识别（SpeechRecognizer）需要 | 设置页权限中心请求麦克风权限；TTS 不需要 |
 
 首次使用建议顺序：
 
 1. 打开 App：`LocalCore` 自动启动本机 Go 核心（`127.0.0.1` 随机端口），WebView 自动加载控制台。
-2. 在「设置 → Android 权限」依次点：悬浮窗权限 → 无障碍设置 → 通知权限。
-3. 回到「游戏 → 新游戏」，从已安装游戏里选一个；创建时会自动切换当前实例并请求录屏授权（如勾选“创建后启动游戏”，授权后游戏会打开）。
-4. 授权后悬浮球/药丸出现；点它展开对话、暂停/继续/停止，点「面板」回到控制台。
-5. 在「AI 大脑」填 API Key，或按设备档位下载本机策略模型并点「启用本机 AI」。模型权重不随 APK 打包。
-6. 回到游戏，AI 开始截屏/决策/手势。
+2. 在「设置 → 运行准备 / Android 权限」按顺序点：悬浮窗 → 无障碍 → 通知 → 麦克风（语音需要）→ 开始截屏。每项会实时显示已就绪/缺失。
+3. 回到「游戏 → 新游戏」，从已安装游戏里选一个；创建后先走准备流程（缺权限会打开系统设置，授权后回到控制台继续），准备好才启动 AI；如勾选“创建后启动游戏”，授权后游戏会打开。
+4. 授权后悬浮球/药丸出现；点它展开对话、暂停/继续/停止，点「面板」回到控制台。录屏中断时悬浮球保留并显示“恢复截屏”，不会一闪消失。
+5. 在「AI 大脑」填 API Key，或下载任意本机模型并点「启用本机 AI」；六层可分别选自动/API/本机/离线。模型权重不随 APK 打包。
+6. 回到游戏，AI 开始截屏/决策/手势。卡住时实例卡会显示结构化诊断和可执行建议；用户碰屏幕即接管，可调接管灵敏度或点「交还 AI」。
 
 > 系统安全窗口、DRM 保护内容、部分厂商的“隐私屏/安全键盘”会让截屏黑屏或隐藏输入框；见“限制”。
 
@@ -315,11 +317,9 @@ AI dispatchGesture 执行窗口 + 回调结束后 400ms -> 客户端抑制 human
 ## 本地模型档位（不在 APK 内）
 
 - 设置页显示设备信息：Android 版本/SDK、厂商型号、ABI、总 RAM、CPU 核数。
-- 点“查询核心本地模型”依次调用：
-  - `GET /api/local/status`
-  - `POST /api/local/recommend`，请求体含 `device`、`ramMb`、`abis`。
-- 结果以原始 JSON 文本显示；核心端点暂未实现时会显示 HTTP 404/连接失败，不影响其他功能。
-- **模型不打包进 APK**；首次下载由 Go 核心在电脑侧完成（例如通过核心 CLI/服务），Android 只展示推荐与状态。
+- 本机核心提供：`GET /api/local/catalog`（全部可选模型）、`POST /api/local/download {model_id}`、`DELETE /api/local/models/{id}`、`POST /api/local/select {model_id}`、`POST /api/local/start|stop|cancel`。
+- 控制台「AI 大脑」会合并档位推荐与可选目录，支持下载多个模型、切换、删除；运行中删除/切换会返回 409 或先停旧服务。
+- **模型权重不打包进 APK**；首次使用由手机上的 Go 核心下载到应用数据目录。
 - 下载是否走 Wi-Fi 由核心决定；客户端通过 `X-GoPlay-Wifi-Only` 传递用户意图，并展示网络状态用于诊断。核心尚未实现该头的强制逻辑时，开关不会阻止核心下载。
 
 ---
@@ -348,14 +348,14 @@ AI dispatchGesture 执行窗口 + 回调结束后 400ms -> 客户端抑制 human
 
 ## 限制与已知风险
 
-1. **未编译/未真机验证**：如上，首次构建可能需要修复少量 API/资源问题；不要据此认为可直接发布。
+1. **未真机验证**：APK 已编译、JVM 测试通过，但 MediaProjection/无障碍/悬浮窗/连续语音/本机模型下载尚未在真机端到端验证；不要据此认为可直接发布。
 2. **安全窗口/DRM**：银行、支付、部分游戏的安全窗口、DRM 视频、FLAG_SECURE 页面会返回黑屏或空白；这是 Android 平台保护，客户端不绕过，也不提供 root/注入方案。
 3. **厂商限制**：部分 OEM 会杀后台、限制悬浮窗、限制无障碍、要求额外“后台弹出界面/自启动”权限；前台服务与通知已声明，但仍需用户手动放行。
 4. **MediaProjection 授权**：每次开始截屏都要系统确认；旋转/分辨率变化会重建 VirtualDisplay；某些设备在切换应用后可能停止投影。Android 14+ 对 FGS 启动时机有严格要求。
 5. **文本输入**：只对已聚焦的可编辑节点执行 `ACTION_SET_TEXT`，不会弹出/操作输入法；游戏自绘输入框或 WebView 非标准编辑器可能失败。
 6. **无障碍能力**：手势可能被系统“无障碍超时”、多指操作、游戏反作弊/安全策略拒绝；`dispatchGesture` 一次只能有一个手势，客户端按顺序处理，不并行。
 7. **网络与安全**：当前无 TLS、无认证、默认明文局域网；不要在公网暴露 8420。WebSocket 只支持文本控制 + 二进制帧；核心必须实现对应端点。
-8. **模型 API 未实现**：`/api/local/status` 与 `/api/local/recommend` 是约定；核心实现前设置页会报错。
+8. **模型下载未实测**：目录/下载/删除/切换 API 已实现并有单测，但未在手机网络上真实下载大文件；弱网/断点续传行为需真机验证。
 9. **性能**：高分辨率 + 高 FPS + 高质量 JPEG 可能造成发热/掉帧；默认 960 最大边、10 FPS、q70 是保守值。慢网络时丢帧优先于排队。
 10. **进程死亡**：服务 `START_NOT_STICKY`；被系统杀死后需用户重新开始。无障碍服务由系统管理，客户端无法强制保活。
 11. **日志隐私**：日志含主机、实例 ID、动作文本摘要；不包含游戏内存或账号密码。聊天内容会进入日志环（最多 200 行）。

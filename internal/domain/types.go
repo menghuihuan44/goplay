@@ -2,9 +2,12 @@ package domain
 
 import (
 	"fmt"
+	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // InstanceStatus is the lifecycle state of one game instance.
@@ -315,6 +318,271 @@ type GameProfileInfo struct {
 	Games            []string        `json:"games,omitempty"`
 	KnownConstraints []InstanceRules `json:"known_constraints,omitempty"`
 	Source           string          `json:"source"` // builtin, user
+}
+
+// DisplayField is one human-readable row in the generic instance HUD. Kind is
+// one of "number", "text", "percent" or "status"; the UI may use it for styling
+// but must not assume a fixed game vocabulary.
+type DisplayField struct {
+	Key       string `json:"key"`
+	Label     string `json:"label"`
+	Value     string `json:"value"`
+	Kind      string `json:"kind"`
+	Highlight bool   `json:"highlight,omitempty"`
+}
+
+// DisplayView is a game-agnostic projection of the latest perceived state. It
+// is rebuilt from State.Values/Text on every snapshot: games without health,
+// score, rooms or any other familiar concept simply produce the fields they do
+// have, and never a fabricated health bar or outcome.
+type DisplayView struct {
+	Summary       string         `json:"summary"`
+	Fields        []DisplayField `json:"fields"`
+	Tags          []string       `json:"tags,omitempty"`
+	Outcome       *string        `json:"outcome"`
+	Progress      *float64       `json:"progress"`
+	ProgressLabel string         `json:"progress_label,omitempty"`
+	LastAction    string         `json:"last_action,omitempty"`
+	LastReason    string         `json:"last_reason,omitempty"`
+	Notes         []string       `json:"notes,omitempty"`
+}
+
+const maxDisplayFields = 24
+
+var displayLabels = map[string]string{
+	"hp": "生命", "max_hp": "最大生命", "health": "生命",
+	"score": "分数", "level": "等级", "timer": "时间", "gold": "金币",
+	"xp": "经验", "ammo": "弹药", "room": "房间", "rooms": "房间数",
+	"wave": "波次", "mana": "法力",
+}
+
+// BuildDisplay projects one perception state into UI fields. Fields are derived
+// dynamically from every Values/Text entry, sorted by key and capped at 24.
+// Progress is only reported for explicit progress-like keys; Outcome is only
+// reported when episode stats or tags prove one, so unknown games stay honest.
+func BuildDisplay(st State, stats InstanceStats, lastAction, lastReason string) DisplayView {
+	dv := DisplayView{
+		Summary: st.Summary, LastAction: lastAction, LastReason: lastReason,
+		Tags: append([]string(nil), st.Tags...),
+	}
+	keys := make(map[string]struct{}, len(st.Values)+len(st.Text))
+	for k := range st.Values {
+		keys[k] = struct{}{}
+	}
+	for k := range st.Text {
+		keys[k] = struct{}{}
+	}
+	sorted := make([]string, 0, len(keys))
+	for k := range keys {
+		sorted = append(sorted, k)
+	}
+	sort.Strings(sorted)
+	for _, k := range sorted {
+		if len(dv.Fields) >= maxDisplayFields {
+			break
+		}
+		if field, ok := displayField(st, k); ok {
+			dv.Fields = append(dv.Fields, field)
+		}
+	}
+	dv.Outcome = displayOutcome(st, stats)
+	dv.Progress, dv.ProgressLabel = displayProgress(st)
+	return dv
+}
+
+func displayField(st State, key string) (DisplayField, bool) {
+	label := displayLabel(key)
+	if v, ok := st.Text[key]; ok && strings.TrimSpace(v) != "" {
+		kind := "text"
+		if isStatusKey(key) {
+			kind = "status"
+		}
+		return DisplayField{Key: key, Label: label, Value: v, Kind: kind, Highlight: highlightKey(key)}, true
+	}
+	v, ok := st.Values[key]
+	if !ok {
+		return DisplayField{}, false
+	}
+	kind := "number"
+	value := formatDisplayNumber(v)
+	if isPercentKey(key) {
+		kind = "percent"
+		value = formatDisplayPercent(v)
+	}
+	return DisplayField{Key: key, Label: label, Value: value, Kind: kind, Highlight: highlightKey(key)}, true
+}
+
+func displayLabel(key string) string {
+	lower := strings.ToLower(strings.TrimSpace(key))
+	if label, ok := displayLabels[lower]; ok {
+		return label
+	}
+	var b strings.Builder
+	prevLower := false
+	for _, r := range key {
+		if r == '_' || r == '-' || r == ' ' || r == '.' {
+			b.WriteByte(' ')
+			prevLower = false
+			continue
+		}
+		if unicode.IsUpper(r) && prevLower {
+			b.WriteByte(' ')
+		}
+		b.WriteRune(r)
+		prevLower = unicode.IsLower(r) || unicode.IsDigit(r)
+	}
+	parts := strings.Fields(b.String())
+	for i, p := range parts {
+		switch strings.ToLower(p) {
+		case "hp":
+			parts[i] = "HP"
+		case "xp":
+			parts[i] = "XP"
+		case "id":
+			parts[i] = "ID"
+		default:
+			runes := []rune(p)
+			if len(runes) > 0 {
+				runes[0] = unicode.ToUpper(runes[0])
+				parts[i] = string(runes)
+			}
+		}
+	}
+	if len(parts) == 0 {
+		return key
+	}
+	return strings.Join(parts, " ")
+}
+
+func formatDisplayNumber(v float64) string {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return strconv.FormatFloat(v, 'f', -1, 64)
+	}
+	s := strconv.FormatFloat(v, 'f', 2, 64)
+	if strings.Contains(s, ".") {
+		s = strings.TrimRight(strings.TrimRight(s, "0"), ".")
+	}
+	return s
+}
+
+func formatDisplayPercent(v float64) string {
+	p := v
+	if p >= 0 && p <= 1 {
+		p *= 100
+	}
+	return formatDisplayNumber(p) + "%"
+}
+
+func isPercentKey(key string) bool {
+	switch strings.ToLower(key) {
+	case "progress", "pct", "percent":
+		return true
+	}
+	return false
+}
+
+func isStatusKey(key string) bool {
+	switch strings.ToLower(key) {
+	case "phase", "status", "state", "result", "outcome":
+		return true
+	}
+	return false
+}
+
+func highlightKey(key string) bool {
+	switch strings.ToLower(key) {
+	case "hp", "health", "score", "progress", "pct", "percent",
+		"room", "level", "wave", "stage", "timer":
+		return true
+	}
+	return false
+}
+
+func displayOutcome(st State, stats InstanceStats) *string {
+	outcome := ""
+	switch {
+	case stats.Wins > 0:
+		outcome = "胜"
+	case stats.Losses > 0:
+		outcome = "负"
+	case st.HasTag("won") || st.HasTag("win") || st.HasTag("victory"):
+		outcome = "胜"
+	case st.HasTag("lost") || st.HasTag("lose") || st.HasTag("dead") || st.HasTag("game_over") || st.HasTag("gameover"):
+		outcome = "负"
+	case st.HasTag("terminal"):
+		outcome = "进行中"
+	}
+	if outcome == "" {
+		return nil
+	}
+	return &outcome
+}
+
+func displayProgress(st State) (*float64, string) {
+	for _, key := range []string{"progress", "pct", "percent"} {
+		v, ok := st.Values[key]
+		if !ok {
+			continue
+		}
+		if p, ok := normalizedProgress(v); ok {
+			return &p, "进度 " + formatDisplayPercent(v)
+		}
+	}
+	for _, candidate := range []struct {
+		key     string
+		maxKeys []string
+	}{
+		{"room", []string{"rooms", "max_rooms", "total_rooms"}},
+		{"level", []string{"max_level", "levels", "total_levels"}},
+		{"wave", []string{"max_wave", "waves", "total_waves"}},
+		{"stage", []string{"max_stage", "stages", "total_stages"}},
+	} {
+		cur, ok := st.Values[candidate.key]
+		if !ok {
+			continue
+		}
+		max, ok := firstPositiveValue(st, candidate.maxKeys)
+		if !ok {
+			continue
+		}
+		if p, ok := ratioProgress(cur, max); ok {
+			label := fmt.Sprintf("%s %s/%s", displayLabel(candidate.key), formatDisplayNumber(cur), formatDisplayNumber(max))
+			return &p, label
+		}
+	}
+	return nil, ""
+}
+
+func normalizedProgress(v float64) (float64, bool) {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0, false
+	}
+	switch {
+	case v >= 0 && v <= 1:
+		return v, true
+	case v > 1 && v <= 100:
+		return v / 100, true
+	}
+	return 0, false
+}
+
+func ratioProgress(cur, max float64) (float64, bool) {
+	if math.IsNaN(cur) || math.IsInf(cur, 0) || math.IsNaN(max) || math.IsInf(max, 0) {
+		return 0, false
+	}
+	if cur < 0 || max <= 0 || cur > max {
+		return 0, false
+	}
+	return cur / max, true
+}
+
+func firstPositiveValue(st State, keys []string) (float64, bool) {
+	for _, key := range keys {
+		if v, ok := st.Values[key]; ok && v > 0 {
+			return v, true
+		}
+	}
+	return 0, false
 }
 
 // SortedKeys returns deterministic keys for maps used in prompts/tests.

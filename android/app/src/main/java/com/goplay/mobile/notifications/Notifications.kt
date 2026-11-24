@@ -37,6 +37,7 @@ object Notifications {
         context: Context,
         text: String,
         paused: Boolean,
+        titleOverride: String? = null,
     ): Notification {
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         val openIntent = Intent(context, MainActivity::class.java).apply {
@@ -47,7 +48,8 @@ object Notifications {
             action = ScreenCaptureService.ACTION_STOP
         }
         val stopPending = PendingIntent.getService(context, 2, stopIntent, flags)
-        val title = if (paused) "GoPlay · AI 已暂停" else "GoPlay · AI 运行中"
+        val title = titleOverride
+            ?: if (paused) "GoPlay · AI 已暂停" else "GoPlay · AI 运行中"
         return NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_goplay)
             .setContentTitle(title)
@@ -63,10 +65,18 @@ object Notifications {
             .build()
     }
 
-    fun update(context: Context, text: String, paused: Boolean) {
+    fun update(
+        context: Context,
+        text: String,
+        paused: Boolean,
+        titleOverride: String? = null,
+    ) {
         val manager = context.getSystemService(NotificationManager::class.java) ?: return
         try {
-            manager.notify(NOTIFICATION_ID, buildCaptureNotification(context, text, paused))
+            manager.notify(
+                NOTIFICATION_ID,
+                buildCaptureNotification(context, text, paused, titleOverride),
+            )
         } catch (_: SecurityException) {
             // Notification permission can be denied on Android 13+; the FGS still runs.
         }

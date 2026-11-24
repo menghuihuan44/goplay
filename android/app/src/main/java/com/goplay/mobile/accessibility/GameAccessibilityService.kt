@@ -15,6 +15,7 @@ import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import com.goplay.mobile.GoPlayApp
+import com.goplay.mobile.data.TakeoverSensitivity
 import com.goplay.mobile.protocol.GestureCommand
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -45,14 +46,32 @@ class GameAccessibilityService : AccessibilityService() {
     /** Last AI action start/end, used to ignore injected-gesture echo events. */
     private var lastAiActionAt = 0L
 
+    /**
+     * Current sensitivity. Re-read from SharedPreferences in [onServiceConnected];
+     * every field below that depends on it is only touched on the main thread.
+     */
+    private var config = TakeoverSensitivity.config(TakeoverSensitivity.HIGH)
+
     private var humanActive = false
+
+    /** Start of and count inside the current interaction burst (medium/low). */
+    private var burstStartedAt = 0L
+    private var burstInteractions = 0
+    private var lastInteractionAt = 0L
+
+    /** Start of the gesture currently held down, for "hold to take over". */
+    private var touchStartedAt = 0L
+
+    /**
+     * Human detection is muted until this instant so gestures the AI dispatches
+     * right after an explicit release are not mistaken for user input.
+     */
+    private var suppressHumanUntil = 0L
 
     private val humanIdle = Runnable {
         if (!humanActive) return@Runnable
-        humanActive = false
-        mainHandler.removeCallbacks(humanHeartbeat)
-        graph?.client?.sendHuman(false)
-        graph?.logs?.log("用户操作停止约 2s，AI 可恢复控制")
+        releaseHumanSignal()
+        graph?.logs?.log("用户操作停止约 " + (HUMAN_IDLE_MS / 1000) + "s，AI 可恢复控制")
     }
 
     /**
@@ -70,10 +89,11 @@ class GameAccessibilityService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
+        config = TakeoverSensitivity.config(graph?.settingsStore?.load()?.takeoverSensitivity)
         logs()?.log(
             "无障碍服务已连接（手势能力=" +
                 (((serviceInfo?.capabilities ?: 0) and AccessibilityServiceInfo.CAPABILITY_CAN_PERFORM_GESTURES) != 0) +
-                "）"
+                "，接管灵敏度=" + config.level + "）"
         )
     }
 
@@ -81,10 +101,35 @@ class GameAccessibilityService : AccessibilityService() {
         // We only look at the event type to detect real user input. We never read
         // event text/content or walk the node tree: frames come from MediaProjection.
         val eventType = event?.eventType ?: return
-        if (!isHumanInteraction(eventType)) return
+        val now = SystemClock.elapsedRealtime()
+
+        // Our own injected gestures produce accessibility events too. Ignore them
+        // while a command is in flight and for the sensitivity-specific grace
+        // window afterwards, otherwise every AI tap would look like a human one.
         if (aiActionsInFlight > 0) return
-        if (SystemClock.elapsedRealtime() - lastAiActionAt < AI_ECHO_GRACE_MS) return
-        onHumanInteraction()
+        if (now - lastAiActionAt < config.echoGraceMs) return
+
+        when (eventType) {
+            AccessibilityEvent.TYPE_TOUCH_INTERACTION_START,
+            AccessibilityEvent.TYPE_GESTURE_DETECTION_START -> {
+                // Only remember when the finger went down. A quick tap must count as
+                // one interaction, not as two (down + up).
+                if (touchStartedAt == 0L) touchStartedAt = now
+                // The most sensitive level takes over on the first event; medium/low
+                // wait for the gesture to end so one tap counts as one interaction.
+                if (config.interactions <= 1) onHumanInteraction(now, gestureMs = 0L)
+            }
+
+            AccessibilityEvent.TYPE_TOUCH_INTERACTION_END,
+            AccessibilityEvent.TYPE_GESTURE_DETECTION_END -> {
+                val startedAt = touchStartedAt
+                touchStartedAt = 0L
+                val gestureMs = if (startedAt > 0L) now - startedAt else 0L
+                onHumanInteraction(now, gestureMs)
+            }
+
+            else -> if (isHumanInteraction(eventType)) onHumanInteraction(now, gestureMs = 0L)
+        }
     }
 
     override fun onInterrupt() {
@@ -118,30 +163,117 @@ class GameAccessibilityService : AccessibilityService() {
         else -> false
     }
 
-    private fun onHumanInteraction() {
-        if (!humanActive) {
-            humanActive = true
-            graph?.client?.sendHuman(true)
-            graph?.logs?.log("检测到用户操作，通知核心交还控制")
-            mainHandler.removeCallbacks(humanHeartbeat)
-            mainHandler.postDelayed(humanHeartbeat, HUMAN_HEARTBEAT_MS)
+    /**
+     * Feeds one detected interaction into the sensitivity state machine:
+     *
+     * - high   takes over on the first event (legacy behaviour);
+     * - medium takes over after two interactions in one burst, or one gesture
+     *   that stays down for 1.5 s;
+     * - low    takes over after three interactions, or one gesture of 3 s.
+     */
+    private fun onHumanInteraction(now: Long, gestureMs: Long) {
+        if (now < suppressHumanUntil) return
+        if (humanActive) {
+            keepHumanAlive(now)
+            return
         }
-        mainHandler.removeCallbacks(humanIdle)
-        mainHandler.postDelayed(humanIdle, HUMAN_IDLE_MS)
+        val cfg = config
+        if (cfg.interactions <= 1) {
+            activateHuman(now)
+            return
+        }
+        if (burstStartedAt == 0L || now - lastInteractionAt > cfg.burstWindowMs) {
+            burstStartedAt = now
+            burstInteractions = 0
+        }
+        lastInteractionAt = now
+        burstInteractions++
+        val heldLongEnough = gestureMs >= cfg.holdMs
+        val enoughInteractions = burstInteractions >= cfg.interactions
+        val burstLongEnough = now - burstStartedAt >= cfg.holdMs
+        if (heldLongEnough || enoughInteractions || burstLongEnough) {
+            activateHuman(now)
+        }
     }
 
-    private fun releaseHumanSignal() {
+    private fun activateHuman(now: Long) {
+        humanActive = true
+        burstStartedAt = 0L
+        burstInteractions = 0
+        touchStartedAt = 0L
+        lastInteractionAt = now
+        graph?.client?.sendHuman(true)
+        graph?.logs?.log("检测到用户操作（灵敏度=" + config.level + "），通知核心交还控制")
+        keepHumanAlive(now)
+    }
+
+    private fun keepHumanAlive(now: Long) {
+        mainHandler.removeCallbacks(humanIdle)
+        mainHandler.postDelayed(humanIdle, HUMAN_IDLE_MS)
+        mainHandler.removeCallbacks(humanHeartbeat)
+        mainHandler.postDelayed(humanHeartbeat, HUMAN_HEARTBEAT_MS)
+        lastInteractionAt = maxOf(lastInteractionAt, now)
+    }
+
+    /** Stops the human signal without touching the echo guard. Idempotent. */
+    private fun releaseHumanSignal(guardMs: Long = 0L) {
         mainHandler.removeCallbacks(humanIdle)
         mainHandler.removeCallbacks(humanHeartbeat)
+        burstStartedAt = 0L
+        burstInteractions = 0
+        touchStartedAt = 0L
+        if (guardMs > 0L) {
+            suppressHumanUntil = maxOf(
+                suppressHumanUntil,
+                SystemClock.elapsedRealtime() + guardMs,
+            )
+        }
         if (humanActive) {
             humanActive = false
             graph?.client?.sendHuman(false)
         }
     }
 
+    /**
+     * Explicit "I am done, give control back to the AI", called from the bridge
+     * when the user taps the console's hand-back button. Always sends human=false
+     * (even when no takeover was registered) so a core that still believes a
+     * human is in control recovers. Main thread only.
+     */
+    fun releaseHuman() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post { releaseHuman() }
+            return
+        }
+        val wasActive = humanActive
+        releaseHumanSignal(guardMs = config.echoGraceMs)
+        graph?.client?.sendHuman(false)
+        graph?.logs?.log(
+            if (wasActive) "用户交还控制：人工接管已解除" else "交还控制：当前没有生效的人工接管",
+        )
+    }
+
+    /**
+     * Re-reads the persisted sensitivity. Called from the bridge when the console
+     * changes it, so a running service applies the new level without a restart.
+     */
+    fun reloadSensitivity() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post { reloadSensitivity() }
+            return
+        }
+        config = TakeoverSensitivity.config(graph?.settingsStore?.load()?.takeoverSensitivity)
+        logs()?.log("接管灵敏度已更新为 " + config.level)
+    }
+
     private fun beginAiAction() {
         aiActionsInFlight++
         lastAiActionAt = SystemClock.elapsedRealtime()
+        // The AI runs only while the user is idle, so a half-finished takeover
+        // burst must not survive the first new AI command.
+        burstStartedAt = 0L
+        burstInteractions = 0
+        touchStartedAt = 0L
         if (humanActive) {
             // An AI action is about to run; stop heartbeats and explicitly release
             // the human flag instead of leaving the core waiting for its timeout.
@@ -389,8 +521,10 @@ class GameAccessibilityService : AccessibilityService() {
         /** Refresh human=true at this cadence while the user keeps interacting. */
         private const val HUMAN_HEARTBEAT_MS = 1_000L
 
-        /** Ignore accessibility echoes of our own injected gestures just after they end. */
-        private const val AI_ECHO_GRACE_MS = 400L
+        /**
+         * Echo grace for injected gestures comes from
+         * [TakeoverSensitivity.Config.echoGraceMs]; it widens as sensitivity drops.
+         */
 
         /** Null until the user enables the service in Settings. */
         @Volatile

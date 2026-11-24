@@ -1,10 +1,12 @@
 # Android 接入
 
-Android 是首要目标平台。v0.3 起采用「手机完全独立」形态：Go 核心和 llama-server 作为 arm64 原生库随 APK 安装，由 Kotlin 壳以独立子进程启动在 loopback；WebView 加载核心内置的五页控制台。手机端仍然只负责“眼睛”和“手”，不注入游戏、不读游戏内存、不 hook 图形 API。
+Android 是首要目标平台。v0.4 继续采用「手机完全独立」形态：Go 核心和 llama-server 作为 arm64 原生库随 APK 安装，由 Kotlin 壳以独立子进程启动在 loopback；WebView 加载核心内置的五页控制台。手机端仍然只负责“眼睛”和“手”，不注入游戏、不读游戏内存、不 hook 图形 API。
+v0.4 增加权限中心、创建前准备流程、结构化错误诊断、灵动岛保活、三档接管灵敏度与交还 AI、连续语音/TTS、多模型管理和六层 AI 路由。
 
 - **眼睛**：MediaProjection + ImageReader 抓屏，JPEG 编码；
 - **手**：AccessibilityService 执行 tap/swipe/long_press/back/text；
-- **交互**：系统级悬浮球 / 药丸 / 展开面板，以及 WebView 控制台；
+- **交互**：系统级悬浮球 / 药丸 / 展开面板、权限中心、诊断卡，以及 WebView 控制台；
+- **语音**：SpeechRecognizer 连续识别 + TTS，不录音到磁盘；
 - **大脑**：本机 Go core（规则/记忆/调度/策略）+ 按档位下载的 GGUF，由本机 llama-server 推理；
 - **传输**：loopback WebSocket 把帧发给核心，接收动作并 ack。
 
@@ -53,15 +55,23 @@ cd android
 .\gradlew.bat :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease
 ```
 
-v0.3 只打包 `arm64-v8a`（覆盖真实手机）；`android/amd64` 需要 cgo+NDK，未打包，因此 x86_64 模拟器不能运行。模型权重不随 APK 打包。
+v0.4 只打包 `arm64-v8a`（覆盖真实手机）；`android/amd64` 需要 cgo+NDK，未打包，因此 x86_64 模拟器不能运行。模型权重不随 APK 打包。
+
+推荐的一键构建（自动重建 Go 核心、布置 llama-server、产出 release APK）：
+
+```powershell
+$env:JAVA_HOME="C:\Program Files\Eclipse Adoptium\jdk-17.0.21.9-hotspot"
+$env:ANDROID_HOME="C:\Android\sdk"
+go run ./cmd/goplay-release -target android -out dist
+```
 
 ## 首次使用
 
 1. 打开 App：`LocalCore` 自动启动核心（随机 loopback 端口），WebView 自动加载控制台。
-2. 「设置 → Android 权限」：悬浮窗 → 无障碍 → 通知。
-3. 「游戏 → 新游戏」：从已安装游戏里选一个；创建时自动切换当前实例并请求录屏授权。
-4. 授权后悬浮球/药丸出现；点它展开对话、暂停/继续/停止，「面板」回到控制台。
-5. 「AI 大脑」：填 API Key，或按设备档位下载本机策略模型并启用本机 AI。
+2. 「设置 → 运行准备 / Android 权限」：按顺序授予悬浮窗 → 无障碍 → 通知 → 麦克风 → 开始截屏；每一项实时显示状态。
+3. 「游戏 → 新游戏」：从已安装游戏里选一个；创建后先准备权限和画面，准备好才启动 AI。
+4. 授权后悬浮球/药丸出现；录屏中断时悬浮球保留并提供“恢复截屏”。点它展开对话、暂停/继续/停止，「面板」回到控制台。
+5. 「AI 大脑」：填 API Key，或下载任意本机模型并启用；六层可分别选自动/API/本机/离线。
 
 ## 权限
 
@@ -73,7 +83,7 @@ v0.3 只打包 `arm64-v8a`（覆盖真实手机）；`android/amd64` 需要 cgo+
 | `QUERY_ALL_PACKAGES` + `<queries>` | 列出已安装游戏供选择 | 安装时授予；上架前需说明用途 |
 | MediaProjection | 截屏授权 | 系统弹窗，每次会话确认 |
 | AccessibilityService | 合成手势/返回/文本 | 系统无障碍页手动启用 |
-| `RECORD_AUDIO` | 语音走系统 `RecognizerIntent` | 由系统语音界面自行申请 |
+| `RECORD_AUDIO` | 连续语音识别（SpeechRecognizer） | 设置页权限中心请求；TTS 不需要 |
 
 ## 协议
 
@@ -98,7 +108,7 @@ POST /api/local/recommend
 
 ## 验证状态与限制
 
-- 已在 Windows 上构建：`:app:assembleDebug` 成功，debug APK 14,829,414B，SHA256 `BF66E61781C7C78139AC2669C6147C52746D4F6AE8337B39162213D20595F2C9`；包内含 arm64 的 `libgoplaycore.so` 与 `libllama-server.so`。
+- 已在 Windows 上构建 v0.4：`:app:testDebugUnitTest`（30 个 JVM 测试）与 `:app:assembleDebug`/`:app:assembleRelease` 成功；release APK 约 13.1MB，包内含 arm64 的 `libgoplaycore.so` 与 `libllama-server.so`，versionCode 4 / versionName 0.4.0。精确大小与 SHA256 见 `dist/release.json`。
 - **尚未真机/模拟器验证**：本机 SDK 无 emulator/system-images，也没有连接设备。MediaProjection、无障碍手势、悬浮球、子进程、模型下载都仍需设备验证。
 - 未配置 release keystore 时回退 Android Debug 签名，只能本地安装，不能上架。
 - 真机重点验证：Android 14+ 前台服务类型与通知；厂商 ROM 对悬浮窗的额外限制；横屏坐标旋转；弱网/后台保活；低 RAM 设备下载与推理延迟。

@@ -12,6 +12,8 @@ data class AppSettings(
     val maxEdge: Int = 960,
     val wifiOnlyDownloads: Boolean = true,
     val autoReconnect: Boolean = true,
+    /** Human-takeover sensitivity, see [TakeoverSensitivity]. */
+    val takeoverSensitivity: String = TakeoverSensitivity.HIGH,
 ) {
     val wsUrl: String
         get() = "ws://" + host + ":" + port + Protocol.WS_PATH_PREFIX + instanceId

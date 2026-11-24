@@ -153,6 +153,52 @@ func (s *Session) SetHuman(active bool, reason string) {
 	s.mu.Unlock()
 }
 
+// ClearHuman force-ends the human-control window. Unlike SetHuman(false) it also
+// clears the timestamp, so State reports inactive immediately and a release
+// request cannot be undone by a stale 2.5s window.
+func (s *Session) ClearHuman(reason string) {
+	s.mu.Lock()
+	s.human = false
+	s.humanAt = time.Time{}
+	s.mu.Unlock()
+}
+
+// Info returns a lock-free-after-copy diagnostic view of the bridge. Callers
+// must not hold s.mu while serializing or doing network I/O.
+func (s *Session) Info() map[string]any {
+	s.mu.Lock()
+	connected := s.tr != nil
+	client, device := s.client, s.device
+	frames, actions, actionErrors := s.frames, s.actions, s.aerrs
+	humanActive, humanAt := s.human, s.humanAt
+	var lastFrameAt time.Time
+	if s.latest != nil {
+		lastFrameAt = s.latest.At
+	}
+	s.mu.Unlock()
+
+	lastFrameAgeMS := int64(-1)
+	if !lastFrameAt.IsZero() {
+		lastFrameAgeMS = time.Since(lastFrameAt).Milliseconds()
+		if lastFrameAgeMS < 0 {
+			lastFrameAgeMS = 0
+		}
+	}
+	if humanActive && time.Since(humanAt) > 2500*time.Millisecond {
+		humanActive = false
+	}
+	return map[string]any{
+		"connected":         connected,
+		"client":            client,
+		"device":            device,
+		"frames":            frames,
+		"actions":           actions,
+		"errors":            actionErrors,
+		"last_frame_age_ms": lastFrameAgeMS,
+		"human":             humanActive,
+	}
+}
+
 // ParseFrame validates and decodes one GPF1 binary message.
 func ParseFrame(data []byte) (FrameHeader, []byte, error) {
 	if len(data) < 9 {

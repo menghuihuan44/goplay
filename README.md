@@ -4,13 +4,14 @@
 
 GoPlay 是一个**外部运行**的 AI 自动游玩软件：它只通过截屏/录屏获取画面，通过系统输入或移动端无障碍服务执行动作，不注入游戏进程、不读写游戏内存、不挂钩图形 API、不加载内核驱动。核心用 Go，游戏语义用 Lua 描述，Windows 采集/输入/浮窗用 C++，Android 客户端用 Kotlin。
 
-当前仓库是**可运行、可评测、可打包发布的 v0.3 实现**：
+当前仓库是**可运行、可评测、可打包发布的 v0.4 实现**：
 
 - 桌面 GUI：一个原生窗口（Windows WebView2 / macOS WebKit / Linux WebKitGTK），内嵌同一个面板，双击即用；也可退回系统浏览器。
 - Windows：真实桌面截屏（GDI/DXGI）+ SendInput 输入 + 无边框置顶浮窗/托盘。
-- Android（优先目标，v0.3「手机完全独立」）：Go 核心与 llama-server 以 arm64 原生库随 APK 安装，在本机子进程运行；Kotlin 壳只负责 WebView、MediaProjection 截屏、AccessibilityService 手势、系统悬浮球/灵动岛和语音入口。核心、模型下载、五页控制台（总览/游戏/AI 大脑/记忆/设置）都在手机上，不再依赖电脑。
+- Android（优先目标，v0.4「手机完全独立」）：Go 核心与 llama-server 以 arm64 原生库随 APK 安装，在本机子进程运行；Kotlin 壳只负责 WebView、MediaProjection 截屏、AccessibilityService 手势、系统悬浮球/灵动岛和连续语音。核心、模型下载、五页控制台（总览/游戏/AI 大脑/记忆/设置）都在手机上，不再依赖电脑。v0.4 增加权限中心、创建前准备流程、可操作的错误诊断卡、录屏中断后悬浮球保活、三档人工接管灵敏度、交还 AI、动态画面属性与实时预览。
 - 自动游玩：内置 mock_dungeon 像素级演示游戏，从零学习并在评测中达到 10 关通关；任何未知游戏可切换到通用 Lua profile + 视觉 LLM 描述。
-- 本地模型：按设备 RAM/芯片三档推荐、首次启动下载，模型权重不进安装包；策略推理用 llama.cpp，感知过滤与输出校验由规则层承担。Android APK 内置 arm64 llama-server 运行时与 Go 核心，模型权重仍按档位下载。
+- 本地模型：按设备 RAM/芯片三档推荐，模型权重不进安装包；可下载、启动、切换、删除多个模型，并按感知/分析/决策/对话/记忆/校验六层分别选择 API、本机模型或自动回退。Android APK 内置 arm64 llama-server 运行时与 Go 核心。
+- Windows 游戏选择：新游戏弹窗会列出开始菜单与 Steam 已安装条目，选中后可自动启动，再用全屏截屏 + SendInput 游玩。
 
 ## 目录
 
@@ -128,10 +129,10 @@ go run ./cmd/goplay-release -target cli
 | 2 | 自动识别/操作/理解；人工操作立即交还 | internal/engine 主循环；action.SystemHuman / Android human 信号；human_resume_ms | 接管 9ms、冻结动作、释放后 120ms 恢复（reports/eval-report.md） |
 | 3 | 多游戏并发、全局/实例记忆、偏好软权重适配 | internal/app（每实例独立 goroutine/Lua/记忆）、internal/memory、scheduler.Adapt | 2/4 实例隔离 0 串扰；冲突偏好 suppressed 且不生成硬条件 |
 | 4 | 不中断游玩的语言/文字对话；指令缓冲区 | scheduler.Buffer + Boundary；约束走实例硬条件，偏好转软权重 | 约束 10ms 生效且 attack=0；偏好 11ms 生效且继续游玩 |
-| 5 | API Key 与本地小模型；按档位下载；角色分工 | internal/llm、internal/localmodel、internal/localruntime | 三档目录；首次下载 SHA256；真实 Qwen2.5-0.5B 决策 79 动作/1 胜/0 回退 |
-| 6 | 灵动岛/悬浮窗 | /overlay 药丸态 Web UI；native/overlay Win32 浮窗+托盘；Android 悬浮球/药丸 | 截图与 native/build.ps1；/overlay 可拖动/对话/暂停 |
+| 5 | API Key 与本地小模型；按档位下载；角色分工 | internal/llm（六层路由 + 多模型）、internal/localmodel、internal/localruntime | 三档目录 + 可选目录；模型下载/删除/切换 API 单测；真实 Qwen2.5-0.5B 决策 79 动作/1 胜/0 回退 |
+| 6 | 灵动岛/悬浮窗 | 桌面原生 Win32 浮窗+托盘（GoPlay.exe 顶栏直接调起 goplay-overlay.exe）；Android 悬浮球/药丸 + 录屏中断保活 | 桌面 340×150 always-on-top 浮窗实测；Android 悬浮窗截图；断流后恢复入口 |
 | 7 | 每条功能有指标 | internal/metrics、internal/eval、internal/audit | reports/eval-report.md：47/47 阈值 PASS；审计 PASS |
-| 8 | Android 优先，其次 Windows | android/ 完整客户端；Windows 原生组件已构建并测试 | Android SDK 35 编译出 APK，30 项 JVM 测试通过；Windows ctest 2/2 |
+| 8 | Android 优先，其次 Windows | android/ 完整客户端（权限/诊断/语音/动态卡）；Windows 开始菜单/Steam 游戏选择 + 原生组件 | Android SDK 35 编译 v0.4 APK，30 项 JVM 测试通过；Windows ctest 2/2；列出本机 132 个开始菜单/Steam 条目 |
 
 ## 架构
 
@@ -282,7 +283,7 @@ Windows 实例用 SystemHuman（GetLastInputInfo）检测人工操作，不使�
 
 ## Android
 
-v0.3 起 Android 是「手机完全独立」：Go 核心（`libgoplaycore.so`）和 llama-server（`libllama-server.so`）随 APK 安装为 arm64 原生库，由 Kotlin 壳以独立子进程启动在 `127.0.0.1`；WebView 加载核心内置的五页控制台，不再依赖电脑。
+v0.4 起 Android 继续「手机完全独立」：Go 核心（`libgoplaycore.so`）和 llama-server（`libllama-server.so`）随 APK 安装为 arm64 原生库，由 Kotlin 壳以独立子进程启动在 `127.0.0.1`；WebView 加载核心内置的五页控制台，不再依赖电脑。设置页内置权限中心（悬浮窗/无障碍/通知/录屏），新游戏默认先准备权限与画面再启动 AI。
 
 - LocalCore 子进程 + `/health` 就绪探测，WebView 自动连本机核心；
 - MediaProjection + ImageReader 抓屏并 JPEG 编码；
@@ -294,7 +295,7 @@ v0.3 起 Android 是「手机完全独立」：Go 核心（`libgoplaycore.so`）
 
 协议见 [android/PROTOCOL.md](android/PROTOCOL.md)，构建说明见 [android/README.md](android/README.md)。
 
-> debug APK 已用 Android SDK 35 / build-tools 35.0.0 编译：14,829,414B，SHA256 `BF66E61781C7C78139AC2669C6147C52746D4F6AE8337B39162213D20595F2C9`，包含 arm64 的 Go 核心与 llama-server。**尚未真机/模拟器验证**；未配置签名材料时回退 debug 签名，可直接安装内测但不能上架。
+> v0.4 已用 Android SDK 35 / build-tools 35.0.0 编译 release 与 debug APK，包含 arm64 的 Go 核心与 llama-server（release 约 13.1MB，debug 约 14.9MB；精确 SHA256 见 `dist/SHA256SUMS.txt`）。**尚未真机/模拟器验证**；未配置签名材料时回退 debug 签名，可直接安装内测但不能上架。
 
 ## 项目结构
 
@@ -334,8 +335,8 @@ reports/           评测与审计报告
 - 真实商业游戏的“从零学习”依赖通用视觉提示或新 Lua profile；仓库内的收敛数据来自内置 mock 游戏，不能直接外推。
 - Windows 的 DXGI 在 HDR 桌面会回退 GDI；浮窗 exe 因 MinGW 运行时会导入 OpenProcess/SetThreadContext 等符号，但项目源码没有调用，审计将其列为 review 而非 critical。
 - Android APK 已在本机编译，但尚未在真机/模拟器上验证 MediaProjection、无障碍手势、悬浮球、子进程和本机模型下载的端到端行为；本机 SDK 没有 emulator/system-images。
-- v0.3 Android 只打包 arm64-v8a；`android/amd64` 需要 cgo+NDK，x86_64 模拟器不能运行。
-- Windows 端目前仍以核心/模拟游戏选择为主，“从已安装游戏选择”和语音入口只在 Android 壳实现；两端共享同一套 Web 控制台与 API。
+- v0.4 Android 只打包 arm64-v8a；`android/amd64` 需要 cgo+NDK，x86_64 模拟器不能运行。
+- Windows 端已支持从开始菜单/Steam 选择并启动已安装游戏；实时语音入口目前只在 Android 壳实现，桌面端使用文字对话。
 - 本地模型冷启动可能超过 TTFT 预算，推荐在 daemon 启动时预热；真实硬件上的 TPS 依档位而异。
 - 默认监听 loopback。若改为局域网监听，请自行加认证/防火墙，README 的威胁模型不覆盖公网暴露。
 

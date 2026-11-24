@@ -51,6 +51,8 @@
           <button class="primary-btn big" data-new-game>开始自动游玩</button>
         </div>
 
+        <div class="android-banner hidden" id="androidBanner"></div>
+
         <div class="setup" id="setupSteps"></div>
 
         <div class="metrics-strip">
@@ -80,9 +82,10 @@
 
       <section class="page" id="page-games">
         <div class="page-head compact">
-          <div><p class="eyebrow">游戏实例</p><h1>游戏</h1><p class="lede">一个游戏一个实例。Android 上选择已安装的游戏，创建后自动启动并开始看画面。</p></div>
+          <div><p class="eyebrow">游戏实例</p><h1>游戏</h1><p class="lede">一个游戏一个实例。Android 上选择已安装的游戏；创建后先检查权限与画面，再让 AI 开始。</p></div>
           <button class="primary-btn" data-new-game>＋ 新游戏</button>
         </div>
+        <div class="android-banner hidden" id="androidBannerGames"></div>
         <div class="section-head">
           <div class="filters">
             <button class="chip active" data-filter="all">全部</button>
@@ -98,9 +101,18 @@
 
       <section class="page" id="page-ai">
         <div class="page-head compact">
-          <div><p class="eyebrow">两种使用方式</p><h1>AI 大脑</h1><p class="lede">用 API Key 接云端模型，或用本机小模型。本机模型按设备档位推荐、首次使用时下载，不打包进安装包。</p></div>
+          <div><p class="eyebrow">两种使用方式</p><h1>AI 大脑</h1><p class="lede">用 API Key 接云端模型，或用本机小模型。每一层都可以单独选 API、本机模型或规则回退。</p></div>
         </div>
         <div id="brainCard" class="brain-card"></div>
+
+        <section class="panel route-panel">
+          <div class="panel-head">
+            <div><h3>每一层用哪个 AI</h3><p>感知、分析、决策、对话、记忆、校验分别路由。不可用时明确显示，并回退到规则层，而不是假装已接入。</p></div>
+            <span class="tag" id="routesTag">自动</span>
+          </div>
+          <div id="aiRoutes" class="route-list"></div>
+          <div class="form-actions"><button class="primary-btn" id="saveRoutes">保存分层设置</button><span class="form-note" id="routesNote"></span></div>
+        </section>
 
         <div class="ai-grid">
           <section class="panel">
@@ -124,7 +136,7 @@
           </section>
 
           <section class="panel">
-            <div class="panel-head"><div><h3>本机小模型</h3><p>感知过滤 → 策略推理 → 规则校验，三个角色分工，不是模型投票。</p></div><span class="tag" id="localTag">未启动</span></div>
+            <div class="panel-head"><div><h3>本机小模型</h3><p>按设备档位下载。可下载多个、切换使用、随时删除；删除当前模型前会先提示。</p></div><span class="tag" id="localTag">未启动</span></div>
             <div id="localSummary" class="local-summary"></div>
             <div id="localModels" class="model-list"></div>
             <div class="form-actions wrap">
@@ -138,7 +150,7 @@
 
         <section class="panel info-panel">
           <h3>为什么不是一个很大的模型？</h3>
-          <p>手机 RAM 和算力有限。GoPlay 把任务拆开：轻量模型或规则做状态过滤，推理级小模型只做策略选择，规则引擎做输出校验和动作序列化。下载的是与设备档位匹配的一个策略模型，不是把所有模型塞进安装包。</p>
+          <p>手机 RAM 和算力有限。GoPlay 把任务拆开：轻量模型或规则做状态过滤，推理级小模型只做策略选择，规则引擎做输出校验和动作序列化。下载的是与设备档位匹配的一个或几个小模型，不是把所有模型塞进安装包。</p>
         </section>
       </section>
 
@@ -173,6 +185,38 @@
       <section class="page" id="page-settings">
         <div class="page-head compact"><div><p class="eyebrow">本机核心</p><h1>设置</h1><p class="lede">GoPlay 是外部软件：不注入进程、不读写游戏内存、不挂钩图形 API。</p></div></div>
         <div class="settings-grid">
+          <section class="panel wide hidden" id="androidPermPanel">
+            <div class="panel-head"><div><h3>运行准备 · Android 权限</h3><p>缺任何一项都可能“打开了游戏，但 AI 玩不了”。按顺序授权，回到这里会实时显示状态。</p></div><span class="tag" id="andReady">检查中</span></div>
+            <div class="kv"><span>本机核心</span><b id="andCore">—</b></div>
+            <div class="kv"><span>截屏 / 录屏</span><b id="andCapture">—</b></div>
+            <div id="androidPermList" class="perm-list"></div>
+            <div id="andCaptureError" class="inline-error hidden"></div>
+            <div class="form-actions wrap">
+              <button class="primary-btn" id="androidPrepareAll">按顺序检查并授权</button>
+              <button class="pill-btn" id="androidCapture">开始截屏</button>
+              <button class="pill-btn" id="androidStopCapture">停止截屏</button>
+              <button class="pill-btn" id="androidAccessibility">无障碍设置</button>
+              <button class="pill-btn" id="androidOverlayPerm">悬浮窗权限</button>
+              <button class="pill-btn" id="androidNotification">通知权限</button>
+              <button class="pill-btn" id="androidAppSettings">应用设置</button>
+            </div>
+            <p class="form-note">推荐顺序：悬浮窗 → 无障碍 → 通知 → 开始截屏。授权页由系统弹出，GoPlay 不会也不能绕过。悬浮球消失通常表示截屏被系统结束；现在它会保留并显示原因。</p>
+          </section>
+
+          <section class="panel wide hidden" id="takeoverPanel">
+            <h3>接管与语音</h3>
+            <p class="form-note" style="margin-top:0">人工操作会被识别为接管。灵敏度过高会把误触当成接管；过低则要明显操作才交还。</p>
+            <label class="field-label">接管灵敏度
+              <select id="takeoverSens">
+                <option value="low">低 · 明显操作才接管</option>
+                <option value="medium">中 · 推荐</option>
+                <option value="high">高 · 碰到就接管</option>
+              </select>
+            </label>
+            <div class="form-actions"><button class="pill-btn" id="androidRelease">我玩完了，交还 AI</button><button class="pill-btn" id="androidPermissionCenter">打开权限中心</button></div>
+            <div id="androidVoiceState" class="form-note">实时语音在游戏卡片上开启：点麦克风即可边聊边玩。</div>
+          </section>
+
           <section class="panel">
             <h3>连接</h3>
             <div class="kv"><span>核心地址</span><b id="setAddr">—</b></div>
@@ -199,24 +243,6 @@
               <button class="pill-btn hidden" id="desktopQuit">退出 GoPlay</button>
             </div>
           </section>
-          <section class="panel hidden" id="androidPermPanel">
-            <h3>Android 权限</h3>
-            <div class="kv"><span>本机核心</span><b id="andCore">—</b></div>
-            <div class="kv"><span>截屏 / 录屏</span><b id="andCapture">—</b></div>
-            <div class="kv"><span>无障碍服务</span><b id="andAccess">—</b></div>
-            <div class="kv"><span>悬浮窗</span><b id="andOverlay">—</b></div>
-            <div class="kv"><span>通知</span><b id="andNotif">—</b></div>
-            <div class="kv"><span>当前游戏</span><b id="andInstance">—</b></div>
-            <div class="form-actions">
-              <button class="pill-btn" id="androidCapture">开始截屏</button>
-              <button class="pill-btn" id="androidStopCapture">停止截屏</button>
-              <button class="pill-btn" id="androidAccessibility">无障碍设置</button>
-              <button class="pill-btn" id="androidOverlayPerm">悬浮窗权限</button>
-              <button class="pill-btn" id="androidNotification">通知权限</button>
-              <button class="pill-btn" id="androidAppSettings">应用设置</button>
-            </div>
-            <p class="muted" style="margin:10px 0 0;font-size:11.5px;line-height:1.6">第一次使用请依次授权：悬浮窗 → 无障碍 → 开始截屏。悬浮球可展开对话；桌面图标与悬浮球里的「面板」都能回到这里。</p>
-          </section>
         </div>
       </section>
     </main>
@@ -240,15 +266,21 @@
         </label>
         <button type="button" class="link-btn" id="refreshGames">刷新游戏列表</button>
       </div>
+      <div id="windowsPickWrap" class="hidden">
+        <label>电脑上已安装的游戏
+          <select id="fWindowsGame"><option value="">加载已安装游戏…</option></select>
+        </label>
+        <button type="button" class="link-btn" id="refreshWinGames">刷新游戏列表</button>
+      </div>
       <label>显示名称<input id="fName" placeholder="例如：地牢试炼"></label>
       <label>游戏配置<select id="fProfile"></select></label>
       <div class="form-row">
         <label>实例 ID<input id="fId" pattern="[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}" placeholder="game-xxxx"></label>
         <label>回合上限<input id="fEpisodes" type="number" min="1" max="1000" value="1"></label>
       </div>
-      <label class="check"><input id="fAuto" type="checkbox" checked> 创建后立即开始自动游玩</label>
+      <label class="check"><input id="fAuto" type="checkbox" checked> 准备好后自动开始游玩</label>
       <label class="check" id="launchWrap"><input id="fLaunch" type="checkbox" checked> 创建后自动启动这个游戏</label>
-      <p class="form-note" id="createNote">Android 上需要先授予录屏和无障碍权限；悬浮球可随时打开对话。</p>
+      <p class="form-note" id="createNote">Android 会先检查悬浮窗、无障碍、通知和录屏，缺什么就打开对应系统设置；全部就绪后才启动 AI，避免出现“打开了但玩不了”。</p>
       <div class="modal-actions"><button type="button" class="pill-btn" id="cancelCreate">取消</button><button class="primary-btn" type="submit">创建并开始</button></div>
     </form>
   </div>

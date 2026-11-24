@@ -7,11 +7,11 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
-import android.graphics.Color
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Looper
 import android.provider.Settings
 import android.speech.RecognizerIntent
 import android.view.Gravity
@@ -39,10 +39,18 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.goplay.mobile.accessibility.GameAccessibilityService
 import com.goplay.mobile.capture.ScreenCaptureService
-import com.goplay.mobile.local.LocalCore
+import com.goplay.mobile.data.TakeoverSensitivity
 import com.goplay.mobile.notifications.Notifications
+import com.goplay.mobile.voice.VoiceBridge
 import java.util.Locale
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.launch
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -51,7 +59,21 @@ import org.json.JSONObject
  * Go core. The core (libgoplaycore.so) runs as a child process on 127.0.0.1;
  * this activity only starts it, loads the console, and bridges the things a
  * WebView cannot do: installed apps, screen capture consent, overlay,
- * accessibility settings and speech recognition.
+ * accessibility settings, permissions and continuous speech.
+ *
+ * Bridge contract (all methods return a JSON string, all UI work happens on the
+ * main thread, and permission screens are only ever *opened* - nothing here
+ * pretends a permission was granted):
+ *
+ *   statusJson()                 full snapshot, including a permissions object
+ *   openPermissionCenter()       brings this activity up with focus=permissions
+ *   ensureReadyForGame(id)       checks overlay/accessibility/notification/capture
+ *   prepareGame(id, pkg)         activate -> permissions -> capture -> launch game
+ *   startConversation()          continuous SpeechRecognizer
+ *   stopConversation()           stop continuous recognition
+ *   speak(text) / stopSpeaking() TextToSpeech
+ *   setTakeoverSensitivity(l)    high | medium | low
+ *   releaseHuman()               "I am done, give control back to the AI"
  */
 class MainActivity : AppCompatActivity() {
 
@@ -65,17 +87,40 @@ class MainActivity : AppCompatActivity() {
     private var loadedPort = 0
     private var pendingExpandOverlay = false
 
+    /** True once onPageFinished fired for the console, so JS callbacks are safe. */
+    private var pageReady = false
+
+    /** Console section to open (for example "permissions") once the page is ready. */
+    private var pendingFocus: String? = null
+
+    /** Guard against stacking two MediaProjection consent dialogs. */
+    private var projectionRequestInFlight = false
+
+    /** Set by EXTRA_START_CAPTURE (overlay restore button) until onResume runs. */
+    private var pendingStartCapture = false
+
+    /** Game package that waits for permissions + capture before it is launched. */
+    private var pendingLaunchPackage: String? = null
+    private var launchScheduled = false
+
+    private var voice: VoiceBridge? = null
+    private var pendingVoiceStart = false
+    private var releaseHttp: OkHttpClient? = null
+
     private val projectionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
     ) { result ->
+        projectionRequestInFlight = false
         if (result.resultCode != Activity.RESULT_OK) {
             pendingExpandOverlay = false
+            pendingLaunchPackage = null
             toast("需要录屏授权才能看到游戏画面")
             return@registerForActivityResult
         }
         val data = result.data
         if (data == null) {
             pendingExpandOverlay = false
+            pendingLaunchPackage = null
             toast("录屏授权结果缺少数据，请重试")
             return@registerForActivityResult
         }
@@ -83,6 +128,7 @@ class MainActivity : AppCompatActivity() {
             val intent = ScreenCaptureService.startIntent(this, result.resultCode, data)
             ContextCompat.startForegroundService(this, intent)
             graph.client.ensureConnected()
+            graph.logs.log("已获得录屏授权，正在启动截屏服务")
             if (pendingExpandOverlay) {
                 pendingExpandOverlay = false
                 webView.postDelayed({
@@ -97,7 +143,9 @@ class MainActivity : AppCompatActivity() {
                 }, 1200L)
             }
             toast("已开始截屏；悬浮球可随时打开")
+            schedulePendingLaunchIfReady(1200L)
         } catch (e: Exception) {
+            graph.logs.log("启动截屏失败: " + (e.message ?: e.javaClass.simpleName))
             toast("启动截屏失败：" + (e.message ?: e.javaClass.simpleName))
         }
     }
@@ -105,7 +153,31 @@ class MainActivity : AppCompatActivity() {
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
-        toast(if (granted) "通知权限已授予" else "通知权限被拒绝；前台服务通知可能不可见")
+        if (granted) {
+            toast("通知权限已授予")
+        } else {
+            graph.logs.log("通知权限被拒绝：前台服务通知可能不可见")
+            toast("通知权限被拒绝；前台服务通知可能不可见")
+        }
+    }
+
+    private val micPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (!granted) {
+            pendingVoiceStart = false
+            val message = "麦克风权限被拒绝，连续语音不可用"
+            graph.logs.log(message)
+            emitJs("window.goplayVoiceError(" + JSONObject.quote(message) + ")")
+            toast(message)
+            return@registerForActivityResult
+        }
+        if (!pendingVoiceStart) return@registerForActivityResult
+        pendingVoiceStart = false
+        val error = voiceBridge().start()
+        if (error != null) {
+            emitJs("window.goplayVoiceError(" + JSONObject.quote(error) + ")")
+        }
     }
 
     private val speechLauncher = registerForActivityResult(
@@ -119,7 +191,7 @@ class MainActivity : AppCompatActivity() {
             .orEmpty()
         if (text.isNotEmpty()) {
             val quoted = JSONObject.quote(text)
-            webView.evaluateJavascript("window.goplayVoice && window.goplayVoice(" + quoted + ")", null)
+            emitJs("window.goplayVoice && window.goplayVoice(" + quoted + ")")
         }
     }
 
@@ -133,11 +205,69 @@ class MainActivity : AppCompatActivity() {
         observeCore()
         graph.localCore.start(lifecycleScope)
         maybeRequestNotificationPermission()
+        handleIntentExtras(intent)
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 if (webView.canGoBack()) webView.goBack() else moveTaskToBack(true)
             }
         })
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIntentExtras(intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (pendingStartCapture) {
+            pendingStartCapture = false
+            if (!ScreenCaptureService.state.value.running) {
+                graph.logs.log("收到恢复截屏请求，重新申请录屏授权")
+                beginCapture()
+            }
+        }
+        // Returning from the permission screens: if the user granted everything
+        // we asked for, continue the game launch that prepareGame() deferred.
+        schedulePendingLaunchIfReady(400L)
+    }
+
+    override fun onPause() {
+        super.onPause()
+        // Keep the microphone closed while the console is in the background.
+        // TTS is kept alive on purpose: spoken AI replies should still be heard
+        // while the game itself is in the foreground.
+        voice?.onPause()
+    }
+
+    override fun onDestroy() {
+        voice?.release()
+        voice = null
+        pendingLaunchPackage = null
+        releaseHttp?.dispatcher?.executorService?.shutdown()
+        releaseHttp?.connectionPool?.evictAll()
+        releaseHttp = null
+        super.onDestroy()
+    }
+
+    private fun handleIntentExtras(intent: Intent?) {
+        if (intent == null) return
+        val focus = intent.getStringExtra(EXTRA_FOCUS)
+        if (!focus.isNullOrBlank()) {
+            intent.removeExtra(EXTRA_FOCUS)
+            dispatchFocus(focus)
+        }
+        if (intent.getBooleanExtra(EXTRA_START_CAPTURE, false)) {
+            intent.removeExtra(EXTRA_START_CAPTURE)
+            pendingStartCapture = true
+            if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
+                !ScreenCaptureService.state.value.running
+            ) {
+                pendingStartCapture = false
+                beginCapture()
+            }
+        }
     }
 
     private fun buildContentView() {
@@ -244,6 +374,8 @@ class MainActivity : AppCompatActivity() {
 
             override fun onPageFinished(view: WebView, url: String) {
                 loading.visibility = View.GONE
+                pageReady = true
+                flushPendingFocus()
             }
         }
     }
@@ -257,6 +389,7 @@ class MainActivity : AppCompatActivity() {
                             val port = state.port
                             if (port > 0 && port != loadedPort) {
                                 loadedPort = port
+                                pageReady = false
                                 loading.visibility = View.VISIBLE
                                 loadingBar.visibility = View.VISIBLE
                                 retryButton.visibility = View.GONE
@@ -293,22 +426,301 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun beginCapture() {
+    // ---- permissions -------------------------------------------------------
+
+    private data class PermissionSnapshot(
+        val overlay: Boolean,
+        val accessibility: Boolean,
+        val notification: Boolean,
+        val capture: Boolean,
+    ) {
+        fun missing(): List<String> {
+            val out = ArrayList<String>(4)
+            if (!overlay) out.add("overlay")
+            if (!accessibility) out.add("accessibility")
+            if (!notification) out.add("notification")
+            if (!capture) out.add("capture")
+            return out
+        }
+    }
+
+    private fun notificationGranted(): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            return false
+        }
+        return NotificationManagerCompat.from(this).areNotificationsEnabled()
+    }
+
+    private fun permissionSnapshot(): PermissionSnapshot {
+        val capture = ScreenCaptureService.state.value
+        return PermissionSnapshot(
+            overlay = Settings.canDrawOverlays(this),
+            accessibility = GameAccessibilityService.instance != null,
+            notification = notificationGranted(),
+            capture = capture.running,
+        )
+    }
+
+    private fun missingMessage(item: String): String = when (item) {
+        "overlay" -> "需要「显示在其他应用上层」权限，已打开系统设置"
+        "accessibility" -> "需要开启 GoPlay 无障碍服务，已打开系统设置"
+        "notification" -> "需要通知权限，已弹出系统授权"
+        "capture" -> "需要录屏授权，已弹出系统授权"
+        "instance" -> "实例 ID 不合法"
+        else -> "需要授予权限：" + item
+    }
+
+    /**
+     * Opens the system screen that grants [item]. Never grants anything itself:
+     * the user must still confirm in the system UI, which is exactly what the
+     * product spec asks for (no silent toast, no permission bypass).
+     */
+    private fun openPermissionScreen(item: String) {
+        when (item) {
+            "overlay" -> openOverlaySettings()
+            "accessibility" -> openAccessibilitySettings()
+            "notification" -> {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                    ContextCompat.checkSelfPermission(
+                        this,
+                        Manifest.permission.POST_NOTIFICATIONS,
+                    ) != PackageManager.PERMISSION_GRANTED
+                ) {
+                    notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                } else {
+                    // Already allowed at the app level; the OS channel may be off.
+                    runCatching {
+                        startActivity(
+                            Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                                .putExtra(Settings.EXTRA_APP_PACKAGE, packageName),
+                        )
+                    }
+                }
+            }
+
+            "capture" -> beginCapture()
+        }
+    }
+
+    private fun ensureReadyJson(instanceId: String): String {
+        val clean = instanceId.trim()
+        if (!INSTANCE_ID.matches(clean)) {
+            return JSONObject()
+                .put("ok", false)
+                .put("error", "invalid_instance_id")
+                .put("missing", JSONArray().put("instance"))
+                .put("message", missingMessage("instance"))
+                .toString()
+        }
+        if (!applyActiveInstance(clean)) {
+            return JSONObject()
+                .put("ok", false)
+                .put("error", "save_failed")
+                .put("instanceId", clean)
+                .put("missing", JSONArray().put("instance"))
+                .toString()
+        }
+        val snapshot = permissionSnapshot()
+        val missing = snapshot.missing()
+        val out = JSONObject()
+            .put("ok", missing.isEmpty())
+            .put("instanceId", clean)
+            .put("missing", JSONArray(missing))
+            .put("accessibility", snapshot.accessibility)
+            .put("overlay", snapshot.overlay)
+            .put("notification", snapshot.notification)
+            .put("captureRunning", snapshot.capture)
+        if (missing.isEmpty()) {
+            out.put("message", "权限齐全，可以开始游戏")
+            return out.toString()
+        }
+        val first = missing.first()
+        out.put("opened", first)
+        out.put("message", missingMessage(first))
+        openPermissionScreen(first)
+        dispatchFocus(FOCUS_PERMISSIONS)
+        return out.toString()
+    }
+
+    // ---- game preparation --------------------------------------------------
+
+    /**
+     * Activates the instance, requests what is missing and starts the game.
+     *
+     * Everything that must be exact happens on the main thread before this
+     * returns, so the JS side gets real flags instead of optimistic guesses.
+     * The projection consent dialog is asynchronous by design: the game launch
+     * is deferred until the user finished granting (see schedulePendingLaunchIfReady).
+     */
+    private fun prepareGameJson(instanceId: String, pkg: String): String {
+        val steps = JSONArray()
+        val clean = instanceId.trim()
+        if (!INSTANCE_ID.matches(clean)) {
+            return JSONObject()
+                .put("ok", false)
+                .put("error", "invalid_instance_id")
+                .put("missing", JSONArray().put("instance"))
+                .put("steps", steps)
+                .put("message", missingMessage("instance"))
+                .toString()
+        }
+        if (!applyActiveInstance(clean)) {
+            return JSONObject()
+                .put("ok", false)
+                .put("error", "save_failed")
+                .put("instanceId", clean)
+                .put("missing", JSONArray().put("instance"))
+                .put("steps", steps)
+                .toString()
+        }
+        steps.put("active_instance")
+
+        val snapshot = permissionSnapshot()
+        val blocking = ArrayList<String>(3)
+        if (!snapshot.overlay) blocking.add("overlay")
+        if (!snapshot.accessibility) blocking.add("accessibility")
+        if (!snapshot.notification) blocking.add("notification")
+        steps.put("permissions")
+
+        val out = JSONObject()
+            .put("instanceId", clean)
+            .put("accessibility", snapshot.accessibility)
+            .put("overlay", snapshot.overlay)
+            .put("notification", snapshot.notification)
+            .put("captureRunning", snapshot.capture)
+
+        if (blocking.isNotEmpty()) {
+            // Do not launch the game behind a system settings page the user is
+            // about to read; remember it and continue on the next resume.
+            pendingLaunchPackage = pkg.trim().ifBlank { null }
+            out.put("ok", false)
+                .put("missing", JSONArray(blocking))
+                .put("opened", blocking.first())
+                .put("message", missingMessage(blocking.first()))
+            if (pendingLaunchPackage != null) out.put("launchPending", true)
+            steps.put("open_settings")
+            openPermissionScreen(blocking.first())
+            dispatchFocus(FOCUS_PERMISSIONS)
+            out.put("steps", steps)
+            return out.toString()
+        }
+
+        var captureStarted = false
+        if (!snapshot.capture) {
+            pendingLaunchPackage = pkg.trim().ifBlank { null }
+            steps.put("capture_request")
+            captureStarted = beginCapture()
+            out.put("captureStarted", captureStarted)
+            if (!captureStarted) {
+                out.put("ok", false)
+                    .put("missing", JSONArray().put("capture"))
+                    .put("message", "无法弹出录屏授权，请手动打开录屏")
+                    .put("steps", steps)
+                return out.toString()
+            }
+            if (pendingLaunchPackage != null) out.put("launchPending", true)
+        } else {
+            steps.put("capture_running")
+            out.put("captureStarted", false)
+        }
+
+        var launched = false
+        if (pkg.isNotBlank() && snapshot.capture) {
+            steps.put("launch_game")
+            launched = launchGamePackage(pkg)
+        }
+        out.put("ok", true)
+            .put("missing", JSONArray())
+            .put("launched", launched)
+            .put("captureStarted", captureStarted)
+            .put("steps", steps)
+            .put(
+                "message",
+                when {
+                    launched -> "已启动游戏"
+                    captureStarted -> "已请求录屏授权；授权后将启动游戏"
+                    pkg.isBlank() -> "准备完成"
+                    else -> "等待录屏授权后启动游戏"
+                },
+            )
+        return out.toString()
+    }
+
+    /**
+     * Launches the deferred game once every prerequisite is really satisfied.
+     * Guarded by launchScheduled so the projection callback and onResume can
+     * both ask without starting the game twice.
+     */
+    private fun schedulePendingLaunchIfReady(delayMs: Long) {
+        pendingLaunchPackage ?: return
+        if (launchScheduled) return
+        if (!::webView.isInitialized) return
+        val snapshot = permissionSnapshot()
+        if (!snapshot.capture || !snapshot.overlay || !snapshot.accessibility ||
+            !snapshot.notification
+        ) {
+            return
+        }
+        launchScheduled = true
+        webView.postDelayed({
+            launchScheduled = false
+            val target = pendingLaunchPackage ?: return@postDelayed
+            pendingLaunchPackage = null
+            if (launchGamePackage(target)) {
+                graph.logs.log("权限与录屏已就绪，启动游戏 " + target)
+            }
+        }, delayMs)
+    }
+
+    private fun launchGamePackage(pkg: String): Boolean {
+        val clean = pkg.trim()
+        if (clean.isEmpty()) return false
+        val intent = packageManager.getLaunchIntentForPackage(clean)
+        if (intent == null) {
+            toast("找不到可启动的游戏：" + clean)
+            graph.logs.log("找不到可启动的游戏: " + clean)
+            return false
+        }
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        return try {
+            startActivity(intent)
+            true
+        } catch (e: Exception) {
+            toast("启动游戏失败：" + (e.message ?: e.javaClass.simpleName))
+            graph.logs.log("启动游戏失败: " + (e.message ?: e.javaClass.simpleName))
+            false
+        }
+    }
+
+    // ---- capture -----------------------------------------------------------
+
+    private fun beginCapture(): Boolean {
+        if (projectionRequestInFlight) {
+            graph.logs.log("录屏授权已在等待中，忽略重复请求")
+            return false
+        }
         val manager = getSystemService(MediaProjectionManager::class.java)
         if (manager == null) {
             toast("系统不支持 MediaProjection")
-            return
+            return false
         }
         if (!Settings.canDrawOverlays(this)) {
-            toast("建议授予悬浮窗权限，否则没有悬浮球")
+            graph.logs.log("开始录屏：悬浮窗权限未授予，灵动岛将不可见")
         }
         if (GameAccessibilityService.instance == null) {
-            toast("建议开启无障碍服务，否则 AI 无法点击/滑动")
+            graph.logs.log("开始录屏：无障碍服务未开启，AI 无法操作游戏")
         }
-        try {
+        return try {
+            projectionRequestInFlight = true
             projectionLauncher.launch(manager.createScreenCaptureIntent())
+            true
         } catch (e: Exception) {
+            projectionRequestInFlight = false
             toast("打开录屏授权失败：" + (e.message ?: e.javaClass.simpleName))
+            false
         }
     }
 
@@ -321,9 +733,18 @@ class MainActivity : AppCompatActivity() {
         toast("已停止截屏")
     }
 
-    private fun activateInstance(id: String): Boolean {
+    // ---- instances ---------------------------------------------------------
+
+    /**
+     * Persists the active instance without tearing down anything that is
+     * already running. Only a live capture service is told to reconnect/reload.
+     */
+    private fun applyActiveInstance(id: String): Boolean {
         val clean = id.trim()
-        if (!Regex("^[A-Za-z0-9._-]{1,64}$").matches(clean)) return false
+        if (!INSTANCE_ID.matches(clean)) {
+            graph.logs.log("实例 ID 不合法: " + clean.take(80))
+            return false
+        }
         val current = graph.settingsStore.load()
         val port = graph.localCore.port.takeIf { it > 0 } ?: current.port
         val saved = graph.settingsStore.save(
@@ -333,23 +754,55 @@ class MainActivity : AppCompatActivity() {
             toast(saved.error ?: "保存当前游戏失败")
             return false
         }
-        runOnUiThread {
-            if (ScreenCaptureService.state.value.running) {
-                graph.client.reconnectIfActive()
-                graph.client.ensureConnected()
-                runCatching {
-                    startService(
-                        ScreenCaptureService.commandIntent(
-                            this,
-                            ScreenCaptureService.ACTION_RELOAD_SETTINGS,
-                        ),
-                    )
-                }
-            } else {
-                beginCapture()
+        if (ScreenCaptureService.state.value.running) {
+            graph.client.reconnectIfActive()
+            graph.client.ensureConnected()
+            runCatching {
+                startService(
+                    ScreenCaptureService.commandIntent(
+                        this,
+                        ScreenCaptureService.ACTION_RELOAD_SETTINGS,
+                    ),
+                )
             }
+            graph.logs.log("已切换活动实例：" + clean)
         }
         return true
+    }
+
+    // ---- voice -------------------------------------------------------------
+
+    private fun voiceBridge(): VoiceBridge = voice ?: VoiceBridge(
+        context = this,
+        log = { message -> graph.logs.log("Voice: " + message) },
+        evaluate = { script -> emitJs(script) },
+    ).also { voice = it }
+
+    private fun hasMicPermission(): Boolean =
+        ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+
+    private fun startConversationJson(): String {
+        if (!hasMicPermission()) {
+            pendingVoiceStart = true
+            val message = "需要录音权限才能连续语音，请在弹窗中允许麦克风"
+            emitJs("window.goplayVoiceError(" + JSONObject.quote(message) + ")")
+            micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            return JSONObject()
+                .put("ok", false)
+                .put("listening", false)
+                .put("error", "permission_required")
+                .put("message", message)
+                .toString()
+        }
+        val error = voiceBridge().start()
+        return if (error == null) {
+            JSONObject().put("ok", true).put("listening", true)
+                .put("message", "连续语音已开启").toString()
+        } else {
+            JSONObject().put("ok", false).put("listening", false)
+                .put("error", error).put("message", error).toString()
+        }
     }
 
     private fun requestVoice() {
@@ -370,6 +823,8 @@ class MainActivity : AppCompatActivity() {
             toast("语音启动失败：" + (e.message ?: e.javaClass.simpleName))
         }
     }
+
+    // ---- settings screens --------------------------------------------------
 
     private fun openAccessibilitySettings() {
         runCatching { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
@@ -394,6 +849,144 @@ class MainActivity : AppCompatActivity() {
         )
         runCatching { startActivity(intent) }.onFailure { toast("无法打开应用设置") }
     }
+
+    /**
+     * Brings this activity to the front and asks the console to open its
+     * settings section. The intent extra is also the public contract for other
+     * components (the overlay "panel" button uses it).
+     */
+    private fun openPermissionCenter() {
+        val intent = Intent(this, MainActivity::class.java).apply {
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP,
+            )
+            putExtra(EXTRA_FOCUS, FOCUS_PERMISSIONS)
+        }
+        runCatching { startActivity(intent) }
+            .onFailure { graph.logs.log("打开权限中心失败: " + it.message) }
+        dispatchFocus(FOCUS_PERMISSIONS)
+    }
+
+    private fun dispatchFocus(section: String) {
+        pendingFocus = section
+        flushPendingFocus()
+    }
+
+    private fun flushPendingFocus() {
+        val section = pendingFocus ?: return
+        if (!pageReady) return
+        pendingFocus = null
+        emitJs("window.goplayFocus && window.goplayFocus(" + JSONObject.quote(section) + ");")
+    }
+
+    private fun emitJs(script: String) {
+        if (!::webView.isInitialized) return
+        runOnUiThread {
+            if (!isFinishing) {
+                runCatching { webView.evaluateJavascript(script, null) }
+            }
+        }
+    }
+
+    // ---- human hand-back ---------------------------------------------------
+
+    /**
+     * Sends human=false over both transports: the WebSocket bridge is
+     * authoritative, and the REST endpoint exists for cores that only accept
+     * HTTP. Never throws; failures come back as text in the JSON.
+     */
+    private fun releaseHumanJson(): String {
+        val instanceId = graph.settingsStore.load().instanceId
+        // Clear the accessibility latch first so its 1 s heartbeat cannot
+        // immediately re-assert human=true after we release.
+        GameAccessibilityService.instance?.releaseHuman()
+        val wsSent = graph.client.sendHuman(false)
+        if (wsSent) {
+            graph.logs.log("交还 AI：已通过 WebSocket 发送 human=false")
+            return JSONObject()
+                .put("ok", true)
+                .put("transport", "ws")
+                .put("instanceId", instanceId)
+                .put("message", "已交还 AI 控制")
+                .toString()
+        }
+        val result = postRelease(instanceId)
+        return if (result.first) {
+            graph.logs.log("交还 AI：已通过 HTTP 发送 human=false")
+            JSONObject()
+                .put("ok", true)
+                .put("transport", "http")
+                .put("instanceId", instanceId)
+                .put("message", "已交还 AI 控制")
+                .toString()
+        } else {
+            graph.logs.log("交还 AI 失败：" + result.second)
+            JSONObject()
+                .put("ok", false)
+                .put("transport", "none")
+                .put("instanceId", instanceId)
+                .put("error", result.second)
+                .put("message", "交还失败：" + result.second)
+                .toString()
+        }
+    }
+
+    private fun postRelease(instanceId: String): Pair<Boolean, String> {
+        val port = graph.localCore.port.takeIf { it > 0 } ?: graph.settingsStore.load().port
+        if (port <= 0) return Pair(false, "本机核心尚未就绪")
+        val url = "http://127.0.0.1:" + port + "/api/instances/" + instanceId + "/release"
+        val client = releaseHttp ?: OkHttpClient.Builder()
+            .connectTimeout(RELEASE_HTTP_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            .readTimeout(RELEASE_HTTP_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            .writeTimeout(RELEASE_HTTP_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            .build()
+            .also { releaseHttp = it }
+        return try {
+            val body = JSONObject().put("reason", "user_release").toString()
+                .toRequestBody(JSON_MEDIA_TYPE)
+            val request = Request.Builder().url(url).post(body).build()
+            client.newCall(request).execute().use { response ->
+                val text = response.body?.string().orEmpty()
+                if (response.isSuccessful) {
+                    Pair(true, text)
+                } else {
+                    Pair(
+                        false,
+                        "HTTP " + response.code +
+                            (if (text.isBlank()) "" else " " + text.take(200)),
+                    )
+                }
+            }
+        } catch (e: Exception) {
+            Pair(false, e.message ?: e.javaClass.simpleName)
+        }
+    }
+
+    // ---- takeover sensitivity ---------------------------------------------
+
+    private fun setTakeoverJson(level: String): String {
+        val clean = level.trim().lowercase(Locale.ROOT)
+        val applied = graph.settingsStore.setTakeoverSensitivity(clean)
+        if (applied == null) {
+            return JSONObject()
+                .put("ok", false)
+                .put("error", "invalid_sensitivity")
+                .put("takeoverSensitivity", graph.settingsStore.load().takeoverSensitivity)
+                .put("allowed", JSONArray(TakeoverSensitivity.LEVELS))
+                .put("message", "灵敏度只能是 high / medium / low")
+                .toString()
+        }
+        GameAccessibilityService.instance?.reloadSensitivity()
+        graph.logs.log("接管灵敏度已设为 " + applied)
+        return JSONObject()
+            .put("ok", true)
+            .put("takeoverSensitivity", applied)
+            .toString()
+    }
+
+    // ---- misc --------------------------------------------------------------
 
     private fun installedGamesJson(): String {
         val manager = packageManager
@@ -431,11 +1024,17 @@ class MainActivity : AppCompatActivity() {
         return out.toString()
     }
 
-    private fun statusJson(): String {
+    private fun buildStatusJson(): String {
         val capture = ScreenCaptureService.state.value
         val settings = graph.settingsStore.load()
         val core = graph.localCore.state.value
-        val notifications = NotificationManagerCompat.from(this).areNotificationsEnabled()
+        val snapshot = permissionSnapshot()
+        val permissions = JSONObject()
+            .put("overlay", snapshot.overlay)
+            .put("accessibility", snapshot.accessibility)
+            .put("notification", snapshot.notification)
+            .put("capture", snapshot.capture)
+            .put("missing", JSONArray(snapshot.missing()))
         return JSONObject()
             .put("coreReady", core.ready)
             .put("corePort", core.port)
@@ -445,9 +1044,15 @@ class MainActivity : AppCompatActivity() {
             .put("capturePaused", capture.paused)
             .put("captureWidth", capture.width)
             .put("captureHeight", capture.height)
-            .put("accessibilityReady", GameAccessibilityService.instance != null)
-            .put("overlayPermission", Settings.canDrawOverlays(this))
-            .put("notificationPermission", notifications)
+            .put("captureError", capture.error ?: JSONObject.NULL)
+            .put("overlayVisible", capture.overlayVisible)
+            .put("permissions", permissions)
+            .put("accessibilityReady", snapshot.accessibility)
+            .put("overlayPermission", snapshot.overlay)
+            .put("notificationPermission", snapshot.notification)
+            .put("micPermission", hasMicPermission())
+            .put("voiceListening", voice?.isListening ?: false)
+            .put("takeoverSensitivity", settings.takeoverSensitivity)
             .put("activeInstance", settings.instanceId)
             .put("device", graph.device.summary)
             .put("version", core.version)
@@ -461,47 +1066,91 @@ class MainActivity : AppCompatActivity() {
     private fun dp(value: Int): Int =
         (value * resources.displayMetrics.density).toInt()
 
+    /**
+     * Runs [block] on the main thread and waits briefly for its result.
+     *
+     * JavascriptInterface methods run on a WebView background thread, but the
+     * values they report (permission snapshots, settings, service state) must be
+     * read on the main thread. Blocking the bridge thread for a few ms is far
+     * cheaper than returning optimistic lies to the console.
+     */
+    private fun <T> onMainNow(timeoutMs: Long = 1500L, block: () -> T): T? {
+        if (Looper.myLooper() == Looper.getMainLooper()) return block()
+        val holder = AtomicReference<T?>()
+        val latch = CountDownLatch(1)
+        runOnUiThread {
+            try {
+                holder.set(block())
+            } catch (e: Exception) {
+                graph.logs.log("主线程操作失败: " + (e.message ?: e.javaClass.simpleName))
+            } finally {
+                latch.countDown()
+            }
+        }
+        val finished = try {
+            latch.await(timeoutMs, TimeUnit.MILLISECONDS)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            false
+        }
+        if (!finished) {
+            graph.logs.log("主线程操作超时（" + timeoutMs + "ms）")
+            return null
+        }
+        return holder.get()
+    }
+
+    private fun uiJson(block: () -> String): String =
+        onMainNow { block() } ?: JSONObject()
+            .put("ok", false)
+            .put("error", "main_thread_timeout")
+            .put("message", "界面忙，请稍后再试")
+            .toString()
+
     private inner class HostBridge {
         @JavascriptInterface
         fun installedGames(): String = installedGamesJson()
 
         @JavascriptInterface
-        fun statusJson(): String = statusJson()
+        fun statusJson(): String = buildStatusJson()
 
         @JavascriptInterface
-        fun setActiveInstance(id: String): String {
-            val ok = activateInstance(id)
-            return JSONObject().put("ok", ok).put("instanceId", id).toString()
+        fun setActiveInstance(id: String): String = uiJson {
+            val ok = applyActiveInstance(id)
+            JSONObject().put("ok", ok).put("instanceId", id.trim()).toString()
         }
 
         @JavascriptInterface
-        fun launchGame(pkg: String): String {
-            val intent = packageManager.getLaunchIntentForPackage(pkg)
-            if (intent == null) {
-                toast("找不到可启动的游戏：" + pkg)
-                return "{\"ok\":false}"
-            }
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            return try {
-                startActivity(intent)
-                "{\"ok\":true}"
-            } catch (e: Exception) {
-                toast("启动游戏失败：" + (e.message ?: e.javaClass.simpleName))
-                "{\"ok\":false}"
-            }
-        }
+        fun prepareGame(instanceId: String, pkg: String): String =
+            uiJson { prepareGameJson(instanceId, pkg) }
 
         @JavascriptInterface
-        fun startCapture(): String {
-            runOnUiThread {
-                if (!ScreenCaptureService.state.value.running) beginCapture()
-            }
+        fun ensureReadyForGame(instanceId: String): String =
+            uiJson { ensureReadyJson(instanceId) }
+
+        @JavascriptInterface
+        fun openPermissionCenter(): String {
+            runOnUiThread { openPermissionCenter() }
             return "{\"ok\":true}"
         }
 
         @JavascriptInterface
+        fun launchGame(pkg: String): String = uiJson {
+            JSONObject().put("ok", launchGamePackage(pkg)).toString()
+        }
+
+        @JavascriptInterface
+        fun startCapture(): String = uiJson {
+            if (ScreenCaptureService.state.value.running) {
+                JSONObject().put("ok", true).put("alreadyRunning", true).toString()
+            } else {
+                JSONObject().put("ok", beginCapture()).toString()
+            }
+        }
+
+        @JavascriptInterface
         fun stopCapture(): String {
-            runOnUiThread { stopCapture() }
+            runOnUiThread { this@MainActivity.stopCapture() }
             return "{\"ok\":true}"
         }
 
@@ -522,7 +1171,7 @@ class MainActivity : AppCompatActivity() {
                     }
                 } else {
                     pendingExpandOverlay = true
-                    beginCapture()
+                    if (!beginCapture()) pendingExpandOverlay = false
                 }
             }
             return "{\"ok\":true}"
@@ -533,6 +1182,41 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread { requestVoice() }
             return "{\"ok\":true}"
         }
+
+        @JavascriptInterface
+        fun startConversation(): String = uiJson { startConversationJson() }
+
+        @JavascriptInterface
+        fun stopConversation(): String = uiJson {
+            voice?.stop()
+            JSONObject().put("ok", true).put("listening", false).toString()
+        }
+
+        @JavascriptInterface
+        fun speak(text: String): String = uiJson {
+            if (text.isBlank()) {
+                JSONObject().put("ok", false).put("error", "文本为空").toString()
+            } else {
+                val error = voiceBridge().speak(text)
+                if (error == null) {
+                    JSONObject().put("ok", true).toString()
+                } else {
+                    JSONObject().put("ok", false).put("error", error).toString()
+                }
+            }
+        }
+
+        @JavascriptInterface
+        fun stopSpeaking(): String = uiJson {
+            voice?.stopSpeaking()
+            JSONObject().put("ok", true).toString()
+        }
+
+        @JavascriptInterface
+        fun setTakeoverSensitivity(level: String): String = uiJson { setTakeoverJson(level) }
+
+        @JavascriptInterface
+        fun releaseHuman(): String = releaseHumanJson()
 
         @JavascriptInterface
         fun openAccessibility(): String {
@@ -572,11 +1256,28 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun quit(): String {
             runOnUiThread {
+                voice?.release()
+                voice = null
                 stopCapture()
                 graph.localCore.stop()
                 finishAndRemoveTask()
             }
             return "{\"ok\":true}"
         }
+    }
+
+    companion object {
+        /** Extra consumed by handleIntentExtras: resume capture (overlay restore). */
+        const val EXTRA_START_CAPTURE = "startCapture"
+
+        /** Extra consumed by handleIntentExtras: console section to open. */
+        const val EXTRA_FOCUS = "focus"
+
+        /** Value of EXTRA_FOCUS that opens the console permission center. */
+        const val FOCUS_PERMISSIONS = "permissions"
+
+        private val INSTANCE_ID = Regex("^[A-Za-z0-9._-]{1,64}$")
+        private const val RELEASE_HTTP_TIMEOUT_MS = 2_000L
+        private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
     }
 }

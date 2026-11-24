@@ -23,11 +23,12 @@ import (
 // ModelState is one model file from the recommended tier plan.
 type ModelState struct {
 	ID        string  `json:"id"`
-	Role      string  `json:"role,omitempty"`
+	Role      string  `json:"role"`
 	File      string  `json:"file"`
 	Path      string  `json:"path"`
 	URL       string  `json:"url"`
 	Present   bool    `json:"present"`
+	Size      string  `json:"size"`
 	SizeBytes int64   `json:"size_bytes"`
 	SizeGB    float64 `json:"size_gb"`
 	License   string  `json:"license"`
@@ -68,6 +69,8 @@ type Status struct {
 	Recommendation *localmodel.Recommendation `json:"recommendation,omitempty"`
 	Plan           *localmodel.TierPlan       `json:"plan,omitempty"`
 	Models         []ModelState               `json:"models"`
+	Catalog        []ModelState               `json:"catalog"`
+	Selected       string                     `json:"selected"`
 	RuntimePath    string                     `json:"runtime_path,omitempty"`
 	RuntimeFound   bool                       `json:"runtime_found"`
 	Server         ServerStatus               `json:"server"`
@@ -87,23 +90,36 @@ type Runtime struct {
 	log     *slog.Logger
 	catalog localmodel.Catalog
 
-	mu       sync.Mutex
-	startMu  sync.Mutex // serializes StartModel so two UI taps cannot launch two servers
-	hw       localmodel.HardwareInfo
-	rec      *localmodel.Recommendation
-	plan     *localmodel.TierPlan
-	models   []ModelState
-	runtime  string
-	srv      *localmodel.Server
-	provider *llm.OpenAI
-	modelID  string
-	err      error
-	note     string
-	started  time.Time
+	mu            sync.Mutex
+	startMu       sync.Mutex // serializes StartModel so two UI taps cannot launch two servers
+	hw            localmodel.HardwareInfo
+	rec           *localmodel.Recommendation
+	plan          *localmodel.TierPlan
+	models        []ModelState
+	catalogModels []ModelState
+	selected      string
+	runtime       string
+	srv           *localmodel.Server
+	provider      *llm.OpenAI
+	modelID       string
+	err           error
+	note          string
+	started       time.Time
 
 	download DownloadStatus
 	dlCancel context.CancelFunc
+	dlDone   chan struct{}
 }
+
+// Sentinel errors let the HTTP layer map model operations to useful status
+// codes without parsing messages.
+var (
+	ErrUnknownModel    = errors.New("unknown model id")
+	ErrModelNotReady   = errors.New("model is not fully downloaded")
+	ErrModelInUse      = errors.New("model is in use by the running local server")
+	ErrModelPathUnsafe = errors.New("model path escapes the models directory")
+	ErrDownloadRunning = errors.New("local model download already running")
+)
 
 // New detects hardware and resolves the recommended tier. Detection failures are
 // recorded rather than fatal so the daemon still starts in API mode.
@@ -139,27 +155,93 @@ func (r *Runtime) refreshModelsLocked() {
 	if r.plan == nil {
 		return
 	}
+	// Role comes from the plan first and from any tier assignment as fallback,
+	// so optional catalog models still show which pipeline stage they serve.
 	roles := map[string]string{}
+	for _, ts := range r.catalog.Tiers {
+		for _, a := range ts.Roles {
+			if a.ModelID != "" && roles[a.ModelID] == "" {
+				roles[a.ModelID] = string(a.Role)
+			}
+		}
+	}
 	for _, a := range r.plan.Roles {
 		if a.ModelID != "" {
 			roles[a.ModelID] = string(a.Role)
 		}
 	}
-	out := make([]ModelState, 0, len(r.plan.Models))
+
+	planned := make([]localmodel.ModelSpec, 0, len(r.plan.Models)+len(r.plan.OptionalModels))
+	seen := map[string]bool{}
 	for _, m := range r.plan.Models {
-		path := filepath.Join(r.cfg.ModelsDir, m.File)
-		st, err := os.Stat(path)
-		out = append(out, ModelState{
-			ID: m.ID, Role: roles[m.ID], File: m.File, Path: path,
-			URL: r.catalog.URL(m), Present: err == nil && st.Size() == m.SizeBytes,
-			SizeBytes: m.SizeBytes, SizeGB: m.SizeGB(), License: m.License,
-		})
+		if !seen[m.ID] {
+			seen[m.ID] = true
+			planned = append(planned, m)
+		}
+	}
+	for _, m := range r.plan.OptionalModels {
+		if !seen[m.ID] {
+			seen[m.ID] = true
+			planned = append(planned, m)
+		}
+	}
+	out := make([]ModelState, 0, len(planned))
+	for _, m := range planned {
+		out = append(out, r.modelStateLocked(m, roles[m.ID]))
 	}
 	r.models = out
+
+	all := make([]ModelState, 0, len(r.catalog.Models))
+	for _, m := range r.catalog.Models {
+		all = append(all, r.modelStateLocked(m, roles[m.ID]))
+	}
+	r.catalogModels = all
 }
 
-// StrategyModel returns the model assigned to the strategy role, if the tier has
-// one. The runtime only serves this one; perception stays rules-first.
+func (r *Runtime) modelStateLocked(m localmodel.ModelSpec, role string) ModelState {
+	path := filepath.Join(r.cfg.ModelsDir, m.File)
+	present := false
+	if st, err := os.Stat(path); err == nil && st.Size() == m.SizeBytes {
+		present = true
+	}
+	return ModelState{
+		ID: m.ID, Role: role, File: m.File, Path: path,
+		URL: r.catalog.URL(m), Present: present,
+		Size:      localmodel.HumanBytes(m.SizeBytes),
+		SizeBytes: m.SizeBytes, SizeGB: m.SizeGB(), License: m.License,
+	}
+}
+
+// catalogModel resolves one catalog model by id.
+func (r *Runtime) catalogModel(id string) (localmodel.ModelSpec, bool) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return localmodel.ModelSpec{}, false
+	}
+	return r.catalog.Model(id)
+}
+
+func (r *Runtime) modelPresentLocked(spec localmodel.ModelSpec) bool {
+	st, err := os.Stat(filepath.Join(r.cfg.ModelsDir, spec.File))
+	return err == nil && st.Size() == spec.SizeBytes
+}
+
+// preferredModel returns the selected model when it is valid, otherwise the
+// tier's strategy model. The caller must not hold r.mu.
+func (r *Runtime) preferredModel() (localmodel.ModelSpec, bool) {
+	r.mu.Lock()
+	selected := r.selected
+	r.mu.Unlock()
+	if selected != "" {
+		if spec, ok := r.catalog.Model(selected); ok {
+			return spec, true
+		}
+	}
+	return r.strategyModel()
+}
+
+// strategyModel returns the model assigned to the strategy role, if the tier has
+// one. This is the default when the user has not selected another model.
 func (r *Runtime) strategyModel() (localmodel.ModelSpec, bool) {
 	if r.plan == nil {
 		return localmodel.ModelSpec{}, false
@@ -220,21 +302,21 @@ func (r *Runtime) start(ctx context.Context, force bool) error {
 	}
 	r.mu.Unlock()
 
-	strategy, ok := r.strategyModel()
+	chosen, ok := r.preferredModel()
 	if !ok {
-		err := fmt.Errorf("localruntime: tier %s has no strategy model", r.rec.Tier)
+		err := fmt.Errorf("localruntime: tier %s has no strategy model; select a model first", r.rec.Tier)
 		return r.fail(err, mode)
 	}
-	modelPath := filepath.Join(r.cfg.ModelsDir, strategy.File)
+	modelPath := filepath.Join(r.cfg.ModelsDir, chosen.File)
 	needDownload := false
-	if st, err := os.Stat(modelPath); err != nil || st.Size() != strategy.SizeBytes {
+	if st, err := os.Stat(modelPath); err != nil || st.Size() != chosen.SizeBytes {
 		needDownload = true
 	}
 	if needDownload {
 		if !force && !r.cfg.AutoDownload {
-			err := fmt.Errorf("localruntime: model %s is not downloaded (set local.auto_download=true or run goplay-model download %s)", strategy.ID, strategy.ID)
+			err := fmt.Errorf("localruntime: model %s is not downloaded (download it in local AI settings or set local.auto_download=true)", chosen.ID)
 			r.mu.Lock()
-			r.note = "strategy model missing; first-run download is disabled"
+			r.note = "selected model missing; first-run download is disabled"
 			r.err = err
 			r.mu.Unlock()
 			if mode == "auto" {
@@ -254,10 +336,10 @@ func (r *Runtime) start(ctx context.Context, force bool) error {
 				r.log.Info("local model download", "model", p.ModelID, "percent", int(p.Percent))
 			}
 		}
-		r.log.Info("downloading local model", "model", strategy.ID, "size_gb", strategy.SizeGB(), "url", r.catalog.URL(strategy))
-		res, err := d.Download(ctx, strategy)
+		r.log.Info("downloading local model", "model", chosen.ID, "size_gb", chosen.SizeGB(), "url", r.catalog.URL(chosen))
+		res, err := d.Download(ctx, chosen)
 		if err != nil {
-			return r.fail(fmt.Errorf("download %s: %w", strategy.ID, err), mode)
+			return r.fail(fmt.Errorf("download %s: %w", chosen.ID, err), mode)
 		}
 		modelPath = res.Path
 		r.log.Info("local model ready", "path", modelPath, "cached", res.Cached)
@@ -291,21 +373,21 @@ func (r *Runtime) start(ctx context.Context, force bool) error {
 		return r.fail(fmt.Errorf("start llama-server: %w", err), mode)
 	}
 	provider := llm.NewOpenAI(llm.OpenAIConfig{
-		BaseURL: srv.BaseURL(), Model: strategy.ID, Timeout: 90 * time.Second,
+		BaseURL: srv.BaseURL(), Model: chosen.ID, Timeout: 90 * time.Second,
 		Temperature: 0.2, MaxTokens: 384, Provider: "llama.cpp",
 	})
 
 	r.mu.Lock()
 	r.srv = srv
 	r.provider = provider
-	r.modelID = strategy.ID
+	r.modelID = chosen.ID
 	r.runtime = runtimePath
 	r.err = nil
 	r.note = "local model server is running; models are downloaded per device tier and never bundled"
 	r.started = time.Now()
 	r.refreshModelsLocked()
 	r.mu.Unlock()
-	r.log.Info("local model server ready", "base_url", srv.BaseURL(), "model", strategy.ID, "pid", srv.PID(), "tier", r.rec.Tier)
+	r.log.Info("local model server ready", "base_url", srv.BaseURL(), "model", chosen.ID, "pid", srv.PID(), "tier", r.rec.Tier)
 	return nil
 }
 
@@ -313,41 +395,60 @@ func (r *Runtime) start(ctx context.Context, force bool) error {
 // is visible through Status(). It is idempotent when the file is already present.
 func (r *Runtime) DownloadModel() error {
 	r.mu.Lock()
-	if r.dlCancel != nil || r.download.Active {
-		r.mu.Unlock()
-		return errors.New("local model download already running")
-	}
-	if r.plan == nil {
-		r.mu.Unlock()
-		return fmt.Errorf("localruntime: no tier plan: %s", r.note)
+	plan, rec, note := r.plan, r.rec, r.note
+	r.mu.Unlock()
+	if plan == nil {
+		return fmt.Errorf("localruntime: no tier plan: %s", note)
 	}
 	strategy, ok := r.strategyModel()
 	if !ok {
-		r.mu.Unlock()
-		return fmt.Errorf("localruntime: tier %s has no strategy model", r.rec.Tier)
+		return fmt.Errorf("localruntime: tier %s has no strategy model", rec.Tier)
 	}
-	modelPath := filepath.Join(r.cfg.ModelsDir, strategy.File)
-	if st, err := os.Stat(modelPath); err == nil && st.Size() == strategy.SizeBytes {
-		r.download = DownloadStatus{Done: true, ModelID: strategy.ID, Downloaded: strategy.SizeBytes, Total: strategy.SizeBytes, Percent: 100}
-		r.note = "model already downloaded"
+	return r.downloadModelByID(strategy)
+}
+
+// DownloadModelID starts a background download for any catalog model. Only one
+// download runs at a time.
+func (r *Runtime) DownloadModelID(id string) error {
+	spec, ok := r.catalogModel(id)
+	if !ok {
+		return fmt.Errorf("%w: %q (use GET /api/local/catalog to list model ids)", ErrUnknownModel, strings.TrimSpace(id))
+	}
+	return r.downloadModelByID(spec)
+}
+
+func (r *Runtime) downloadModelByID(spec localmodel.ModelSpec) error {
+	r.mu.Lock()
+	if r.dlCancel != nil || r.download.Active {
+		r.mu.Unlock()
+		return ErrDownloadRunning
+	}
+	if r.modelPresentLocked(spec) {
+		r.download = DownloadStatus{Done: true, ModelID: spec.ID, Downloaded: spec.SizeBytes, Total: spec.SizeBytes, Percent: 100}
+		r.note = "model already downloaded; select it and start the local AI"
+		r.err = nil
 		r.refreshModelsLocked()
 		r.mu.Unlock()
 		return nil
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
 	r.dlCancel = cancel
-	r.download = DownloadStatus{Active: true, ModelID: strategy.ID, Total: strategy.SizeBytes}
+	r.dlDone = done
+	r.download = DownloadStatus{Active: true, ModelID: spec.ID, Total: spec.SizeBytes}
 	r.err = nil
-	r.note = "downloading " + strategy.ID
+	r.note = "downloading " + spec.ID
 	r.mu.Unlock()
-	go r.downloadModel(ctx, strategy)
+	go r.runDownload(ctx, spec, done)
 	return nil
 }
 
-func (r *Runtime) downloadModel(ctx context.Context, strategy localmodel.ModelSpec) {
+func (r *Runtime) runDownload(ctx context.Context, spec localmodel.ModelSpec, done chan struct{}) {
+	defer close(done)
 	defer func() {
 		r.mu.Lock()
 		r.dlCancel = nil
+		r.dlDone = nil
 		r.download.Active = false
 		r.download.BytesPerSecond = 0
 		r.mu.Unlock()
@@ -370,19 +471,19 @@ func (r *Runtime) downloadModel(ctx context.Context, strategy localmodel.ModelSp
 		}
 		r.mu.Unlock()
 	}
-	r.log.Info("downloading local model", "model", strategy.ID, "size_gb", strategy.SizeGB())
-	res, err := d.Download(ctx, strategy)
+	r.log.Info("downloading local model", "model", spec.ID, "size_gb", spec.SizeGB())
+	res, err := d.Download(ctx, spec)
 	if err != nil {
-		r.setDownloadError(fmt.Errorf("download %s: %w", strategy.ID, err))
+		r.setDownloadError(fmt.Errorf("download %s: %w", spec.ID, err))
 		return
 	}
 	r.mu.Lock()
 	r.download.Active = false
 	r.download.Done = true
 	r.download.Percent = 100
-	r.download.Downloaded = strategy.SizeBytes
-	r.download.Total = strategy.SizeBytes
-	r.note = "model downloaded; tap start to launch the local AI"
+	r.download.Downloaded = spec.SizeBytes
+	r.download.Total = spec.SizeBytes
+	r.note = "model downloaded; select it and start the local AI"
 	r.err = nil
 	r.refreshModelsLocked()
 	r.mu.Unlock()
@@ -410,6 +511,100 @@ func (r *Runtime) CancelDownload() {
 		r.note = "download cancelled"
 	}
 	r.mu.Unlock()
+}
+
+// DeleteModel removes one catalog model file from the models directory. It
+// refuses to delete the model the running server is using and rejects paths
+// outside the directory.
+func (r *Runtime) DeleteModel(id string) error {
+	id = strings.TrimSpace(id)
+	spec, ok := r.catalogModel(id)
+	if !ok {
+		return fmt.Errorf("%w: %q", ErrUnknownModel, id)
+	}
+	path := filepath.Join(r.cfg.ModelsDir, spec.File)
+	if !pathInside(r.cfg.ModelsDir, path) {
+		return fmt.Errorf("%w: %q", ErrModelPathUnsafe, id)
+	}
+
+	r.mu.Lock()
+	if r.srv != nil && strings.EqualFold(r.modelID, spec.ID) {
+		r.mu.Unlock()
+		return fmt.Errorf("%w: %s (stop the local server, select another model, or restart)", ErrModelInUse, spec.ID)
+	}
+	var done chan struct{}
+	if r.download.Active && strings.EqualFold(r.download.ModelID, spec.ID) {
+		if r.dlCancel != nil {
+			r.dlCancel()
+		}
+		done = r.dlDone
+	}
+	r.mu.Unlock()
+
+	if done != nil {
+		<-done
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("delete model %s: %w (close any app using the file and retry)", spec.ID, err)
+	}
+	_ = os.Remove(path + ".part")
+
+	r.mu.Lock()
+	if strings.EqualFold(r.selected, spec.ID) {
+		r.selected = ""
+	}
+	if strings.EqualFold(r.download.ModelID, spec.ID) && !r.download.Active {
+		r.download = DownloadStatus{}
+	}
+	r.err = nil
+	r.note = "deleted model " + spec.ID + "; download it again to restore"
+	r.refreshModelsLocked()
+	r.mu.Unlock()
+	return nil
+}
+
+// SelectModel records the preferred model. Switching while the server is
+// running stops it and starts the new model asynchronously.
+func (r *Runtime) SelectModel(id string) error {
+	id = strings.TrimSpace(id)
+	spec, ok := r.catalogModel(id)
+	if !ok {
+		return fmt.Errorf("%w: %q (use GET /api/local/catalog to list model ids)", ErrUnknownModel, id)
+	}
+	r.mu.Lock()
+	present := r.modelPresentLocked(spec)
+	if !present {
+		r.mu.Unlock()
+		return fmt.Errorf("%w: download %s before selecting it", ErrModelNotReady, spec.ID)
+	}
+	r.selected = spec.ID
+	wasRunning := r.srv != nil || r.provider != nil
+	runningID := r.modelID
+	r.mu.Unlock()
+
+	if !wasRunning || strings.EqualFold(runningID, spec.ID) {
+		return nil
+	}
+	if err := r.StopServer(context.Background()); err != nil {
+		return fmt.Errorf("stop local server before switching model: %w", err)
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		defer cancel()
+		if err := r.StartModel(ctx); err != nil {
+			r.log.Warn("restart local model after selection failed", "model", spec.ID, "err", err)
+		}
+	}()
+	return nil
+}
+
+// pathInside reports whether path is a child of dir (not dir itself, not ..).
+func pathInside(dir, path string) bool {
+	rel, err := filepath.Rel(dir, path)
+	if err != nil || rel == "." || filepath.IsAbs(rel) {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // StopServer stops the llama-server child and detaches its provider. It is safe
@@ -461,6 +656,8 @@ func (r *Runtime) Status() Status {
 	st := Status{
 		Mode: r.mode, Enabled: r.provider != nil, Hardware: r.hw,
 		Models:      append([]ModelState(nil), r.models...),
+		Catalog:     append([]ModelState(nil), r.catalogModels...),
+		Selected:    r.selected,
 		RuntimePath: r.runtime, RuntimeFound: r.runtime != "",
 		Error: errString(r.err), Note: r.note, StartedAt: r.started,
 		Download: r.download,

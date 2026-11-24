@@ -4,8 +4,8 @@ GoPlay 的本地模式不是“把一个模型塞进安装包”，而是：
 
 1. 首次启动探测设备（RAM、架构、芯片型号）；
 2. 按档位推荐一套**角色分工**；
-3. 只下载该档位需要的 GGUF；
-4. 用外部 @llama-server@ 提供 OpenAI 兼容接口，核心通过 @/v1/chat/completions@ 调用。
+3. 推荐该档位需要的 GGUF，但允许用户下载多个模型并随时切换/删除；
+4. 用 @llama-server@ 提供 OpenAI 兼容接口，核心通过 @/v1/chat/completions@ 调用。Android 上运行时随 APK，桌面用外部运行时。
 
 模型权重不属于安装包，下载带大小与 SHA256 校验。桌面包不内置 llama.cpp 运行时（用 `--runtime` 或 `GOPLAY_LLAMA_SERVER` 指向外部 `llama-server`）；Android APK 为「手机完全独立」内置了 arm64 的 `libllama-server.so` 运行时，但同样不打包任何 GGUF。
 
@@ -77,6 +77,16 @@ go run ./cmd/goplay-model bench --url http://127.0.0.1:8421/v1 --tier low --stri
 
 @GET /api/local/status@ 返回档位、硬件、模型是否存在、服务 PID、provider/model、错误与 note。@POST /api/local/recommend@ 供控制台按设备 RAM 询问档位。
 
+v0.4 的多模型与分层 API：
+
+- @GET /api/local/catalog@：档位推荐 + 可选模型目录 + 当前 selected；
+- @POST /api/local/download@ @{"model_id":"..."}@：下载任意已 pin 的模型（202，未知 404，并发 409）；
+- @DELETE /api/local/models/{id}@：删除模型（运行中 409）；
+- @POST /api/local/select@ @{"model_id":"..."}@：切换策略模型，若服务在跑会停下并用新模型重启；
+- @GET/POST /api/ai/routes@：感知/分析/决策/对话/记忆/校验六层，每层 @auto|api|local|offline@ 与可选模型；不可用时明确回退规则层，不假装已接入。
+
+限制：同一时刻只有一个本地 llama-server；selected 目前是运行时状态，重启后回到档位推荐模型；分析/记忆/校验三层可配置，但规则层尚未调用它们。
+
 Android 上核心与 llama-server 都是 APK 内的 arm64 原生库，由 Kotlin 壳的子进程启动；核心通过 `GOPLAY_LLAMA_SERVER` 找到同目录的 `libllama-server.so`，模型下载到 App 私有目录后由 `llama.cpp` 加载。权重仍然按档位在首次使用时下载，不进安装包。
 
 ## 配置示例
@@ -111,4 +121,5 @@ Android 上核心与 llama-server 都是 APK 内的 arm64 原生库，由 Kotlin
 - Windows 上 @Stop@ 使用 Kill，可能不优雅，后续可改为先发关闭请求；
 - bench 的 token 计数依赖服务端 @stream_options.include_usage@；
 - 芯片型号探测是尽力而为，RAM 是主判据；
+- 多模型下载/删除/切换已做后端与单测，尚未在手机弱网环境真实下载验证；
 - 小模型会回显注释/多余文本，策略层用 @groundLLMAction@ 把输出映射到合法动作，映射失败才回退。

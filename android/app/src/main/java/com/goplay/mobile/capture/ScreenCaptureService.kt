@@ -50,7 +50,10 @@ data class CaptureStatus(
     val height: Int = 0,
     val quality: Int = 0,
     val targetFps: Int = 0,
+    /** Non-null after capture stopped on its own; the pill stays on screen. */
     val error: String? = null,
+    /** True while the floating pill is attached, including the degraded state. */
+    val overlayVisible: Boolean = false,
 )
 
 /**
@@ -91,13 +94,18 @@ class ScreenCaptureService : Service() {
     private var lastDisplayRestart = 0L
     private var displayListenerRegistered = false
 
+    /** True after the projection died but the service + pill were kept alive. */
+    private var degraded = false
+
+    /** Human-readable reason shown on the pill and in the notification. */
+    private var lastStopReason: String? = null
+
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
-            if (!stopping) {
-                graph.logs.log("系统或用户结束了投屏，截屏服务停止")
-                stopCapture()
-                stopSelf()
-            }
+            // The system (or the user via the system UI) revoked the projection.
+            // Keep the service, the WebSocket and the pill: destroying everything
+            // made the island vanish with no way back short of reopening the app.
+            if (!stopping) onProjectionLost("系统结束了投屏")
         }
     }
 
@@ -147,7 +155,9 @@ class ScreenCaptureService : Service() {
             ACTION_RESUME -> resumeCapture()
             ACTION_RELOAD_SETTINGS -> reloadSettings()
             ACTION_EXPAND_OVERLAY -> expandOverlay()
-            else -> if (projection == null) stopSelf()
+            // No action means a system restart (START_NOT_STICKY, so in practice
+            // never) — only give up when there is nothing left worth keeping.
+            else -> if (projection == null && overlay == null) stopSelf()
         }
         return START_NOT_STICKY
     }
@@ -169,6 +179,8 @@ class ScreenCaptureService : Service() {
         // startForeground() before any validation that could stopSelf() early.
         startForegroundCompat("正在启动截屏…", paused = false)
         stopping = false
+        degraded = false
+        lastStopReason = null
         val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0)
         val data = projectionData(intent)
         if (data == null || resultCode == 0) {
@@ -203,6 +215,8 @@ class ScreenCaptureService : Service() {
         publishStatus()
         startForegroundCompat(describeCapture(), paused = false)
         showOverlay()
+        // Clear the "截屏已停止…" notice left over from a previous projection.
+        overlay?.setStatus(null, isError = false)
         updateOverlayState(connected = graph.client.isConnected)
 
         val displayManager = getSystemService(DisplayManager::class.java)
@@ -379,9 +393,10 @@ class ScreenCaptureService : Service() {
             height = captureHeight,
             quality = quality,
             targetFps = targetFps,
+            overlayVisible = overlay?.isShown == true,
         )
         graph.updateSession {
-            it.copy(running = true, paused = paused)
+            it.copy(running = true, paused = paused, lastError = null)
         }
     }
 
@@ -442,6 +457,14 @@ class ScreenCaptureService : Service() {
             graph.logs.log("未授予悬浮窗权限，截屏继续但不显示悬浮球")
             return
         }
+        // A degraded service already owns a pill; re-adding the window would
+        // leak the old one (two overlapping bubbles). Reuse it instead.
+        val existing = overlay
+        if (existing != null) {
+            existing.setStatus(null, isError = false)
+            updateOverlayState(connected = graph.client.isConnected)
+            return
+        }
         val controller = OverlayController(
             context = this,
             callbacks = object : OverlayController.Callbacks {
@@ -450,9 +473,27 @@ class ScreenCaptureService : Service() {
                 }
 
                 override fun onStop() {
-                    graph.logs.log("悬浮球停止")
+                    // Only a deliberate user stop tears everything down.
+                    graph.logs.log("悬浮球停止（用户主动）")
                     stopCapture()
                     stopSelf()
+                }
+
+                override fun onRecoverCapture() {
+                    graph.logs.log("悬浮球恢复截屏：打开主界面重新授权")
+                    try {
+                        startActivity(
+                            Intent(this@ScreenCaptureService, MainActivity::class.java).apply {
+                                addFlags(
+                                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                                        Intent.FLAG_ACTIVITY_SINGLE_TOP,
+                                )
+                                putExtra(MainActivity.EXTRA_START_CAPTURE, true)
+                            },
+                        )
+                    } catch (e: Exception) {
+                        graph.logs.log("从悬浮球恢复截屏失败: " + e.message)
+                    }
                 }
 
                 override fun onMessage(text: String) {
@@ -474,6 +515,9 @@ class ScreenCaptureService : Service() {
                                     Intent.FLAG_ACTIVITY_NEW_TASK or
                                         Intent.FLAG_ACTIVITY_SINGLE_TOP,
                                 )
+                                // The console's "面板" button is the natural entry
+                                // point for fixing permissions.
+                                putExtra(MainActivity.EXTRA_FOCUS, MainActivity.FOCUS_PERMISSIONS)
                             },
                         )
                     } catch (e: Exception) {
@@ -491,11 +535,13 @@ class ScreenCaptureService : Service() {
     }
 
     private fun expandOverlay() {
-        if (projection == null) {
-            graph.logs.log("截屏未运行，无法展开悬浮球")
+        // Also honoured while degraded: the pill is exactly where the user has to
+        // tap to restart capture, so recreating it here is required.
+        if (overlay == null) showOverlay()
+        if (overlay == null) {
+            graph.logs.log("悬浮球不存在且无法创建，展开失败")
             return
         }
-        if (overlay == null) showOverlay()
         overlay?.expand()
     }
 
@@ -508,8 +554,12 @@ class ScreenCaptureService : Service() {
         )
     }
 
-    private fun updateNotification(text: String, paused: Boolean) {
-        Notifications.update(this, text, paused)
+    private fun updateNotification(
+        text: String,
+        paused: Boolean,
+        titleOverride: String? = null,
+    ) {
+        Notifications.update(this, text, paused, titleOverride)
     }
 
     private fun realDisplayMetrics(): DisplayMetrics {
@@ -531,15 +581,84 @@ class ScreenCaptureService : Service() {
         else -> 0
     }
 
+    /**
+     * Capture failed (bad consent data, virtual display error, rotation rebuild
+     * failure…). It deliberately does NOT stop the foreground service or remove
+     * the overlay: the user keeps a "截屏已停止：<原因>，点开恢复" pill to retry from.
+     * The name is kept because every failure call site already used it.
+     */
     private fun failAndStop(message: String) {
-        graph.logs.log(message)
-        graph.updateSession { it.copy(lastError = message) }
-        stopCapture()
-        // stopCapture() resets CaptureStatus; keep the failure visible to the UI.
-        STATE.update { it.copy(error = message) }
-        stopSelf()
+        onProjectionLost(message)
     }
 
+    /**
+     * Tears down the projection but keeps the service, the WebSocket and the
+     * floating pill alive.
+     *
+     * Android 14 checks the mediaProjection foreground-service type when
+     * startForeground() runs, not continuously, so an already-started
+     * mediaProjection FGS remains legal after the projection is revoked. Keeping
+     * that one service (with a rewritten notification) is the smallest stable
+     * recovery path: no second service, no orphaned window, no silent vanish.
+     */
+    private fun onProjectionLost(reason: String) {
+        if (stopping) return
+        if (projection == null && degraded) return
+        degraded = true
+        lastStopReason = reason
+        graph.logs.log("截屏中断：" + reason + "（保留悬浮球与前台服务）")
+        releaseProjection()
+        graph.metrics.updateFps(0.0)
+        STATE.value = CaptureStatus(
+            running = false,
+            paused = false,
+            error = reason,
+            overlayVisible = overlay?.isShown == true,
+        )
+        graph.updateSession {
+            it.copy(running = false, paused = false, fps = 0.0, lastError = reason)
+        }
+        if (overlay == null) showOverlay()
+        // overlayVisible was captured before the pill could be (re)created.
+        STATE.update { it.copy(overlayVisible = overlay?.isShown == true) }
+        val notice = "截屏已停止：" + reason + "，点开恢复"
+        overlay?.setStatus(notice, isError = true)
+        updateOverlayState(connected = graph.client.isConnected)
+        updateNotification(
+            notice + " · 点悬浮球恢复截屏",
+            paused = false,
+            titleOverride = "GoPlay · 截屏已停止",
+        )
+    }
+
+    /** Drops the projection + display without touching the service/overlay. */
+    private fun releaseProjection() {
+        teardownDisplay()
+        if (displayListenerRegistered) {
+            try {
+                getSystemService(DisplayManager::class.java).unregisterDisplayListener(displayListener)
+            } catch (_: Exception) {
+            }
+            displayListenerRegistered = false
+        }
+        val old = projection
+        projection = null
+        paused = false
+        if (old != null) {
+            try {
+                old.unregisterCallback(projectionCallback)
+            } catch (_: Exception) {
+            }
+            // Harmless when the system already stopped it (that is the common
+            // degraded path); still required when we abort during start-up.
+            try {
+                old.stop()
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    /** Full teardown. Only a user-initiated stop or onDestroy calls this. */
     private fun stopCapture() {
         if (stopping) return
         stopping = true
@@ -549,26 +668,9 @@ class ScreenCaptureService : Service() {
         } catch (_: Exception) {
         }
         overlay = null
-        teardownDisplay()
-        if (displayListenerRegistered) {
-            try {
-                getSystemService(DisplayManager::class.java).unregisterDisplayListener(displayListener)
-            } catch (_: Exception) {
-            }
-            displayListenerRegistered = false
-        }
-        projection?.let { p ->
-            try {
-                p.unregisterCallback(projectionCallback)
-            } catch (_: Exception) {
-            }
-            try {
-                p.stop()
-            } catch (_: Exception) {
-            }
-        }
-        projection = null
-        paused = false
+        releaseProjection()
+        degraded = false
+        lastStopReason = null
         STATE.value = CaptureStatus()
         try {
             graph.client.disconnect()

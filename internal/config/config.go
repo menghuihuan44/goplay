@@ -10,15 +10,23 @@ import (
 	"strings"
 )
 
+// RouteConfig mirrors llm.RouteConfig without importing the llm package.
+// app.RoutesFromConfig converts between the two representations.
+type RouteConfig struct {
+	Mode  string `json:"mode"`
+	Model string `json:"model,omitempty"`
+}
+
 type LLMConfig struct {
-	Mode        string  `json:"mode"` // auto, api, local, offline
-	BaseURL     string  `json:"base_url"`
-	APIKey      string  `json:"api_key"`
-	Model       string  `json:"model"`
-	Temperature float64 `json:"temperature"`
-	MaxTokens   int     `json:"max_tokens"`
-	TimeoutMS   int     `json:"timeout_ms"`
-	Vision      bool    `json:"vision"`
+	Mode        string                 `json:"mode"` // auto, api, local, offline
+	BaseURL     string                 `json:"base_url"`
+	APIKey      string                 `json:"api_key"`
+	Model       string                 `json:"model"`
+	Temperature float64                `json:"temperature"`
+	MaxTokens   int                    `json:"max_tokens"`
+	TimeoutMS   int                    `json:"timeout_ms"`
+	Vision      bool                   `json:"vision"`
+	Routes      map[string]RouteConfig `json:"routes,omitempty"`
 }
 
 type LocalConfig struct {
@@ -150,6 +158,18 @@ func (c *Config) Validate() error {
 	case "auto", "api", "local", "offline":
 	default:
 		return fmt.Errorf("invalid llm.mode %q (want auto|api|local|offline)", c.LLM.Mode)
+	}
+	for role, route := range c.LLM.Routes {
+		role = strings.ToLower(strings.TrimSpace(role))
+		mode := strings.ToLower(strings.TrimSpace(route.Mode))
+		switch mode {
+		case "", "auto", "api", "local", "offline":
+		default:
+			return fmt.Errorf("invalid llm.routes[%s].mode %q (want auto|api|local|offline)", role, route.Mode)
+		}
+		route.Mode = mode
+		route.Model = strings.TrimSpace(route.Model)
+		c.LLM.Routes[role] = route
 	}
 	return nil
 }

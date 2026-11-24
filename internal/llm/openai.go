@@ -50,6 +50,17 @@ func (o *OpenAI) Name() string {
 	return "openai-compatible"
 }
 
+// Model returns the model name this client sends to the API.
+func (o *OpenAI) Model() string { return o.cfg.Model }
+
+// WithModel returns a copy of the client pinned to another model name while
+// keeping the same endpoint, credentials, timeout and HTTP transport.
+func (o *OpenAI) WithModel(model string) Provider {
+	cfg := o.cfg
+	cfg.Model = model
+	return &OpenAI{cfg: cfg, http: o.http}
+}
+
 func (o *OpenAI) Available(ctx context.Context) bool {
 	if o.cfg.APIKey == "" {
 		u := strings.ToLower(o.cfg.BaseURL)

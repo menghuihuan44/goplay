@@ -44,7 +44,19 @@ class OverlayPanel(
     private val panelButton: Button
     private val stopButton: Button
 
+    /** Full-width "恢复截屏" action, only shown after the capture stopped by itself. */
+    private val recoverButton: Button
+
     private var expanded = false
+
+    /** Last runtime values, so [setStatus] can be undone without losing them. */
+    private var lastConnected = false
+    private var lastPaused = false
+    private var lastRunning = false
+    private var lastAccessibilityReady = false
+
+    /** Non-null while an error/notice text replaces the runtime state line. */
+    private var statusOverride: String? = null
     private var downRawX = 0f
     private var downRawY = 0f
     private var lastRawX = 0f
@@ -61,6 +73,11 @@ class OverlayPanel(
     init {
         setBackground(panelBackground(expanded = false))
         clipToPadding = false
+        // Never let the collapsed pill shrink to zero: a 0-sized overlay window is
+        // invisible and untouchable, which used to make the island "blink and vanish".
+        minimumWidth = dp(96)
+        minimumHeight = dp(40)
+        isClickable = true
         column = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(12), dp(8), dp(12), dp(8))
@@ -69,7 +86,7 @@ class OverlayPanel(
         header = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            minimumHeight = dp(34)
+            minimumHeight = dp(40)
             isClickable = true
         }
         dot = View(context).apply {
@@ -87,14 +104,16 @@ class OverlayPanel(
             text = "准备中"
             setTextColor(ContextCompat.getColor(context, R.color.text_secondary))
             textSize = 10f
-            maxLines = 1
+            maxLines = 2
             ellipsize = TextUtils.TruncateAt.END
             gravity = Gravity.END
             setPadding(dp(10), 0, 0, 0)
+            // Collapsed: wrap content (weight 0) so the pill always shows its status
+            // text — a weight-1 child inside a WRAP_CONTENT parent measured to 0 px.
+            maxWidth = dp(170)
             layoutParams = LinearLayout.LayoutParams(
-                0,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
-                1f,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
             )
         }
         chevron = TextView(context).apply {
@@ -222,6 +241,21 @@ class OverlayPanel(
             stateListAnimator = null
             setOnClickListener { callbacks.onStop() }
         }
+        recoverButton = Button(context).apply {
+            text = "恢复截屏"
+            isAllCaps = false
+            textSize = 12f
+            minHeight = dp(38)
+            minimumHeight = dp(38)
+            visibility = GONE
+            setTextColor(ContextCompat.getColor(context, R.color.on_accent))
+            background = rounded(
+                fill = ContextCompat.getColor(context, R.color.accent),
+                radiusDp = 19f,
+            )
+            stateListAnimator = null
+            setOnClickListener { callbacks.onRecoverCapture() }
+        }
         actions.addView(
             pauseButton,
             LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
@@ -237,6 +271,15 @@ class OverlayPanel(
             LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
                 marginStart = dp(6)
             },
+        )
+        // Recovery lives on its own full-width row so it is impossible to miss
+        // after the system killed the projection.
+        body.addView(
+            recoverButton,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply { topMargin = dp(8) },
         )
         body.addView(
             actions,
@@ -328,6 +371,16 @@ class OverlayPanel(
             width,
             ViewGroup.LayoutParams.WRAP_CONTENT,
         )
+        // Expanded: the status line shares the row with the title (weight 1).
+        // Collapsed: it must size itself, otherwise the pill shows a 0 px label.
+        stateText.layoutParams = if (value) {
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        } else {
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            )
+        }
         onExpandedChanged?.invoke(value)
         if (!value) hideKeyboard()
     }
@@ -338,24 +391,68 @@ class OverlayPanel(
         running: Boolean,
         accessibilityReady: Boolean,
     ) {
+        lastConnected = connected
+        lastPaused = paused
+        lastRunning = running
+        lastAccessibilityReady = accessibilityReady
+        renderRuntime()
+    }
+
+    /**
+     * Replaces the runtime state line with a notice such as
+     * "截屏已停止：系统结束了投屏，点开恢复" and reveals the recovery action.
+     * Pass text = null to go back to the normal runtime rendering.
+     */
+    fun setStatus(text: String?, isError: Boolean) {
+        statusOverride = text
+        if (text != null) {
+            stateText.text = text
+            stateText.setTextColor(
+                ContextCompat.getColor(
+                    context,
+                    if (isError) R.color.state_bad else R.color.text_secondary,
+                ),
+            )
+            recoverButton.visibility = if (isError || !lastRunning) VISIBLE else GONE
+            // Nothing is capturing, so pausing is meaningless until recovery.
+            pauseButton.isEnabled = false
+            stopButton.isEnabled = true
+            dot.background = dotBackground(
+                ContextCompat.getColor(
+                    context,
+                    if (isError) R.color.state_bad else R.color.text_muted,
+                ),
+            )
+        } else {
+            recoverButton.visibility = GONE
+            stateText.setTextColor(ContextCompat.getColor(context, R.color.text_secondary))
+            renderRuntime()
+        }
+    }
+
+    private fun renderRuntime() {
+        if (statusOverride != null) return
         val color = when {
-            !running -> R.color.text_muted
-            paused -> R.color.state_warn
-            !accessibilityReady -> R.color.state_warn
-            connected -> R.color.state_ok
+            !lastRunning -> R.color.text_muted
+            lastPaused -> R.color.state_warn
+            !lastAccessibilityReady -> R.color.state_warn
+            lastConnected -> R.color.state_ok
             else -> R.color.state_bad
         }
         dot.background = dotBackground(ContextCompat.getColor(context, color))
         stateText.text = when {
-            !running -> "未运行"
-            paused -> "已暂停"
-            !accessibilityReady -> "无障碍未开启"
-            connected -> "已连接"
+            !lastRunning -> "未运行"
+            lastPaused -> "已暂停"
+            !lastAccessibilityReady -> "无障碍未开启"
+            lastConnected -> "已连接"
             else -> "重连中"
         }
-        pauseButton.text = if (paused) "继续" else "暂停"
-        pauseButton.isEnabled = running
-        stopButton.isEnabled = running
+        pauseButton.text = if (lastPaused) "继续" else "暂停"
+        pauseButton.isEnabled = lastRunning
+        // Stop stays enabled even after the projection died: it is the only way to
+        // dismiss the kept-alive pill.
+        stopButton.isEnabled = true
+        recoverButton.visibility = if (!lastRunning) VISIBLE else GONE
     }
 
     fun focusInput() {

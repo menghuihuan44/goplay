@@ -24,6 +24,9 @@ class OverlayController(
         fun onMessage(text: String)
         fun onExpandedChanged(expanded: Boolean)
         fun onOpenApp()
+
+        /** "恢复截屏": reopen the app so it can request MediaProjection again. */
+        fun onRecoverCapture()
     }
 
     private val windowManager =
@@ -76,6 +79,13 @@ class OverlayController(
     ) {
         panel.setRuntime(connected, paused, running, accessibilityReady)
     }
+
+    /** Shows a notice (null clears it) such as "截屏已停止：<原因>，点开恢复". */
+    fun setStatus(text: String?, isError: Boolean) {
+        panel.setStatus(text, isError)
+    }
+
+    val isShown: Boolean get() = shown
 
     /** Expand the pill into the compact console, e.g. after tapping 灵动岛. */
     fun expand() {

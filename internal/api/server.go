@@ -26,6 +26,7 @@ import (
 	"goplay/internal/domain"
 	"goplay/internal/llm"
 	"goplay/internal/localmodel"
+	"goplay/internal/localruntime"
 	"goplay/internal/metrics"
 )
 
@@ -77,8 +78,14 @@ func (s *Server) routes() {
 	mux.HandleFunc("GET /api/instances/{id}/snapshot", s.snapshotInstance)
 	mux.HandleFunc("GET /api/instances/{id}/events", s.instanceEvents)
 	mux.HandleFunc("GET /api/instances/{id}/chat", s.instanceChat)
+	mux.HandleFunc("POST /api/instances/{id}/chat", s.postInstanceChat)
 	mux.HandleFunc("GET /api/instances/{id}/constraints", s.instanceConstraints)
 	mux.HandleFunc("POST /api/instances/{id}/constraints", s.addConstraint)
+	mux.HandleFunc("GET /api/games/windows", s.windowsGames)
+	mux.HandleFunc("POST /api/games/windows/launch", s.launchWindowsGame)
+	mux.HandleFunc("GET /api/instances/{id}/diagnostics", s.instanceDiagnostics)
+	mux.HandleFunc("GET /api/instances/{id}/frame", s.instanceFrame)
+	mux.HandleFunc("POST /api/instances/{id}/release", s.releaseInstance)
 	mux.HandleFunc("GET /api/instances/{id}/memory", s.recallMemory)
 	mux.HandleFunc("GET /api/profiles", s.profiles)
 	mux.HandleFunc("GET /api/memory/global", s.globalMemory)
@@ -88,10 +95,15 @@ func (s *Server) routes() {
 	mux.HandleFunc("GET /metrics", s.metricsText)
 	mux.HandleFunc("GET /api/local/status", s.localStatus)
 	mux.HandleFunc("POST /api/local/recommend", s.localRecommend)
+	mux.HandleFunc("GET /api/local/catalog", s.localCatalog)
 	mux.HandleFunc("POST /api/local/download", s.localDownload)
+	mux.HandleFunc("DELETE /api/local/models/{id}", s.localDeleteModel)
+	mux.HandleFunc("POST /api/local/select", s.localSelect)
 	mux.HandleFunc("POST /api/local/start", s.localStart)
 	mux.HandleFunc("POST /api/local/stop", s.localStop)
 	mux.HandleFunc("POST /api/local/cancel", s.localCancel)
+	mux.HandleFunc("GET /api/ai/routes", s.getAIRoutes)
+	mux.HandleFunc("POST /api/ai/routes", s.updateAIRoutes)
 	mux.HandleFunc("GET /api/llm", s.getLLM)
 	mux.HandleFunc("POST /api/llm", s.updateLLM)
 	mux.HandleFunc("POST /api/llm/test", s.testLLM)
@@ -277,6 +289,39 @@ func (s *Server) instanceChat(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"chat": view.Chat})
 }
 
+// postInstanceChat queues the user's instruction and returns the language
+// layer's immediate reply. A missing provider yields a fallback answer, not 500.
+func (s *Server) postInstanceChat(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if _, err := s.mgr.Get(id); err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	var req struct {
+		Text string `json:"text"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if strings.TrimSpace(req.Text) == "" {
+		writeError(w, http.StatusBadRequest, "text must not be empty")
+		return
+	}
+	res, err := s.mgr.ChatDetailed(r.Context(), id, req.Text)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"accepted": true,
+		"reply":    res.Reply,
+		"provider": res.Provider,
+		"model":    res.Model,
+		"fallback": res.Fallback,
+	})
+}
+
 func (s *Server) instanceConstraints(w http.ResponseWriter, r *http.Request) {
 	view, err := s.mgr.Get(r.PathValue("id"))
 	if err != nil {
@@ -366,11 +411,96 @@ func (s *Server) localDownload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "local runtime is not attached")
 		return
 	}
-	if err := rt.DownloadModel(); err != nil {
-		writeError(w, http.StatusConflict, err.Error())
+	var req struct {
+		ModelID string `json:"model_id"`
+	}
+	if err := readOptionalJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"accepted": true, "status": rt.Status()})
+	id := strings.TrimSpace(req.ModelID)
+	var err error
+	if id == "" {
+		err = rt.DownloadModel()
+	} else {
+		err = rt.DownloadModelID(id)
+	}
+	if err != nil {
+		status := http.StatusConflict
+		if errors.Is(err, localruntime.ErrUnknownModel) {
+			status = http.StatusNotFound
+		}
+		writeError(w, status, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"accepted": true, "model_id": id, "status": rt.Status()})
+}
+
+// localCatalog lists every downloadable model plus the selected one.
+func (s *Server) localCatalog(w http.ResponseWriter, r *http.Request) {
+	st, ok := s.mgr.LocalStatus()
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "local runtime is not attached")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"tier":     st.Tier,
+		"selected": st.Selected,
+		"models":   st.Models,
+		"catalog":  st.Catalog,
+	})
+}
+
+func (s *Server) localDeleteModel(w http.ResponseWriter, r *http.Request) {
+	rt := s.mgr.LocalRuntime()
+	if rt == nil {
+		writeError(w, http.StatusServiceUnavailable, "local runtime is not attached")
+		return
+	}
+	id := r.PathValue("id")
+	if err := rt.DeleteModel(id); err != nil {
+		status := http.StatusConflict
+		if errors.Is(err, localruntime.ErrUnknownModel) {
+			status = http.StatusNotFound
+		}
+		writeError(w, status, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "model_id": id, "status": rt.Status()})
+}
+
+func (s *Server) localSelect(w http.ResponseWriter, r *http.Request) {
+	rt := s.mgr.LocalRuntime()
+	if rt == nil {
+		writeError(w, http.StatusServiceUnavailable, "local runtime is not attached")
+		return
+	}
+	var req struct {
+		ModelID string `json:"model_id"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	wasRunning := false
+	if st, ok := s.mgr.LocalStatus(); ok {
+		wasRunning = st.Enabled || st.Server.Running
+	}
+	if err := rt.SelectModel(req.ModelID); err != nil {
+		status := http.StatusConflict
+		if errors.Is(err, localruntime.ErrUnknownModel) {
+			status = http.StatusNotFound
+		}
+		writeError(w, status, err.Error())
+		return
+	}
+	if wasRunning {
+		// SelectModel stopped the old server and restarts asynchronously; drop the
+		// stale provider now so role routes never talk to the old model.
+		s.mgr.Router().SetLocal(nil)
+		go s.ensureLocalProvider()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"selected": req.ModelID, "status": rt.Status()})
 }
 
 func (s *Server) localStart(w http.ResponseWriter, r *http.Request) {
@@ -445,6 +575,87 @@ func (s *Server) ensureLocalProvider() {
 	}
 }
 
+// normalizeLLMRoutes validates role names and modes before persisting.
+func normalizeLLMRoutes(in map[string]config.RouteConfig) (map[string]config.RouteConfig, error) {
+	out := make(map[string]config.RouteConfig, len(in))
+	for role, rc := range in {
+		name := strings.ToLower(strings.TrimSpace(role))
+		if !llm.ValidRole(name) {
+			return nil, fmt.Errorf("unknown role %q (want %s)", role, strings.Join(llm.Roles(), ", "))
+		}
+		mode := strings.ToLower(strings.TrimSpace(rc.Mode))
+		switch mode {
+		case "", "auto", "api", "local", "offline":
+		default:
+			return nil, fmt.Errorf("routes[%s].mode must be auto, api, local or offline", name)
+		}
+		if _, dup := out[name]; dup {
+			return nil, fmt.Errorf("duplicate role %q", name)
+		}
+		out[name] = config.RouteConfig{Mode: mode, Model: strings.TrimSpace(rc.Model)}
+	}
+	return out, nil
+}
+
+func (s *Server) aiRoutesBody(ctx context.Context) map[string]any {
+	statuses := s.mgr.Router().RoutesStatus(ctx)
+	available := make(map[string]any, len(statuses))
+	for role, raw := range statuses {
+		entry, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		available[role] = map[string]any{
+			"provider":  entry["provider"],
+			"model":     entry["model"],
+			"available": entry["available"],
+		}
+	}
+	routes := make(map[string]config.RouteConfig)
+	for role, rc := range s.mgr.Router().Routes() {
+		routes[role] = config.RouteConfig{Mode: rc.Mode, Model: rc.Model}
+	}
+	return map[string]any{
+		"global_mode": s.mgr.Router().Mode(),
+		"routes":      routes,
+		"available":   available,
+		"roles":       llm.Roles(),
+	}
+}
+
+// getAIRoutes reports the per-layer mode/model and whether each layer can run.
+func (s *Server) getAIRoutes(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.aiRoutesBody(r.Context()))
+}
+
+func (s *Server) updateAIRoutes(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Routes map[string]config.RouteConfig `json:"routes"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.Routes == nil {
+		writeError(w, http.StatusBadRequest, "routes is required (send {} to clear all overrides)")
+		return
+	}
+	routes, err := normalizeLLMRoutes(req.Routes)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	cfg := s.cfg
+	cfg.LLM.Routes = routes
+	if err := cfg.Save(filepath.Join(cfg.DataDir, "config.json")); err != nil {
+		writeError(w, http.StatusInternalServerError, "save config: "+err.Error())
+		return
+	}
+	s.cfg = cfg
+	s.mgr.Router().SetRoutes(app.RoutesFromConfig(routes))
+	writeJSON(w, http.StatusOK, s.aiRoutesBody(r.Context()))
+}
+
 func (s *Server) getLLM(w http.ResponseWriter, r *http.Request) {
 	cfg := s.cfg
 	body := map[string]any{
@@ -456,6 +667,7 @@ func (s *Server) getLLM(w http.ResponseWriter, r *http.Request) {
 		"max_tokens":  cfg.LLM.MaxTokens,
 		"timeout_ms":  cfg.LLM.TimeoutMS,
 		"vision":      cfg.LLM.Vision,
+		"routes":      s.mgr.Router().RoutesStatus(r.Context()),
 		"router":      s.mgr.Router().Status(r.Context()),
 	}
 	if st, ok := s.mgr.LocalStatus(); ok {
@@ -465,15 +677,16 @@ func (s *Server) getLLM(w http.ResponseWriter, r *http.Request) {
 }
 
 type llmUpdateRequest struct {
-	Mode        string   `json:"mode"`
-	BaseURL     string   `json:"base_url"`
-	APIKey      string   `json:"api_key"`
-	ClearKey    bool     `json:"clear_key"`
-	Model       string   `json:"model"`
-	Temperature *float64 `json:"temperature"`
-	MaxTokens   *int     `json:"max_tokens"`
-	TimeoutMS   *int     `json:"timeout_ms"`
-	Vision      *bool    `json:"vision"`
+	Mode        string                        `json:"mode"`
+	BaseURL     string                        `json:"base_url"`
+	APIKey      string                        `json:"api_key"`
+	ClearKey    bool                          `json:"clear_key"`
+	Model       string                        `json:"model"`
+	Temperature *float64                      `json:"temperature"`
+	MaxTokens   *int                          `json:"max_tokens"`
+	TimeoutMS   *int                          `json:"timeout_ms"`
+	Vision      *bool                         `json:"vision"`
+	Routes      map[string]config.RouteConfig `json:"routes,omitempty"`
 }
 
 func (s *Server) updateLLM(w http.ResponseWriter, r *http.Request) {
@@ -489,7 +702,7 @@ func (s *Server) updateLLM(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "mode must be auto, api, local or offline")
 		return
 	}
-	cfg := s.mgr.Config()
+	cfg := s.cfg
 	if mode != "" {
 		cfg.LLM.Mode = mode
 	}
@@ -516,6 +729,14 @@ func (s *Server) updateLLM(w http.ResponseWriter, r *http.Request) {
 	if req.Vision != nil {
 		cfg.LLM.Vision = *req.Vision
 	}
+	if req.Routes != nil {
+		routes, err := normalizeLLMRoutes(req.Routes)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		cfg.LLM.Routes = routes
+	}
 	var api llm.Provider
 	if cfg.LLM.BaseURL != "" && cfg.LLM.Model != "" {
 		api = llm.NewOpenAI(llm.OpenAIConfig{
@@ -527,6 +748,7 @@ func (s *Server) updateLLM(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mgr.Router().SetAPI(api)
 	s.mgr.Router().SetMode(cfg.LLM.Mode)
+	s.mgr.Router().SetRoutes(app.RoutesFromConfig(cfg.LLM.Routes))
 	if rt := s.mgr.LocalRuntime(); rt != nil {
 		rt.SetMode(cfg.LLM.Mode)
 		if cfg.LLM.Mode == "local" {
@@ -578,6 +800,9 @@ func (s *Server) localStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	if st, ok := s.mgr.LocalStatus(); ok {
 		body["runtime"] = st
+		body["selected"] = st.Selected
+		body["models"] = st.Models
+		body["catalog"] = st.Catalog
 	}
 	writeJSON(w, http.StatusOK, body)
 }
@@ -641,6 +866,17 @@ func readJSON(r *http.Request, v any) error {
 		if errors.Is(err, io.EOF) {
 			return fmt.Errorf("empty JSON body")
 		}
+		return err
+	}
+	return nil
+}
+
+// readOptionalJSON accepts an empty body and otherwise behaves like readJSON.
+func readOptionalJSON(r *http.Request, v any) error {
+	defer r.Body.Close()
+	dec := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil && !errors.Is(err, io.EOF) {
 		return err
 	}
 	return nil

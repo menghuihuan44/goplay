@@ -3,11 +3,15 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"image"
+	"image/jpeg"
 	"log/slog"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"goplay/internal/action"
@@ -95,6 +99,15 @@ type Runner struct {
 	cancel context.CancelFunc
 	done   chan struct{}
 	saves  int
+
+	frameMu        sync.Mutex
+	frameJPEG      []byte
+	frameAt        time.Time
+	frameW         int
+	frameH         int
+	frameCh        chan domain.Frame
+	lastFrameOffer atomic.Int64
+	frameWG        sync.WaitGroup
 }
 
 func New(opts Options) (*Runner, error) {
@@ -131,6 +144,7 @@ func New(opts Options) (*Runner, error) {
 		lim:     action.NewLimiter(cfg.MaxActionsSec),
 		status:  domain.StatusStopped,
 		done:    make(chan struct{}),
+		frameCh: make(chan domain.Frame, 1),
 		epStart: time.Now(),
 	}, nil
 }
@@ -152,6 +166,11 @@ func (r *Runner) Start() {
 	r.mu.Unlock()
 
 	r.emit("instance.started", map[string]any{"profile": r.opts.Profile.ID})
+	r.frameWG.Add(1)
+	go func() {
+		defer r.frameWG.Done()
+		r.frameLoop(ctx)
+	}()
 	go func() {
 		defer close(r.done)
 		defer r.finish()
@@ -170,6 +189,7 @@ func (r *Runner) Stop() {
 	}
 	if started {
 		<-r.done
+		r.frameWG.Wait()
 	}
 }
 
@@ -192,11 +212,23 @@ func (r *Runner) Pause() {
 func (r *Runner) Resume() {
 	r.mu.Lock()
 	r.paused = false
-	if r.status == domain.StatusPaused {
+	wasHuman := r.human
+	if wasHuman {
+		// An explicit resume (including the release endpoint) is a forced
+		// hand-back: it clears human control immediately. If the client simply
+		// stops reporting, tick still uses the 2.5s HumanResumeMS window.
+		r.human = false
+		r.humanAt = time.Time{}
+		r.humanSince = time.Time{}
+	}
+	if r.status == domain.StatusPaused || r.status == domain.StatusHuman {
 		r.status = domain.StatusRunning
 	}
 	r.mu.Unlock()
 	r.emit("instance.resumed", nil)
+	if wasHuman {
+		r.emit("instance.human_released", map[string]any{"reason": "user-released"})
+	}
 }
 
 func (r *Runner) Status() domain.InstanceStatus {
@@ -207,20 +239,27 @@ func (r *Runner) Status() domain.InstanceStatus {
 
 // Snapshot is the JSON-safe view used by the HTTP API and overlay.
 type Snapshot struct {
-	ID       string                  `json:"id"`
-	Name     string                  `json:"name"`
-	Profile  string                  `json:"profile"`
-	Status   domain.InstanceStatus   `json:"status"`
-	Stats    domain.InstanceStats    `json:"stats"`
-	State    domain.State            `json:"state"`
-	Control  domain.Control          `json:"control"`
-	Decision DecisionView            `json:"decision"`
-	Policy   policy.PolicyStats      `json:"policy"`
-	Paused   bool                    `json:"paused"`
-	Human    bool                    `json:"human_control"`
-	Memory   memory.Stats            `json:"memory"`
-	Episodes []EpisodeResult         `json:"episodes,omitempty"`
-	Chat     []scheduler.ChatMessage `json:"chat,omitempty"`
+	ID          string                `json:"id"`
+	Name        string                `json:"name"`
+	Profile     string                `json:"profile"`
+	Status      domain.InstanceStatus `json:"status"`
+	Stats       domain.InstanceStats  `json:"stats"`
+	State       domain.State          `json:"state"`
+	Display     domain.DisplayView    `json:"display"`
+	Control     domain.Control        `json:"control"`
+	Decision    DecisionView          `json:"decision"`
+	Policy      policy.PolicyStats    `json:"policy"`
+	Paused      bool                  `json:"paused"`
+	Human       bool                  `json:"human_control"`
+	FrameAt     time.Time             `json:"frame_at,omitempty"`
+	FrameWidth  int                   `json:"frame_width,omitempty"`
+	FrameHeight int                   `json:"frame_height,omitempty"`
+	// FrameJPEG is the latest encoded frame for GET /frame. It is intentionally
+	// excluded from JSON so periodic snapshots stay small.
+	FrameJPEG []byte                  `json:"-"`
+	Memory    memory.Stats            `json:"memory"`
+	Episodes  []EpisodeResult         `json:"episodes,omitempty"`
+	Chat      []scheduler.ChatMessage `json:"chat,omitempty"`
 }
 
 type DecisionView struct {
@@ -253,6 +292,13 @@ func (r *Runner) Snapshot() Snapshot {
 		Episodes: append([]EpisodeResult(nil), r.episodesList...),
 	}
 	r.mu.Unlock()
+	s.Display = domain.BuildDisplay(s.State, s.Stats, s.Stats.LastAction, s.Decision.Reason)
+	r.frameMu.Lock()
+	s.FrameAt = r.frameAt
+	s.FrameWidth = r.frameW
+	s.FrameHeight = r.frameH
+	s.FrameJPEG = r.frameJPEG
+	r.frameMu.Unlock()
 	s.Policy = r.opts.Policy.Stats()
 	s.Memory = r.opts.Memory.StatsSnapshot()
 	s.Chat = r.opts.Sched.ChatLog()
@@ -260,6 +306,141 @@ func (r *Runner) Snapshot() Snapshot {
 		s.Chat = s.Chat[len(s.Chat)-40:]
 	}
 	return s
+}
+
+const (
+	frameMaxEdge     = 960
+	frameJPEGQuality = 70
+	frameMinInterval = time.Second
+)
+
+// offerFrame hands a freshly captured frame to the encoder without blocking the
+// decision loop. Frames are limited to one per second; if the encoder is still
+// busy the intermediate frame is dropped.
+func (r *Runner) offerFrame(f domain.Frame) {
+	if f.Width <= 0 || f.Height <= 0 || len(f.RGBA) < f.Width*f.Height*4 {
+		return
+	}
+	now := time.Now()
+	prev := r.lastFrameOffer.Load()
+	if prev != 0 && now.Sub(time.Unix(0, prev)) < frameMinInterval {
+		return
+	}
+	if !r.lastFrameOffer.CompareAndSwap(prev, now.UnixNano()) {
+		return
+	}
+	select {
+	case r.frameCh <- f:
+	default:
+	}
+}
+
+func (r *Runner) frameLoop(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case f := <-r.frameCh:
+			jpg, w, h, at, err := encodeFrameJPEG(f)
+			if err != nil {
+				r.log.Debug("frame encode skipped", "instance", r.opts.ID, "err", err)
+				continue
+			}
+			r.frameMu.Lock()
+			r.frameJPEG = jpg
+			r.frameAt = at
+			r.frameW = w
+			r.frameH = h
+			r.frameMu.Unlock()
+		}
+	}
+}
+
+// LastFrameJPEG returns a private copy of the last encoded frame and its capture
+// time. It is safe to call from any goroutine.
+func (r *Runner) LastFrameJPEG() ([]byte, time.Time) {
+	r.frameMu.Lock()
+	defer r.frameMu.Unlock()
+	return append([]byte(nil), r.frameJPEG...), r.frameAt
+}
+
+// FrameInfo describes the latest frame for diagnostics without exposing the
+// JPEG bytes. age_ms is -1 until the first frame is encoded.
+func (r *Runner) FrameInfo() map[string]any {
+	r.frameMu.Lock()
+	defer r.frameMu.Unlock()
+	ageMS := int64(-1)
+	if !r.frameAt.IsZero() {
+		ageMS = time.Since(r.frameAt).Milliseconds()
+		if ageMS < 0 {
+			ageMS = 0
+		}
+	}
+	return map[string]any{
+		"available": len(r.frameJPEG) > 0,
+		"at":        r.frameAt,
+		"age_ms":    ageMS,
+		"width":     r.frameW,
+		"height":    r.frameH,
+		"bytes":     len(r.frameJPEG),
+	}
+}
+
+func encodeFrameJPEG(f domain.Frame) ([]byte, int, int, time.Time, error) {
+	need := f.Width * f.Height * 4
+	if f.Width <= 0 || f.Height <= 0 || len(f.RGBA) < need {
+		return nil, 0, 0, time.Time{}, fmt.Errorf("frame %dx%d has %d RGBA bytes, need %d", f.Width, f.Height, len(f.RGBA), need)
+	}
+	at := f.At
+	if at.IsZero() {
+		at = time.Now()
+	}
+	src := &image.RGBA{Pix: f.RGBA[:need], Stride: f.Width * 4, Rect: image.Rect(0, 0, f.Width, f.Height)}
+	dst := image.Image(src)
+	w, h := f.Width, f.Height
+	if f.Width > frameMaxEdge || f.Height > frameMaxEdge {
+		w, h = scaledDimensions(f.Width, f.Height)
+		scaled := image.NewRGBA(image.Rect(0, 0, w, h))
+		scaleNearest(src, scaled)
+		dst = scaled
+	}
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, dst, &jpeg.Options{Quality: frameJPEGQuality}); err != nil {
+		return nil, 0, 0, time.Time{}, fmt.Errorf("encode JPEG: %w", err)
+	}
+	return buf.Bytes(), w, h, at, nil
+}
+
+func scaledDimensions(w, h int) (int, int) {
+	if w <= frameMaxEdge && h <= frameMaxEdge {
+		return w, h
+	}
+	if w >= h {
+		nh := h * frameMaxEdge / w
+		if nh < 1 {
+			nh = 1
+		}
+		return frameMaxEdge, nh
+	}
+	nw := w * frameMaxEdge / h
+	if nw < 1 {
+		nw = 1
+	}
+	return nw, frameMaxEdge
+}
+
+func scaleNearest(src *image.RGBA, dst *image.RGBA) {
+	sw, sh := src.Rect.Dx(), src.Rect.Dy()
+	dw, dh := dst.Rect.Dx(), dst.Rect.Dy()
+	for y := 0; y < dh; y++ {
+		sy := y * sh / dh
+		srcOff := sy * src.Stride
+		dstOff := y * dst.Stride
+		for x := 0; x < dw; x++ {
+			sx := x * sw / dw
+			copy(dst.Pix[dstOff+x*4:dstOff+x*4+4], src.Pix[srcOff+sx*4:srcOff+sx*4+4])
+		}
+	}
 }
 
 func (r *Runner) loop(ctx context.Context) {
@@ -368,6 +549,7 @@ func (r *Runner) step(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("capture: %w", err)
 	}
+	r.offerFrame(frame)
 	st, world, err := r.opts.Analyzer.Analyze(frame)
 	if err != nil {
 		return fmt.Errorf("analyze: %w", err)
@@ -469,6 +651,7 @@ func (r *Runner) step(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("capture after action: %w", err)
 	}
+	r.offerFrame(after)
 	st2, world2, err := r.opts.Analyzer.Analyze(after)
 	if err != nil {
 		return fmt.Errorf("analyze after action: %w", err)
