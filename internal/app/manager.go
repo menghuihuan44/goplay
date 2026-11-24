@@ -286,7 +286,11 @@ func (m *Manager) build(spec Spec) error {
 		sess = bridge.NewSession(spec.ID)
 		human = sess
 		src = sess
-		an = perception.NewVisionAnalyzer(m.router.For(llm.RolePerception), perception.GenericAnalyzer{})
+		base := perception.Analyzer(perception.GenericAnalyzer{})
+		if spec.ProfileID == "touhou" {
+			base = perception.NewShmupAnalyzer()
+		}
+		an = perception.NewVisionAnalyzer(m.router.For(llm.RolePerception), base)
 		ex = sess
 	} else {
 		ns, err := native.OpenScreenSource("", 0)
@@ -310,12 +314,29 @@ func (m *Manager) build(spec Spec) error {
 		}
 		human = sh
 		src = &ctxSource{inner: ns}
-		an = perception.NewVisionAnalyzer(m.router.For(llm.RolePerception), perception.GenericAnalyzer{})
+		base := perception.Analyzer(perception.GenericAnalyzer{})
+		if spec.ProfileID == "touhou" {
+			base = perception.NewShmupAnalyzer()
+		}
+		an = perception.NewVisionAnalyzer(m.router.For(llm.RolePerception), base)
 		ex = we
 	}
 	ctlPath := filepath.Join(m.cfg.DataDir, "instances", safeDir(spec.ID), "control.json")
 	sch := scheduler.New(spec.ID, spec.Name, prof.Rules, m.mem, nil, m.reg, ctlPath)
 	pol := policy.New(m.router.For(llm.RoleStrategy), m.reg, policy.DefaultConfig())
+	tickMS, settleMS, maxActions := spec.TickMS, 120, m.cfg.MaxActionRate
+	if spec.ProfileID == "touhou" {
+		// Shooters are continuous-control games: a 250ms tick plus 120ms settle
+		// looks like standing still in a bullet stream. Shorten both while
+		// keeping the same rate limiter and takeover checks.
+		if tickMS <= 0 || tickMS > 120 {
+			tickMS = 120
+		}
+		settleMS = 45
+		if maxActions < 16 {
+			maxActions = 16
+		}
+	}
 	opts := engine.Options{
 		ID: spec.ID, Name: spec.Name, Profile: prof, Source: src, Analyzer: an,
 		Executor: ex, Human: human, Sched: sch, Policy: pol,
@@ -323,8 +344,8 @@ func (m *Manager) build(spec Spec) error {
 		Save:  func() error { return m.mem.SaveInstance(spec.ID) },
 		Reset: reset,
 		Config: engine.Config{
-			TickMS: spec.TickMS, HumanResumeMS: spec.HumanResumeMS,
-			MaxActionsSec: m.cfg.MaxActionRate, SettleMS: 120, SaveEvery: 25,
+			TickMS: tickMS, HumanResumeMS: spec.HumanResumeMS,
+			MaxActionsSec: maxActions, SettleMS: settleMS, SaveEvery: 25,
 			MaxEpisodes: spec.MaxEpisodes,
 		},
 		Logger: m.log.With("instance", spec.ID),

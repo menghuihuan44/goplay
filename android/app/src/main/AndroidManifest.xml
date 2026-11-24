@@ -10,6 +10,9 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <!-- Continuous voice must keep the microphone while the user is in the game;
+         Android 11+ requires a foreground service with type microphone. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <!-- Needed because the user picks any installed game; GoPlay itself never
          inspects another app's memory. Review this at store submission time. -->
@@ -57,6 +60,12 @@
             android:name=".capture.ScreenCaptureService"
             android:exported="false"
             android:foregroundServiceType="mediaProjection"
+            android:stopWithTask="false" />
+
+        <service
+            android:name=".voice.VoiceKeepAliveService"
+            android:exported="false"
+            android:foregroundServiceType="microphone"
             android:stopWithTask="false" />
 
         <service

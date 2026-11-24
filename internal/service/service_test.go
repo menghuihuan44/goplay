@@ -28,13 +28,17 @@ func TestServiceStartsWithEphemeralPort(t *testing.T) {
 	default:
 	}
 
-	client := &http.Client{Timeout: 3 * time.Second}
+	client := &http.Client{Timeout: 5 * time.Second}
 	var health struct {
 		OK      bool   `json:"ok"`
 		Service string `json:"service"`
 		Version string `json:"version"`
 	}
-	deadline := time.Now().Add(5 * time.Second)
+	// Under a fully parallel `go test ./...` this process competes with every
+	// other package; a 5s window produced intermittent dial timeouts even
+	// though the listener was already accepting. Keep the failure real but
+	// give the OS scheduler enough room.
+	deadline := time.Now().Add(20 * time.Second)
 	for {
 		resp, err := client.Get(svc.URL() + "api/health")
 		if err == nil {

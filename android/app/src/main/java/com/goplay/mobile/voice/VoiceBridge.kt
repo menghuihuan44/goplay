@@ -2,6 +2,7 @@ package com.goplay.mobile.voice
 
 import android.content.Context
 import android.content.Intent
+import android.media.AudioAttributes
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -50,6 +51,9 @@ class VoiceBridge(
     private var ttsReady = false
     private var speaking = false
 
+    /** Text requested before the TTS engine finished initialising. */
+    private var pendingSpeech: String? = null
+
     /** True while continuous recognition should be running. */
     val isListening: Boolean get() = listening
 
@@ -84,6 +88,14 @@ class VoiceBridge(
         releaseRecognizer()
     }
 
+    /**
+     * Initialise TTS before the first narration. Calling speak() the first time
+     * used to drop the opening line because the engine was still starting.
+     */
+    fun warmUp() {
+        ensureTts()
+    }
+
     fun speak(text: String): String? {
         val clean = text.trim()
         if (clean.isEmpty()) return "文本为空"
@@ -95,14 +107,21 @@ class VoiceBridge(
             stopListeningInternal()
             log("AI 开始说话，暂停听音")
         }
-        val engine = tts
-        if (engine == null) {
-            resumeAfterSpeech()
-            return "TTS 不可用"
+        if (tts == null || !ttsReady) {
+            // Queue instead of failing: the engine may still be initialising on
+            // the first call. It will speak as soon as it is ready.
+            pendingSpeech = clean
+            log("TTS 尚未就绪，已排队：" + clean.take(40))
+            return null
         }
+        return speakNow(clean)
+    }
+
+    private fun speakNow(clean: String): String? {
+        val engine = tts ?: return "TTS 不可用"
         if (!ttsReady) {
-            resumeAfterSpeech()
-            return "TTS 尚未就绪，请稍后再试"
+            pendingSpeech = clean
+            return null
         }
         val clipped = if (clean.length > MAX_SPEAK_CHARS) {
             clean.substring(0, MAX_SPEAK_CHARS)
@@ -118,6 +137,7 @@ class VoiceBridge(
     }
 
     fun stopSpeaking() {
+        pendingSpeech = null
         tts?.stop()
         markSpeaking(false)
         resumeAfterSpeech()
@@ -307,25 +327,59 @@ class VoiceBridge(
             TextToSpeech(context) { status ->
                 if (status == TextToSpeech.SUCCESS) {
                     val engine = tts
+                    val chosen = chooseChineseVoice(engine)
                     try {
-                        engine?.language = Locale.getDefault()
+                        engine?.setAudioAttributes(
+                            AudioAttributes.Builder()
+                                .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                                .build(),
+                        )
                     } catch (e: Exception) {
-                        Log.w(TAG, "set TTS language failed: " + e.message)
+                        Log.w(TAG, "set TTS audio attributes failed: " + e.message)
                     }
                     engine?.setOnUtteranceProgressListener(progressListener)
                     ttsReady = true
-                    log("TTS 已就绪")
+                    log("TTS 已就绪 lang=" + chosen.toLanguageTag())
+                    val queued = pendingSpeech
+                    pendingSpeech = null
+                    if (queued != null) {
+                        val error = speakNow(queued)
+                        if (error != null) log("排队语音播放失败: " + error)
+                    }
                 } else {
                     ttsReady = false
                     log("TTS 初始化失败 status=" + status)
-                    emitError("语音播报初始化失败")
+                    emitError("语音播报初始化失败；请检查系统 TTS 引擎")
                 }
             }
         } catch (e: Exception) {
             log("创建 TTS 失败: " + e.message)
-            emitError("语音播报不可用")
+            emitError("语音播报不可用；请检查系统 TTS 引擎")
             null
         }
+    }
+
+    /**
+     * Prefer a real Chinese voice. If the device only has an English engine the
+     * Chinese text may be skipped entirely, which looked like the AI was mute.
+     */
+    private fun chooseChineseVoice(engine: TextToSpeech?): Locale {
+        if (engine == null) return Locale.getDefault()
+        val candidates = listOf(Locale.SIMPLIFIED_CHINESE, Locale.CHINESE, Locale.getDefault())
+        for (locale in candidates) {
+            try {
+                val result = engine.setLanguage(locale)
+                if (result >= TextToSpeech.LANG_AVAILABLE) {
+                    return locale
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "set TTS language " + locale + " failed: " + e.message)
+            }
+        }
+        // Keep the default language set by the engine; speech may be inaccurate
+        // but it is better than staying silent.
+        return Locale.getDefault()
     }
 
     private val progressListener = object : UtteranceProgressListener() {

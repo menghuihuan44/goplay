@@ -1006,7 +1006,14 @@ function speakNarration(text){
 }
 function speakReply(text){
   if(!text) return;
-  if(window.GoPlayHost&&window.GoPlayHost.speak){try{window.GoPlayHost.speak(text);return}catch(e){}}
+  if(window.GoPlayHost&&window.GoPlayHost.speak){
+    try{
+      var raw=window.GoPlayHost.speak(text);
+      var res=null; try{res=typeof raw==='string'?JSON.parse(raw):raw}catch(e){}
+      if(!res||res.ok!==false) return;
+      if(window.console) console.warn('native TTS failed',res.error||res);
+    }catch(e){}
+  }
   if(window.speechSynthesis){
     try{var u=new SpeechSynthesisUtterance(text);u.lang='zh-CN';window.speechSynthesis.cancel();window.speechSynthesis.speak(u)}catch(e){}
   }
@@ -1103,7 +1110,8 @@ window.goplayVoiceFinal=function(text){
 };
 window.goplayVoicePartial=function(text){if(!S.voiceTarget)return;var ta=$('[data-input="'+S.voiceTarget+'"]');if(ta)ta.placeholder='听到：'+String(text||'')};
 window.goplayVoiceError=function(msg){toast('语音错误：'+(msg||'未知'),true)};
-window.goplaySpeaking=function(on){var vs=$('#androidVoiceState');if(vs&&S.voice)vs.textContent=on?'AI 正在说话…':'通话中：说完自动发送'};
+window.goplayVoiceStarted=function(){if(!S.voice)return;S.voice.active=true;updateCallUI();var vs=$('#androidVoiceState');if(vs)vs.textContent='通话中：麦克风已打开，切到游戏后仍可继续说话'};
+window.goplaySpeaking=function(on){var vs=$('#androidVoiceState');if(vs&&S.voice)vs.textContent=on?'AI 正在说话…':'通话中：说完自动发送，AI 回复会自动朗读'};
 
 async function saveAPI(ev){
   ev.preventDefault();

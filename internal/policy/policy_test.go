@@ -131,3 +131,16 @@ func TestValidatorRejectsBadCoords(t *testing.T) {
 		t.Fatal("expected coordinate rejection")
 	}
 }
+func TestShootingGamesFirePeriodically(t *testing.T) {
+	p := New(nil, nil, DefaultConfig())
+	acts := []domain.Action{
+		{Kind: "move_left", Target: "dodge", Tags: []string{"move"}, Risk: 0.05,
+			Params: map[string]any{"safety": 0.9}, Input: &domain.InputSpec{Type: "key", Key: "left"}},
+		{Kind: "shoot", Target: "enemy", Tags: []string{"combat", "damage"}, Risk: 0.1,
+			Input: &domain.InputSpec{Type: "key", Key: "z"}},
+	}
+	d := p.Decide(context.Background(), Input{State: mockState(), Actions: acts})
+	if d.Action.Kind != "shoot" || d.Source != "combat" {
+		t.Fatalf("first decision should fire, got kind=%q source=%q", d.Action.Kind, d.Source)
+	}
+}

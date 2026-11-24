@@ -42,6 +42,7 @@ import com.goplay.mobile.capture.ScreenCaptureService
 import com.goplay.mobile.data.TakeoverSensitivity
 import com.goplay.mobile.notifications.Notifications
 import com.goplay.mobile.voice.VoiceBridge
+import com.goplay.mobile.voice.VoiceKeepAliveService
 import java.util.Locale
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -174,9 +175,13 @@ class MainActivity : AppCompatActivity() {
         }
         if (!pendingVoiceStart) return@registerForActivityResult
         pendingVoiceStart = false
+        VoiceKeepAliveService.start(this)
         val error = voiceBridge().start()
         if (error != null) {
+            VoiceKeepAliveService.stop(this)
             emitJs("window.goplayVoiceError(" + JSONObject.quote(error) + ")")
+        } else {
+            emitJs("window.goplayVoiceStarted && window.goplayVoiceStarted()")
         }
     }
 
@@ -204,6 +209,9 @@ class MainActivity : AppCompatActivity() {
         configureWebView()
         observeCore()
         graph.localCore.start(lifecycleScope)
+        // Initialise TTS now, not on the first narration: the opening line was
+        // previously dropped because the engine was still initialising.
+        voiceBridge().warmUp()
         maybeRequestNotificationPermission()
         handleIntentExtras(intent)
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -235,13 +243,14 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
-        // Keep the microphone closed while the console is in the background.
-        // TTS is kept alive on purpose: spoken AI replies should still be heard
-        // while the game itself is in the foreground.
-        voice?.onPause()
+        // Do NOT stop the recognizer here. Switching to the game is exactly the
+        // moment the user wants to keep talking to the AI. VoiceKeepAliveService
+        // keeps the process in the foreground with the microphone type so the
+        // recognizer is allowed to continue in the background.
     }
 
     override fun onDestroy() {
+        VoiceKeepAliveService.stop(this)
         voice?.release()
         voice = null
         pendingLaunchPackage = null
@@ -804,11 +813,14 @@ class MainActivity : AppCompatActivity() {
                 .put("message", message)
                 .toString()
         }
+        VoiceKeepAliveService.start(this)
         val error = voiceBridge().start()
         return if (error == null) {
+            emitJs("window.goplayVoiceStarted && window.goplayVoiceStarted()")
             JSONObject().put("ok", true).put("listening", true)
                 .put("message", "连续语音已开启").toString()
         } else {
+            VoiceKeepAliveService.stop(this)
             JSONObject().put("ok", false).put("listening", false)
                 .put("error", error).put("message", error).toString()
         }
@@ -1215,6 +1227,7 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun stopConversation(): String = uiJson {
             voice?.stop()
+            VoiceKeepAliveService.stop(this@MainActivity)
             JSONObject().put("ok", true).put("listening", false).toString()
         }
 
