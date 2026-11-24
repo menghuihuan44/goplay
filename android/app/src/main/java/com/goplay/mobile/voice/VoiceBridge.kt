@@ -36,6 +36,12 @@ class VoiceBridge(
 
     private var recognizer: SpeechRecognizer? = null
     private var listening = false
+
+    /** True between start() and stop(): the user wants an ongoing conversation. */
+    private var conversation = false
+
+    /** True while the microphone is muted because the AI is speaking. */
+    private var pausedForSpeech = false
     private var restartDelayMs = BASE_RESTART_MS
     private var pendingRestart: Runnable? = null
     private var destroyed = false
@@ -55,6 +61,8 @@ class VoiceBridge(
             return message
         }
         if (listening) return null
+        conversation = true
+        pausedForSpeech = false
         listening = true
         restartDelayMs = BASE_RESTART_MS
         startRecognizer()
@@ -63,32 +71,70 @@ class VoiceBridge(
     }
 
     fun stop() {
+        conversation = false
+        pausedForSpeech = false
         if (!listening) return
+        stopListeningInternal()
+        log("连续语音识别已停止")
+    }
+
+    private fun stopListeningInternal() {
         listening = false
         cancelPendingRestart()
         releaseRecognizer()
-        log("连续语音识别已停止")
     }
 
     fun speak(text: String): String? {
         val clean = text.trim()
         if (clean.isEmpty()) return "文本为空"
         ensureTts()
-        val engine = tts ?: return "TTS 不可用"
-        if (!ttsReady) return "TTS 尚未就绪，请稍后再试"
+        // Half-duplex conversation: mute the microphone before the AI talks so
+        // the recognizer cannot transcribe the app's own speech and loop.
+        if (conversation && listening) {
+            pausedForSpeech = true
+            stopListeningInternal()
+            log("AI 开始说话，暂停听音")
+        }
+        val engine = tts
+        if (engine == null) {
+            resumeAfterSpeech()
+            return "TTS 不可用"
+        }
+        if (!ttsReady) {
+            resumeAfterSpeech()
+            return "TTS 尚未就绪，请稍后再试"
+        }
         val clipped = if (clean.length > MAX_SPEAK_CHARS) {
             clean.substring(0, MAX_SPEAK_CHARS)
         } else {
             clean
         }
         val result = engine.speak(clipped, TextToSpeech.QUEUE_FLUSH, null, UTTERANCE_ID)
-        if (result != TextToSpeech.SUCCESS) return "TTS 播放失败（" + result + "）"
+        if (result != TextToSpeech.SUCCESS) {
+            resumeAfterSpeech()
+            return "TTS 播放失败（" + result + "）"
+        }
         return null
     }
 
     fun stopSpeaking() {
         tts?.stop()
         markSpeaking(false)
+        resumeAfterSpeech()
+    }
+
+    /**
+     * Restarts listening after an utterance unless the user ended the call.
+     * A denied/failed TTS also lands here, so a broken TTS never silences the call.
+     */
+    private fun resumeAfterSpeech() {
+        if (!pausedForSpeech) return
+        pausedForSpeech = false
+        if (!conversation || destroyed || listening) return
+        listening = true
+        restartDelayMs = BASE_RESTART_MS
+        startRecognizer()
+        log("AI 说完，继续听音")
     }
 
     /** Stops listening (mic must not stay open in the background). TTS keeps going. */
@@ -284,13 +330,26 @@ class VoiceBridge(
 
     private val progressListener = object : UtteranceProgressListener() {
         override fun onStart(utteranceId: String?) = markSpeaking(true)
-        override fun onDone(utteranceId: String?) = markSpeaking(false)
+        override fun onDone(utteranceId: String?) {
+            markSpeaking(false)
+            resumeAfterSpeech()
+        }
 
         @Deprecated("Deprecated in Java")
-        override fun onError(utteranceId: String?) = markSpeaking(false)
+        override fun onError(utteranceId: String?) {
+            markSpeaking(false)
+            resumeAfterSpeech()
+        }
 
-        override fun onError(utteranceId: String?, errorCode: Int) = markSpeaking(false)
-        override fun onStop(utteranceId: String?, interrupted: Boolean) = markSpeaking(false)
+        override fun onError(utteranceId: String?, errorCode: Int) {
+            markSpeaking(false)
+            resumeAfterSpeech()
+        }
+
+        override fun onStop(utteranceId: String?, interrupted: Boolean) {
+            markSpeaking(false)
+            resumeAfterSpeech()
+        }
     }
 
     private fun markSpeaking(value: Boolean) {

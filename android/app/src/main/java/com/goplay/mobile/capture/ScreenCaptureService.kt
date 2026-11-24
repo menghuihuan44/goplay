@@ -26,8 +26,10 @@ import com.goplay.mobile.MainActivity
 import com.goplay.mobile.data.AppSettings
 import com.goplay.mobile.data.BatteryMonitor
 import com.goplay.mobile.data.NetworkMonitor
+import com.goplay.mobile.data.SessionState
 import com.goplay.mobile.net.CoreClient
 import com.goplay.mobile.notifications.Notifications
+import com.goplay.mobile.overlay.AiRuntime
 import com.goplay.mobile.overlay.OverlayController
 import com.goplay.mobile.protocol.FrameHeader
 import java.util.Locale
@@ -88,6 +90,7 @@ class ScreenCaptureService : Service() {
 
     private var lastSentAt = 0L
     private var lastNotifyAt = 0L
+    private var lastConnectAttempt = 0L
     private var fpsWindowStart = 0L
     private var fpsFrames = 0
     private var stopping = false
@@ -158,6 +161,13 @@ class ScreenCaptureService : Service() {
         serviceScope.launch {
             graph.client.state.collect { state ->
                 updateOverlayState(connected = state == CoreClient.State.CONNECTED)
+            }
+        }
+        // Snapshot-driven: the pill must reflect decisions even when the socket
+        // state does not change (which is the common case while playing).
+        serviceScope.launch {
+            graph.session.collect { session ->
+                overlay?.setAI(aiFrom(session))
             }
         }
     }
@@ -445,11 +455,19 @@ class ScreenCaptureService : Service() {
             return
         } ?: return
         try {
+            val now = SystemClock.elapsedRealtime()
+            // A long game session can outlive Wi-Fi, Doze or a WebSocket ping
+            // timeout. Frames are the only reliable heartbeat we have, so use
+            // them to nudge the client back instead of silently dropping every
+            // frame for the rest of the session.
+            if (!graph.client.isConnected && now - lastConnectAttempt >= 3_000L) {
+                lastConnectAttempt = now
+                graph.client.ensureConnected()
+            }
             if (paused || !graph.client.isConnected) {
                 graph.metrics.onFrameDropped()
                 return
             }
-            val now = SystemClock.elapsedRealtime()
             val interval = (1000L / targetFps.coerceAtLeast(1)).coerceAtLeast(1L)
             if (now - lastSentAt < interval) return
             val jpeg = FrameEncoder.encode(image, quality)
@@ -698,7 +716,26 @@ class ScreenCaptureService : Service() {
             running = projection != null,
             accessibilityReady = com.goplay.mobile.accessibility.GameAccessibilityService.instance != null,
         )
+        overlay?.setAI(aiFrom(graph.session.value))
     }
+
+    private fun aiFrom(session: SessionState): AiRuntime = AiRuntime(
+        status = session.aiStatus,
+        action = session.aiAction,
+        reason = session.aiReason,
+        source = session.aiSource,
+        model = session.aiModel,
+        summary = session.aiSummary,
+        outcome = session.aiOutcome,
+        progress = session.aiProgress,
+        progressLabel = session.aiProgressLabel,
+        decisions = session.aiDecisions,
+        actions = session.aiActions,
+        errors = session.aiErrors,
+        waiting = session.aiWaiting,
+        waitReason = session.aiWaitReason,
+        human = session.aiHuman,
+    )
 
     private fun updateNotification(
         text: String,

@@ -21,6 +21,12 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.longOrNull
 
 /**
  * Process-wide object graph. Created once by [GoPlayApp] and shared by the
@@ -57,6 +63,8 @@ class AppGraph(context: Context) {
         client.actionHandler = { spec -> actions.handle(spec) }
         client.onServerMessage = { message ->
             when (message.type) {
+                "snapshot" -> (message.instance as? JsonObject)?.let { applySnapshot(it) }
+
                 "stats" -> message.stats?.let { stats ->
                     metrics.updateFps(stats.captureFps)
                     _session.update { it.copy(fps = stats.captureFps, instanceStatus = "running") }
@@ -113,4 +121,73 @@ class AppGraph(context: Context) {
     fun updateSession(transform: (SessionState) -> SessionState) {
         _session.update(transform)
     }
+
+    /**
+     * Projects the core's periodic instance snapshot into the few facts the
+     * floating panel can display. Missing fields stay empty: an unfamiliar game
+     * may have no health, score, progress or outcome, and guessing one is worse
+     * than showing "AI 正在观察".
+     */
+    private fun applySnapshot(obj: JsonObject) {
+        val status = obj.str("status")
+        val decision = obj.obj("decision")
+        val display = obj.obj("display")
+        val stats = obj.obj("stats")
+        val action = decision?.obj("action")
+        val kind = action?.str("kind").orEmpty()
+        val target = action?.str("target").orEmpty()
+        val waiting = obj.bool("waiting")
+        val human = obj.bool("human_control")
+        val paused = obj.bool("paused")
+        val progress = (display?.get("progress") as? JsonPrimitive)?.doubleOrNull
+        val outcome = display?.str("outcome")?.takeIf { it.isNotBlank() }
+        val errorText = stats?.str("last_error").orEmpty()
+        val aiStatus = when {
+            status == "error" -> "error"
+            human -> "human"
+            waiting -> "waiting"
+            paused -> "paused"
+            status == "stopped" -> "stopped"
+            status == "running" || status == "starting" -> "playing"
+            else -> status.ifBlank { "unknown" }
+        }
+        _session.update {
+            it.copy(
+                instanceStatus = status.ifBlank { it.instanceStatus },
+                running = status == "running" || status == "starting" || status == "paused" || status == "human_control",
+                paused = paused,
+                aiStatus = aiStatus,
+                aiAction = listOf(kind, target).filter { p -> p.isNotBlank() }.joinToString(" "),
+                aiReason = decision?.str("reason").orEmpty(),
+                aiSource = decision?.str("source").orEmpty(),
+                aiModel = listOf(
+                    decision?.str("provider").orEmpty(),
+                    decision?.str("model").orEmpty(),
+                ).filter { p -> p.isNotBlank() }.joinToString(" / "),
+                aiSummary = display?.str("summary").orEmpty(),
+                aiOutcome = outcome,
+                aiProgress = progress,
+                aiProgressLabel = display?.str("progress_label").orEmpty(),
+                aiDecisions = stats?.long("decisions") ?: it.aiDecisions,
+                aiActions = stats?.long("actions") ?: it.aiActions,
+                aiErrors = stats?.long("errors") ?: it.aiErrors,
+                aiWaiting = waiting,
+                aiWaitReason = obj.str("wait_reason"),
+                aiAt = System.currentTimeMillis(),
+                aiHuman = human,
+                lastError = if (status == "error" && errorText.isNotBlank()) errorText else it.lastError,
+            )
+        }
+    }
+
+    private fun JsonObject.obj(key: String): JsonObject? = this[key] as? JsonObject
+
+    private fun JsonObject.str(key: String): String =
+        (this[key] as? JsonPrimitive)?.contentOrNull.orEmpty()
+
+    private fun JsonObject.bool(key: String): Boolean =
+        (this[key] as? JsonPrimitive)?.booleanOrNull ?: false
+
+    private fun JsonObject.long(key: String): Long? =
+        (this[key] as? JsonPrimitive)?.longOrNull
 }

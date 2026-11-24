@@ -4,7 +4,7 @@ var S={
   page:'overview', instances:[], metrics:null, prefs:[], profiles:[], llm:null, local:null,
   cfg:null, health:null, events:[], filter:'all', loading:false, suspendGames:false,
   voiceTarget:null, voice:null, eventsAt:0, ws:null, poll:null, staticLoaded:false,
-  visionDirty:false, isAndroid:false, host:null, aiRoutes:null, diag:{}, diagAt:{},
+  visionDirty:false, isAndroid:false, host:null, aiRoutes:null, routeDraft:null, diag:{}, diagAt:{},
   diagBusy:{}, starting:{}, pkgs:{}, frameNonce:0
 };
 var $=function(sel,root){return (root||document).querySelector(sel)};
@@ -78,6 +78,7 @@ function sourceLabel(k){return k==='android'?'手机':k==='windows'?'电脑':k==
 function sourceIcon(k){return k==='android'?'▣':k==='windows'?'▤':'◇'}
 function statusInfo(v){
   var s=(v&&v.status)||'stopped';
+  if(v&&v.waiting&&s==='running') return {key:'running',label:'等待画面'};
   if(s==='human_control') return {key:'human',label:'人工接管'};
   if(s==='running') return {key:'running',label:'AUTO'};
   if(s==='paused') return {key:'paused',label:'已暂停'};
@@ -145,7 +146,10 @@ function highlightFields(disp,n){
 function errorRaw(v){
   return (v&&v.stats&&v.stats.last_error)||(v&&v.last_error)||'';
 }
-function errorActive(v){var d=S.diag[v.id];return statusInfo(v).key==='error'||!!errorRaw(v)||(d&&d.ok===false&&d.code&&d.code!=='ok')}
+function errorActive(v){
+  if(v&&v.waiting&&statusInfo(v).key!=='error') return false;
+  var d=S.diag[v.id];return statusInfo(v).key==='error'||!!errorRaw(v)||(d&&d.ok===false&&d.code&&d.code!=='ok')
+}
 function ensureDiag(id,force){
   if(S.diagBusy[id]) return;
   if(!force&&S.diag[id]&&Date.now()-num(S.diagAt[id],0)<10000) return;
@@ -285,6 +289,7 @@ function fullCard(v){
   return '<article class="game-card" data-card="'+esc(v.id)+'">'
     +'<div class="gc-head"><div style="min-width:0;flex:1"><h3>'+esc(v.name||v.id)+'</h3><div class="gc-meta">'+sourceIcon(v.source_kind)+' '+esc(v.profile||'')+' · seed '+esc(v.seed||0)+'</div></div>'+outcome+'<span class="status '+st.key+'">'+st.label+'</span></div>'
     +(errorActive(v)?errorCard(v):'')
+    +(v.waiting?'<p class="gc-notes wait-note">AI 正在等待手机画面：'+esc(v.wait_reason||'连接暂时中断')+'。核心保持运行并自动重连，恢复后会继续操作；这不是动作错误。</p>':'')
     +'<div class="gc-summary"><span class="dot '+(running?'on':'')+'"></span><span>'+esc(disp.summary||'等待第一帧…')+'</span></div>'
     +(progress!==null?'<div class="progress"><div class="labels"><span>'+esc(disp.progressLabel)+'</span><b>'+fmtPct(progress)+'</b></div><div class="bar"><i style="width:'+fmtPct(progress)+'%"></i></div></div>':'')
     +'<div class="gc-stats mini-stats"><div><span>动作</span><b>'+Math.round(stat(v,'actions',0))+'</b></div><div><span>决策</span><b>'+Math.round(stat(v,'decisions',0))+'</b></div><div><span>错误</span><b class="'+(stat(v,'errors',0)?'danger-text':'')+'">'+Math.round(stat(v,'errors',0))+'</b></div></div>'
@@ -294,7 +299,7 @@ function fullCard(v){
     +'<div class="now-line"><div><span class="muted small">AI 正在做什么</span><b>'+esc(action)+'</b></div><div class="now-reason">'+esc(disp.lastReason||dec.reason||'等待决策边界')+'</div><div class="now-meta">'+esc(dec.provider||'')+(dec.model?' · '+esc(dec.model):'')+(dec.latency_ms?' · '+fmtMS(dec.latency_ms)+' ms':'')+(dec.fallback?' · 回退':'' )+'</div></div>'
     +notes
     +(chat?'<div class="chat-lines">'+chat+'</div>':'')
-    +'<div class="gc-chat"><textarea rows="2" maxlength="500" data-input="'+esc(v.id)+'" placeholder="说话或输入约束，例如：先别打那个 Boss"></textarea><button class="mic-btn call-btn '+(voice?'active':'')+'" data-call="'+esc(v.id)+'" title="实时语音通话">◎</button><button class="send-btn" data-send="'+esc(v.id)+'">发送</button></div>'
+    +'<div class="gc-chat"><textarea rows="2" maxlength="500" data-input="'+esc(v.id)+'" placeholder="说话或输入约束，例如：先别打那个 Boss"></textarea><button class="mic-btn call-btn '+(voice?'active':'')+'" data-call="'+esc(v.id)+'" title="实时语音通话">🎙 '+(voice?'通话中':'通话')+'</button><button class="send-btn" data-send="'+esc(v.id)+'">发送</button></div>'
     +'<div class="gc-chat-hint">Enter 发送 · Shift+Enter 换行 · 指令在下一个决策周期生效'+(voice?' · <b class="lime">通话中，说完会自动发送</b>':'')+'</div>'
     +'<div class="card-controls">'+controls+'<button class="pill-btn" data-mem="'+esc(v.id)+'">记忆 '+Math.round(num(memory.bytes,0)/1024)+' KB</button><button class="pill-btn danger-text" data-act="delete" data-id="'+esc(v.id)+'">删除</button></div>'
     +'</article>';
@@ -408,6 +413,7 @@ function renderAI(){
   $('#localStart').textContent=starting?'正在下载模型…':(local.server&&local.server.running?'本机 AI 运行中':'启用本机 AI');
   $('#localStop').disabled=!(local.server&&local.server.running);
   $('#localRefresh').disabled=false;
+  renderRuntimeTruth();
   renderRoutes();
 }
 function routeObj(role){
@@ -421,13 +427,91 @@ function routeStatus(role){
   var st=(S.aiRoutes&&S.aiRoutes.status)||{};
   return st[role]||(S.aiRoutes&&S.aiRoutes.available&&S.aiRoutes.available[role])||null;
 }
+function downloadedRouteModels(){
+  var local=(S.llm&&S.llm.local)||{};
+  var seen={}, out=[];
+  (local.models||[]).forEach(function(m){ if(m&&m.present&&!seen[m.id]){seen[m.id]=1;out.push(m)} });
+  return out;
+}
+/* Draft survives the 2.5s refresh: without it every poll rebuilt the form from
+   the saved config, which is why a user's selection always snapped back to 自动. */
+function ensureRouteDraft(){
+  if(S.routeDraft) return S.routeDraft;
+  var d={};
+  ROLES.forEach(function(r){ d[r.key]=routeObj(r.key) });
+  S.routeDraft=d;
+  return d;
+}
+function routeModelControl(role,cur){
+  if(cur.mode==='local'){
+    var models=downloadedRouteModels(), found=false;
+    var opts='<option value="">默认（按设备档位）</option>';
+    models.forEach(function(m){
+      var sel=cur.model===m.id; if(sel) found=true;
+      opts+='<option value="'+esc(m.id)+'"'+(sel?' selected':'')+'>'+esc(m.id)+' · '+esc(fmtSize(m.size_bytes))+'</option>';
+    });
+    if(cur.model&&!found) opts+='<option value="'+esc(cur.model)+'" selected>'+esc(cur.model)+'（尚未下载）</option>';
+    return '<select data-route-model="'+role+'">'+opts+'</select>';
+  }
+  var ph=cur.mode==='api'?'API 模型名，例如 gpt-4o-mini':'可选：自动模式下优先使用的 API 模型名';
+  return '<input data-route-model="'+role+'" value="'+esc(cur.model)+'" placeholder="'+ph+'">';
+}
+function routeStatusTag(st){
+  if(!st) return '<span class="tag">状态未返回</span>';
+  if(st.implemented===false) return '<span class="tag warn">未接入</span>';
+  if(st.available===false) return '<span class="tag warn">不可用，将回退</span>';
+  if(st.state==='working') return '<span class="tag ok">正在调用</span>';
+  if(num(st.calls,0)>0) return '<span class="tag ok">已调用 '+esc(st.calls)+' 次</span>';
+  return '<span class="tag">尚未调用</span>';
+}
+function routeExplain(role,cur,st){
+  var bits=[];
+  var modeText={
+    auto:'自动：先看本机模型是否已启动，可用就用本机；否则用已配置的 API；两者都不可用则规则回退。不会静默假装模型在工作。',
+    api:'API：这一层只把请求发给上面配置的 API；Key 或接口不可用时明确回退规则。',
+    local:'本机：这一层只在本机 llama-server 推理；模型没启动或没下载就回退，不会偷偷改用 API。',
+    offline:'规则回退：这一层不调用任何模型，直接由规则处理。'
+  }[cur.mode]||'';
+  bits.push(modeText);
+  if(st&&st.implemented===false) bits.push('这一层当前没有真实调用点：选择会保存，但实际仍由规则层处理。');
+  if(st&&num(st.calls,0)>0){
+    var last=st.last_at?('，最近 '+ago(st.last_at)):'';
+    bits.push('已调用 '+esc(st.calls)+' 次'+(st.last_latency_ms?'，上次 '+esc(Math.round(num(st.last_latency_ms,0)))+' ms':'')+last+(st.last_error?'，最近错误：'+esc(st.last_error):''));
+  }else if(st&&st.implemented!==false){
+    bits.push('还没有调用记录；开始游玩并走到这一层后，这里会显示实际调用次数和最近错误。');
+  }
+  return bits.join(' ');
+}
+function renderRuntimeTruth(){
+  var el=$('#runtimeTruth'); if(!el) return;
+  var llm=S.llm||{}, local=llm.local||{};
+  var st=(S.aiRoutes&&S.aiRoutes.status)||{};
+  var wired=[], unwired=[];
+  ROLES.forEach(function(r){
+    var x=st[r.key];
+    if(x&&x.implemented===false) unwired.push(r.label); else wired.push(r.label);
+  });
+  var running='当前没有大模型在跑，规则引擎在兜底';
+  if(local.server&&local.server.running){
+    running='本机 llama-server 正在跑'+(local.model?'（'+local.model+'）':'')+'，多个层可以共用它';
+  }else if(llm.has_api_key){
+    running='API 已配置，按每一层实际可用性调用；不可用时回退规则';
+  }
+  el.innerHTML='<b>现在到底是什么在跑：</b>'+esc(running)+'。'
+    +'<span>已接入真实模型调用的层：'+esc(wired.join('、')||'无')+'。</span>'
+    +(unwired.length?'<span class="warn-text">尚未接入调用点（选择会保存，但仍由规则层处理）：'+esc(unwired.join('、'))+'。</span>':'');
+}
 function renderRoutes(){
   var box=$('#aiRoutes'); if(!box) return;
   var has=!!(S.aiRoutes&&S.aiRoutes.routes);
+  if(!has&&!S.routeDraft) return;
+  // Keep the caret while the user types an API model name. The draft still
+  // holds the value, so a later poll can safely rebuild the row.
+  var active=document.activeElement;
+  if(active&&active.tagName==='INPUT'&&active.closest&&active.closest('#aiRoutes')) return;
+  var draft=ensureRouteDraft();
   box.innerHTML=ROLES.map(function(r){
-    var cur=routeObj(r.key), st=routeStatus(r.key);
-    var statusText='';
-    if(st){ if(st.available===false) statusText='<span class="tag warn">当前不可用，将回退</span>'; else if(st.provider||st.model) statusText='<span class="tag ok">'+esc(st.provider||st.model)+'</span>'; }
+    var cur=draft[r.key]||{mode:'auto',model:''}, st=routeStatus(r.key);
     return '<div class="route-row" data-role="'+r.key+'"><div class="route-name"><b>'+esc(r.label)+'</b><small>'+esc(r.desc)+'</small></div>'
       +'<select data-route-mode="'+r.key+'">'
         +'<option value="auto"'+(cur.mode==='auto'?' selected':'')+'>自动</option>'
@@ -435,22 +519,40 @@ function renderRoutes(){
         +'<option value="local"'+(cur.mode==='local'?' selected':'')+'>本机</option>'
         +'<option value="offline"'+(cur.mode==='offline'?' selected':'')+'>规则回退</option>'
       +'</select>'
-      +'<input data-route-model="'+r.key+'" value="'+esc(cur.model)+'" placeholder="'+(cur.mode==='api'?'API 模型名':'本机模型 ID（可留空）')+'">'
-      +statusText+'</div>';
+      +routeModelControl(r.key,cur)
+      +routeStatusTag(st)
+      +'<div class="route-help" data-route-help="'+r.key+'">'+esc(routeExplain(r.key,cur,st))+'</div>'
+      +'</div>';
   }).join('');
+  box.onchange=function(ev){
+    var sel=ev.target.closest('[data-route-mode]');
+    if(sel){
+      var role=sel.getAttribute('data-route-mode');
+      draft[role]=draft[role]||{mode:'auto',model:''};
+      draft[role].mode=sel.value;
+      if(sel.value!=='api'&&sel.value!=='local') draft[role].model='';
+      renderRoutes();
+      return;
+    }
+    var m=ev.target.closest('[data-route-model]');
+    if(m){ draft[m.getAttribute('data-route-model')].model=String(m.value||'').trim(); }
+  };
+  box.oninput=function(ev){
+    var m=ev.target.closest('[data-route-model]');
+    if(m){ draft[m.getAttribute('data-route-model')].model=String(m.value||'').trim(); }
+  };
   var tag=$('#routesTag'); if(tag){tag.textContent=has?'已分层':'旧版后端';tag.className='tag '+(has?'ok':'warn')}
-  var note=$('#routesNote'); if(note) note.textContent=has?'':'当前后端没有分层路由接口，只有决策层可切换；升级后这里会逐层生效。';
+  var note=$('#routesNote'); if(note) note.textContent=has?'每一层实际调用次数、最近活动与错误都来自运行时统计；同一时刻只有一个本机模型在跑，不同层可以共用它，未接入的层会标明。':'当前后端没有分层路由接口，只有决策层可切换；升级后这里会逐层生效。';
 }
 async function saveRoutes(){
-  var routes={};
-  $$('[data-route-mode]').forEach(function(sel){
-    var role=sel.getAttribute('data-route-mode');
-    var inp=$('[data-route-model="'+role+'"]');
-    routes[role]={mode:sel.value,model:inp?inp.value.trim():''};
+  var draft=ensureRouteDraft(), routes={};
+  ROLES.forEach(function(r){
+    var cur=draft[r.key]||{mode:'auto',model:''};
+    routes[r.key]={mode:cur.mode||'auto',model:(cur.model||'').trim()};
   });
   try{
     var r=await api('/api/ai/routes',{method:'POST',body:{routes:routes}});
-    S.aiRoutes=r||{routes:routes}; toast('分层 AI 设置已保存'); renderRoutes();
+    S.aiRoutes=r||{routes:routes}; S.routeDraft=null; toast('分层 AI 设置已保存'); renderRoutes();
     setTimeout(refresh,300);
   }catch(e){toast('保存失败：'+e.message,true)}
 }
@@ -540,7 +642,7 @@ function refreshHostStatus(){
   if(ce){var err=s.captureError||s.capture_error||'';ce.textContent=err?('截屏错误：'+err):'';ce.classList.toggle('hidden',!err)}
   var sel=$('#takeoverSens');
   if(sel&&document.activeElement!==sel) sel.value=s.takeoverSensitivity||s.takeover_sensitivity||'medium';
-  var vs=$('#androidVoiceState'); if(vs) vs.textContent=S.voice?('通话中：'+instanceName(S.voice.id)):'实时语音在游戏卡片上开启：点麦克风即可边聊边玩。';
+  var vs=$('#androidVoiceState'); if(vs) vs.textContent=S.voice?('通话中：'+instanceName(S.voice.id)+' · 说完自动发送'):'实时通话：直接说话，识别后自动发送给 AI；AI 的回复会通过 TTS 说出来。';
   renderAndroidBanner();
 }
 function renderSettings(){
@@ -906,9 +1008,27 @@ function updateCallUI(){
   $$('[data-call]').forEach(function(b){
     var on=S.voice&&S.voice.id===b.getAttribute('data-call');
     b.classList.toggle('active',!!on);
+    b.innerHTML=on?'🎙 通话中':'🎙 通话';
     b.title=on?'结束实时语音':'实时语音通话';
   });
-  var vs=$('#androidVoiceState'); if(vs) vs.textContent=S.voice?('通话中：'+instanceName(S.voice.id)+' · 说完自动发送'):'实时语音在游戏卡片上开启：点麦克风即可边聊边玩。';
+  var call=$('#androidVoiceCall');
+  if(call){call.textContent=S.voice?'🎙 通话进行中':'🎙 开始实时通话';call.classList.toggle('active',!!S.voice)}
+  var vs=$('#androidVoiceState');
+  if(vs) vs.textContent=S.voice?('通话中：'+instanceName(S.voice.id)+' · 说完自动发送，AI 回复会自动朗读'):'实时通话：直接说话，识别后自动发送给 AI；AI 的回复会通过 TTS 说出来。';
+}
+function voiceTargetInstance(){
+  var id=(S.host&&S.host.activeInstance)||'';
+  if(id) return id;
+  for(var i=0;i<S.instances.length;i++){
+    var k=statusInfo(S.instances[i]).key;
+    if(k==='running'||k==='human'||k==='paused') return S.instances[i].id;
+  }
+  return S.instances.length?S.instances[0].id:'';
+}
+function startVoiceFromSettings(){
+  var id=voiceTargetInstance();
+  if(!id){toast('先创建一个游戏，再开始实时通话',true);return}
+  startCall(id);
 }
 function webSpeechStart(){
   var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
@@ -936,7 +1056,21 @@ function startCall(id){
   if(S.voice&&S.voice.id!==id) stopCall();
   S.voiceTarget=id; S.voice={id:id,active:true,rec:null};
   if(window.GoPlayHost&&window.GoPlayHost.startConversation){
-    try{window.GoPlayHost.startConversation();toast('实时通话中，说完会自动发送')}catch(e){toast('原生语音启动失败：'+e.message,true)}
+    var raw=null;
+    try{raw=window.GoPlayHost.startConversation()}catch(e){toast('原生语音启动失败：'+e.message,true)}
+    var res=null;
+    try{res=typeof raw==='string'?JSON.parse(raw):raw}catch(e){res=null}
+    if(res&&res.ok===false){
+      var msg=res.message||res.error||'语音启动失败';
+      if(res.error==='permission_required'){
+        toast('请允许麦克风；授权后会自动开始通话');
+      }else{
+        toast('语音启动失败：'+msg,true);
+        S.voice=null; S.voiceTarget=null; updateCallUI(); return;
+      }
+    }else{
+      toast('实时通话中，说完会自动发送；AI 说话时会暂停听音');
+    }
   }else{
     if(webSpeechStart()) toast('实时通话中，说完会自动发送');
   }
@@ -1137,6 +1271,8 @@ function bind(){
     if(ev.target.closest('#reconnectBtn,[data-reconnect]')){reconnectHost();return}
     if(ev.target.closest('#androidPrepareAll')){prepareAll();return}
     if(ev.target.closest('#androidPermissionCenter')){go('settings');return}
+    if(ev.target.closest('#androidVoiceCall')){startVoiceFromSettings();return}
+    if(ev.target.closest('#androidVoiceStop')){if(S.voice)stopCall();else toast('当前没有通话',true);return}
     if(ev.target.closest('#androidRelease')){var ai=S.host&&S.host.activeInstance;if(ai)releaseToAI(ai);else toast('先选择一个游戏',true);return}
     if(ev.target.closest('#androidCapture')){grantPerm('capture');return}
     if(ev.target.closest('#androidStopCapture')){hostCall('stopCapture','已请求停止截屏');return}

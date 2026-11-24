@@ -104,6 +104,26 @@ func TestLLMIllegalFallsBack(t *testing.T) {
 	}
 }
 
+func TestForcedExplorationAfterIdleStreak(t *testing.T) {
+	// An unfamiliar touch game can look alive while the policy keeps choosing
+	// wait/back. After two passive decisions it must try a real interaction.
+	p := New(nil, nil, DefaultConfig())
+	st := mockState()
+	wait := domain.Action{Kind: "wait", Target: "screen", Input: &domain.InputSpec{Type: "wait", DurationMS: 300}}
+	tap := domain.Action{Kind: "tap", Target: "center", Risk: 0.1, Input: &domain.InputSpec{Type: "tap", X: 0.5, Y: 0.5}}
+	for i := 0; i < 100; i++ {
+		p.UpdateKey(StateKey(st), tap.Key(), 0)
+	}
+	p.idleStreak = 2
+	d := p.Decide(context.Background(), Input{State: st, Actions: []domain.Action{wait, tap}})
+	if d.Source != "explore" || d.Action.Kind != "tap" {
+		t.Fatalf("expected forced exploration tap, got %+v", d)
+	}
+	if !strings.Contains(d.Reason, "强制探索") {
+		t.Fatalf("unexpected reason %q", d.Reason)
+	}
+}
+
 func TestValidatorRejectsBadCoords(t *testing.T) {
 	v := NewValidator(0.9)
 	legal := []domain.Action{{Kind: "click", Target: "screen", Risk: 0.1, Input: &domain.InputSpec{Type: "click", X: 2, Y: 0.5}}}

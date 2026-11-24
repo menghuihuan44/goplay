@@ -125,8 +125,11 @@ func TestRoutesStatusMarksUnwiredLayers(t *testing.T) {
 		}
 		if role == RoleAnalysis || role == RoleMemory {
 			note, _ := entry["note"].(string)
-			if !strings.Contains(note, "规则层暂未调用") {
+			if !strings.Contains(note, "尚未接入") {
 				t.Fatalf("%s note = %q", role, note)
+			}
+			if implemented, _ := entry["implemented"].(bool); implemented {
+				t.Fatalf("%s must be marked as not wired: %+v", role, entry)
 			}
 		}
 	}

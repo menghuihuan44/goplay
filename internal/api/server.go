@@ -619,7 +619,11 @@ func (s *Server) aiRoutesBody(ctx context.Context) map[string]any {
 		"global_mode": s.mgr.Router().Mode(),
 		"routes":      routes,
 		"available":   available,
-		"roles":       llm.Roles(),
+		// Per-role live status: implemented, calls, state, last activity/error.
+		// The UI uses this to say who is actually working instead of implying
+		// every configured layer runs a separate model.
+		"status": statuses,
+		"roles":  llm.Roles(),
 	}
 }
 

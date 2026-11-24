@@ -80,6 +80,11 @@ class OverlayController(
         panel.setRuntime(connected, paused, running, accessibilityReady)
     }
 
+    /** Mirrors the live AI snapshot into the island (state/action/progress). */
+    fun setAI(info: AiRuntime) {
+        panel.setAI(info)
+    }
+
     /** Shows a notice (null clears it) such as "截屏已停止：<原因>，点开恢复". */
     fun setStatus(text: String?, isError: Boolean) {
         panel.setStatus(text, isError)

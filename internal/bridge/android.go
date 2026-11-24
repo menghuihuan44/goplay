@@ -262,30 +262,51 @@ func (s *Session) PushFrame(h FrameHeader, jpg []byte) error {
 
 // Grab implements perception.Source. It waits for a fresh frame, but reuses a
 // frame younger than three seconds so a 10 fps client can feed a faster loop.
+const frameWait = 4 * time.Second
+
 func (s *Session) Grab(ctx context.Context) (domain.Frame, error) {
-	s.mu.Lock()
-	// A cached frame is only valid while the client is attached. After a
-	// reconnect or an instance switch the last frame predates the socket, so
-	// acting on it would race the transport and fail with "no Android client
-	// connected". Wait for a frame from the new connection instead.
-	if s.tr != nil && s.latest != nil && time.Since(s.latest.At) < 1500*time.Millisecond {
-		f := *s.latest
-		s.mu.Unlock()
-		return f, nil
-	}
-	s.mu.Unlock()
-	select {
-	case <-s.frameCh:
+	// The loop must never block forever on a phone that rotated into a
+	// permission dialog, lost Wi-Fi, or is simply showing a static screen.
+	// Wait a bounded time, report a transient condition, and let the engine
+	// show "waiting for frame" without terminating the instance.
+	for {
 		s.mu.Lock()
-		if s.latest != nil {
+		// A cached frame is only valid while the client is attached. After a
+		// reconnect or an instance switch the last frame predates the socket, so
+		// acting on it would race the transport and fail with "no Android client
+		// connected". Wait for a frame from the new connection instead.
+		if s.tr != nil && s.latest != nil && time.Since(s.latest.At) < 1500*time.Millisecond {
 			f := *s.latest
 			s.mu.Unlock()
 			return f, nil
 		}
+		attached := s.tr != nil
 		s.mu.Unlock()
-		return domain.Frame{}, errors.New("bridge: frame signal without a frame")
-	case <-ctx.Done():
-		return domain.Frame{}, ctx.Err()
+
+		if !attached {
+			if _, err := s.waitTransport(ctx); err != nil {
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					return domain.Frame{}, err
+				}
+				return domain.Frame{}, fmt.Errorf("%w: %v", domain.ErrTransient, err)
+			}
+			continue
+		}
+
+		timer := time.NewTimer(frameWait)
+		select {
+		case <-s.frameCh:
+			timer.Stop()
+			continue
+		case <-ctx.Done():
+			timer.Stop()
+			return domain.Frame{}, ctx.Err()
+		case <-s.done:
+			timer.Stop()
+			return domain.Frame{}, fmt.Errorf("%w: bridge: session closed", domain.ErrTransient)
+		case <-timer.C:
+			return domain.Frame{}, fmt.Errorf("%w: bridge: no frame within %s", domain.ErrTransient, frameWait)
+		}
 	}
 }
 
@@ -346,7 +367,7 @@ func (s *Session) waitTransport(ctx context.Context) (Transport, error) {
 		case <-s.done:
 			return nil, errors.New("bridge: session closed")
 		case <-deadline.C:
-			return nil, errors.New("bridge: no Android client connected")
+			return nil, fmt.Errorf("bridge: no Android client connected: %w", domain.ErrTransient)
 		case <-ticker.C:
 		}
 	}
@@ -381,12 +402,12 @@ func (s *Session) Do(ctx context.Context, a domain.Action) error {
 		delete(s.waiters, id)
 		s.aerrs++
 		s.mu.Unlock()
-		return fmt.Errorf("bridge: send action: %w", err)
+		return fmt.Errorf("%w: bridge: send action: %v", domain.ErrTransient, err)
 	}
 	select {
 	case res, ok := <-ch:
 		if !ok {
-			return errors.New("bridge: connection closed before action ack")
+			return fmt.Errorf("%w: bridge: connection closed before action ack", domain.ErrTransient)
 		}
 		if !res.OK {
 			msg := res.Error
@@ -401,7 +422,7 @@ func (s *Session) Do(ctx context.Context, a domain.Action) error {
 		delete(s.waiters, id)
 		s.aerrs++
 		s.mu.Unlock()
-		return fmt.Errorf("bridge: action %s ack timeout", id)
+		return fmt.Errorf("%w: bridge: action %s ack timeout", domain.ErrTransient, id)
 	case <-ctx.Done():
 		s.mu.Lock()
 		delete(s.waiters, id)

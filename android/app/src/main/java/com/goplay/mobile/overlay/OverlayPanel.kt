@@ -18,6 +18,7 @@ import android.widget.TextView
 import androidx.core.content.ContextCompat
 import com.goplay.mobile.R
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
 /**
  * The floating control: a compact "dynamic island" pill that expands into a
@@ -39,6 +40,7 @@ class OverlayPanel(
     private val stateText: TextView
     private val chevron: TextView
     private val body: LinearLayout
+    private val aiLine: TextView
     private val input: EditText
     private val pauseButton: Button
     private val panelButton: Button
@@ -54,6 +56,7 @@ class OverlayPanel(
     private var lastPaused = false
     private var lastRunning = false
     private var lastAccessibilityReady = false
+    private var lastAI: AiRuntime = AiRuntime()
 
     /** Non-null while an error/notice text replaces the runtime state line. */
     private var statusOverride: String? = null
@@ -139,6 +142,26 @@ class OverlayPanel(
             visibility = GONE
             setPadding(0, dp(6), 0, 0)
         }
+        aiLine = TextView(context).apply {
+            text = "AI：等待连接"
+            setTextColor(ContextCompat.getColor(context, R.color.text_secondary))
+            textSize = 11f
+            maxLines = 4
+            ellipsize = TextUtils.TruncateAt.END
+            background = rounded(
+                fill = ContextCompat.getColor(context, R.color.surface),
+                radiusDp = 10f,
+                stroke = ContextCompat.getColor(context, R.color.divider),
+            )
+            setPadding(dp(10), dp(7), dp(10), dp(7))
+        }
+        body.addView(
+            aiLine,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply { topMargin = dp(2) },
+        )
         val inputRow = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -398,6 +421,12 @@ class OverlayPanel(
         renderRuntime()
     }
 
+    /** Mirrors the core snapshot so the island shows what the AI is doing. */
+    fun setAI(info: AiRuntime) {
+        lastAI = info
+        renderRuntime()
+    }
+
     /**
      * Replaces the runtime state line with a notice such as
      * "截屏已停止：系统结束了投屏，点开恢复" and reveals the recovery action.
@@ -432,27 +461,78 @@ class OverlayPanel(
 
     private fun renderRuntime() {
         if (statusOverride != null) return
+        val ai = lastAI
+        val aiError = ai.status == "error"
+        val aiHuman = ai.human || ai.status == "human"
+        val aiWaiting = ai.waiting || ai.status == "waiting"
+        val aiPlaying = ai.status == "playing" ||
+            ai.status == "deciding" ||
+            ai.status == "running"
         val color = when {
             !lastRunning -> R.color.text_muted
-            lastPaused -> R.color.state_warn
+            aiError -> R.color.state_bad
+            aiHuman || aiWaiting || lastPaused -> R.color.state_warn
             !lastAccessibilityReady -> R.color.state_warn
+            aiPlaying -> R.color.state_ok
             lastConnected -> R.color.state_ok
             else -> R.color.state_bad
         }
         dot.background = dotBackground(ContextCompat.getColor(context, color))
         stateText.text = when {
             !lastRunning -> "未运行"
+            aiError -> "AI 异常"
+            aiHuman -> "人工接管"
             lastPaused -> "已暂停"
+            aiWaiting -> "等待画面"
             !lastAccessibilityReady -> "无障碍未开启"
+            aiPlaying -> "AI 决策中"
             lastConnected -> "已连接"
             else -> "重连中"
         }
+        aiLine.text = aiDetail(ai)
+        aiLine.visibility = VISIBLE
         pauseButton.text = if (lastPaused) "继续" else "暂停"
         pauseButton.isEnabled = lastRunning
         // Stop stays enabled even after the projection died: it is the only way to
         // dismiss the kept-alive pill.
         stopButton.isEnabled = true
         recoverButton.visibility = if (!lastRunning) VISIBLE else GONE
+    }
+
+    /**
+     * One compact line for the expanded island: state, counters, progress,
+     * latest action/reason and the model actually used. Never invents data.
+     */
+    private fun aiDetail(ai: AiRuntime): String {
+        val state = when {
+            ai.status == "error" -> "AI 异常"
+            ai.human || ai.status == "human" -> "人工接管"
+            ai.waiting || ai.status == "waiting" -> "等待画面"
+            lastPaused || ai.status == "paused" -> "已暂停"
+            ai.status == "playing" -> "AI 正在玩"
+            ai.status == "stopped" -> "已结束"
+            !lastRunning -> "未运行"
+            lastConnected -> "AI 等待决策"
+            else -> "等待连接"
+        }
+        val bits = mutableListOf<String>()
+        bits += state
+        if (ai.actions > 0) bits += "动作 " + ai.actions
+        if (ai.decisions > 0) bits += "决策 " + ai.decisions
+        ai.progress?.let { bits += "进度 " + (it * 100).roundToInt() + "%" }
+        if (ai.summary.isNotBlank()) bits += ai.summary.trim()
+        if (ai.action.isNotBlank()) {
+            val action = ai.action.trim()
+            bits += "最近 " + action
+            if (ai.reason.isNotBlank()) bits += ai.reason.trim()
+        }
+        if (ai.actions == 0L && ai.decisions == 0L && ai.waiting) {
+            val why = ai.waitReason.ifBlank { ai.reason }
+            if (why.isNotBlank()) bits += why.trim()
+        }
+        if (ai.model.isNotBlank()) bits += "模型 " + ai.model.trim()
+        if (ai.errors > 0) bits += "错误 " + ai.errors
+        return "AI：" + bits.joinToString(" · ")
     }
 
     fun focusInput() {

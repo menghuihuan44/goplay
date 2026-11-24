@@ -184,7 +184,7 @@ h3{font-size:14.5px;margin:0;letter-spacing:.1px}
   border:1px solid #263226;background:#090c09;color:#e7eee2;font-size:12px;line-height:1.5;
 }
 .gc-chat textarea:focus{outline:none;border-color:#4b6238;box-shadow:0 0 0 3px rgba(200,255,62,.06)}
-.mic-btn{width:36px;height:36px;border-radius:9px;border:1px solid #2b382a;background:#121812;color:#a9b5a2;font-size:15px;flex:0 0 auto}
+.mic-btn{min-width:68px;height:36px;padding:0 10px;border-radius:9px;border:1px solid #2b382a;background:#121812;color:#a9b5a2;font-size:11px;flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;gap:4px;white-space:nowrap}
 .mic-btn:hover{color:var(--lime);border-color:#4c6237}
 .send-btn{height:36px;padding:0 13px;border:0;border-radius:9px;background:var(--lime);color:#0a0d08;font-weight:700;font-size:11.5px;flex:0 0 auto}
 .chat-hint{font-size:9.5px;color:#5f6b5a;margin:5px 0 0 1px}
@@ -401,6 +401,7 @@ h3{font-size:14.5px;margin:0;letter-spacing:.1px}
 .dyn-field span{display:block;font-size:9px;color:#77836f;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dyn-field b{display:block;font-size:12.5px;color:#e5eee0;font-family:var(--mono);margin-top:2px;word-break:break-word}
 .gc-tags{display:flex;flex-wrap:wrap;gap:4px;margin:4px 0 8px}
+.wait-note{color:#ffce7a;background:#241a08;border:1px solid #5c4218;border-radius:8px;padding:8px 10px}
 .gc-notes{margin:5px 0;font-size:10px;color:#8f9b89;line-height:1.55}
 .screen-wrap{position:relative;margin:10px 0;border:1px solid #263126;border-radius:10px;background:#050705;overflow:hidden;min-height:110px}
 .screen-head{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 8px;border-bottom:1px solid #1b241b;font-size:9.5px;color:#8e9b8a}
@@ -422,6 +423,7 @@ h3{font-size:14.5px;margin:0;letter-spacing:.1px}
 .route-name small{display:block;font-size:9.5px;color:#75816f;margin-top:1px}
 .route-row select,.route-row input{padding:6px 8px;font-size:10.5px;border-radius:7px;border:1px solid #2a3528;background:#0d110d;min-width:0}
 .route-row .tag{white-space:nowrap;justify-content:center}
+.route-help{grid-column:1/-1;font-size:10px;line-height:1.55;color:#8d9a87;background:rgba(255,255,255,.025);border:1px solid #1d261c;border-radius:8px;padding:6px 8px;margin-top:1px}
 .model-actions{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:6px}
 .model-row.selected{border-color:rgba(200,255,62,.35);background:rgba(200,255,62,.04)}
 .model-row .bar{height:5px;margin:7px 0 4px}
@@ -431,7 +433,7 @@ h3{font-size:14.5px;margin:0;letter-spacing:.1px}
   .android-banner .ab-actions button{flex:1;min-width:90px}
   .diag-checks{grid-template-columns:1fr}
   .route-row{grid-template-columns:1fr 95px;gap:6px}
-  .route-row input{grid-column:1/-1}
+  .route-row input,.route-row select[data-route-model]{grid-column:1/-1}
   .route-row .tag{grid-column:1/-1;justify-self:start}
   .perm-row{grid-template-columns:24px minmax(0,1fr);gap:7px}
   .perm-row .tag,.perm-row .pill-btn{grid-column:2;justify-self:start}
@@ -439,3 +441,8 @@ h3{font-size:14.5px;margin:0;letter-spacing:.1px}
   .game-screen{max-height:240px}
   .now-line{margin:8px 0}
 }
+
+/* v0.4.3: one honest answer to "which models are actually running". */
+.runtime-truth{margin:0 0 12px;padding:10px 12px;border:1px solid var(--line,#2a3528);border-radius:10px;background:rgba(200,255,62,.04);font-size:12px;line-height:1.7;color:var(--muted,#9aa894);display:flex;flex-direction:column;gap:2px}
+.runtime-truth b{color:var(--text,#f1f5ec);font-weight:600}
+.runtime-truth .warn-text{color:#ffbd55}

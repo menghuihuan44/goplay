@@ -110,6 +110,7 @@
             <div><h3>每一层用哪个 AI</h3><p>感知、分析、决策、对话、记忆、校验分别路由。不可用时明确显示，并回退到规则层，而不是假装已接入。</p></div>
             <span class="tag" id="routesTag">自动</span>
           </div>
+          <div id="runtimeTruth" class="runtime-truth"></div>
           <div id="aiRoutes" class="route-list"></div>
           <div class="form-actions"><button class="primary-btn" id="saveRoutes">保存分层设置</button><span class="form-note" id="routesNote"></span></div>
         </section>
@@ -215,7 +216,8 @@
               </select>
             </label>
             <div class="form-actions"><button class="pill-btn" id="androidRelease">我玩完了，交还 AI</button><button class="pill-btn" id="androidPermissionCenter">打开权限中心</button></div>
-            <div id="androidVoiceState" class="form-note">实时语音在游戏卡片上开启：点麦克风即可边聊边玩。</div>
+            <div class="form-actions"><button class="primary-btn" id="androidVoiceCall">🎙 开始实时通话</button><button class="pill-btn" id="androidVoiceStop">结束通话</button></div>
+            <div id="androidVoiceState" class="form-note">实时通话：直接说话，识别后自动发送给 AI；AI 的回复会通过 TTS 说出来。也可以在每个游戏卡片上点“🎙 通话”。</div>
           </section>
 
           <section class="panel">

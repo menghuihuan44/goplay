@@ -5,11 +5,13 @@ package engine
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"image"
 	"image/jpeg"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -90,6 +92,9 @@ type Runner struct {
 	human        bool
 	humanSince   time.Time
 	humanAt      time.Time
+	waiting      bool
+	waitReason   string
+	waitSince    time.Time
 	lastActions  []domain.Action
 	episodesList []EpisodeResult
 	epStart      time.Time
@@ -239,21 +244,27 @@ func (r *Runner) Status() domain.InstanceStatus {
 
 // Snapshot is the JSON-safe view used by the HTTP API and overlay.
 type Snapshot struct {
-	ID          string                `json:"id"`
-	Name        string                `json:"name"`
-	Profile     string                `json:"profile"`
-	Status      domain.InstanceStatus `json:"status"`
-	Stats       domain.InstanceStats  `json:"stats"`
-	State       domain.State          `json:"state"`
-	Display     domain.DisplayView    `json:"display"`
-	Control     domain.Control        `json:"control"`
-	Decision    DecisionView          `json:"decision"`
-	Policy      policy.PolicyStats    `json:"policy"`
-	Paused      bool                  `json:"paused"`
-	Human       bool                  `json:"human_control"`
-	FrameAt     time.Time             `json:"frame_at,omitempty"`
-	FrameWidth  int                   `json:"frame_width,omitempty"`
-	FrameHeight int                   `json:"frame_height,omitempty"`
+	ID       string                `json:"id"`
+	Name     string                `json:"name"`
+	Profile  string                `json:"profile"`
+	Status   domain.InstanceStatus `json:"status"`
+	Stats    domain.InstanceStats  `json:"stats"`
+	State    domain.State          `json:"state"`
+	Display  domain.DisplayView    `json:"display"`
+	Control  domain.Control        `json:"control"`
+	Decision DecisionView          `json:"decision"`
+	Policy   policy.PolicyStats    `json:"policy"`
+	Paused   bool                  `json:"paused"`
+	Human    bool                  `json:"human_control"`
+	// Waiting means the screen pipeline is temporarily unavailable (phone
+	// rotated, permission dialog, WebSocket reconnect). It is not an error and
+	// the instance keeps running while retrying.
+	Waiting     bool      `json:"waiting"`
+	WaitReason  string    `json:"wait_reason,omitempty"`
+	WaitSince   time.Time `json:"wait_since,omitempty"`
+	FrameAt     time.Time `json:"frame_at,omitempty"`
+	FrameWidth  int       `json:"frame_width,omitempty"`
+	FrameHeight int       `json:"frame_height,omitempty"`
 	// FrameJPEG is the latest encoded frame for GET /frame. It is intentionally
 	// excluded from JSON so periodic snapshots stay small.
 	FrameJPEG []byte                  `json:"-"`
@@ -288,6 +299,7 @@ func (r *Runner) Snapshot() Snapshot {
 			Provider: r.lastDec.Provider, Model: r.lastDec.Model,
 		},
 		Paused: r.paused, Human: r.human,
+		Waiting: r.waiting, WaitReason: r.waitReason, WaitSince: r.waitSince,
 		Control:  r.opts.Sched.Control(),
 		Episodes: append([]EpisodeResult(nil), r.episodesList...),
 	}
@@ -543,12 +555,55 @@ func (r *Runner) drain(kind scheduler.BoundaryKind, now time.Time) scheduler.Bou
 	return res
 }
 
+// noteWaiting converts a transient screen/bridge failure into a visible
+// waiting state instead of a terminal error. It reports whether the error was
+// transient so callers can return without marking the instance failed.
+func (r *Runner) noteWaiting(err error) bool {
+	if !errors.Is(err, domain.ErrTransient) {
+		return false
+	}
+	reason := err.Error()
+	reason = strings.TrimPrefix(reason, domain.ErrTransient.Error()+": ")
+	reason = strings.TrimSuffix(reason, ": "+domain.ErrTransient.Error())
+	now := time.Now()
+	r.mu.Lock()
+	first := !r.waiting
+	r.waiting = true
+	r.waitReason = reason
+	if first {
+		r.waitSince = now
+	}
+	r.mu.Unlock()
+	if first {
+		r.log.Info("instance waiting for screen", "instance", r.opts.ID, "reason", reason)
+		r.emit("instance.waiting", map[string]any{"reason": reason})
+	}
+	return true
+}
+
+func (r *Runner) clearWaiting() {
+	r.mu.Lock()
+	was := r.waiting
+	since := r.waitSince
+	r.waiting = false
+	r.waitReason = ""
+	r.waitSince = time.Time{}
+	r.mu.Unlock()
+	if was {
+		r.emit("instance.waiting_end", map[string]any{"waited_ms": time.Since(since).Milliseconds()})
+	}
+}
+
 func (r *Runner) step(ctx context.Context) error {
 	start := time.Now()
 	frame, err := r.opts.Source.Grab(ctx)
 	if err != nil {
+		if r.noteWaiting(err) {
+			return nil
+		}
 		return fmt.Errorf("capture: %w", err)
 	}
+	r.clearWaiting()
 	r.offerFrame(frame)
 	st, world, err := r.opts.Analyzer.Analyze(frame)
 	if err != nil {
@@ -635,6 +690,12 @@ func (r *Runner) step(ctx context.Context) error {
 			r.markHuman(r.opts.Human.State(ctx), time.Now())
 			return nil
 		}
+		// A phone that briefly drops its WebSocket must not kill the instance:
+		// the client reconnects on its own and the next tick retries. Real
+		// action failures (bad gesture/unsupported input) still fail loudly.
+		if r.noteWaiting(err) {
+			return nil
+		}
 		return fmt.Errorf("execute %q: %w", dec.Action.Key(), err)
 	}
 	lat := float64(time.Since(actStart).Milliseconds())
@@ -649,6 +710,9 @@ func (r *Runner) step(ctx context.Context) error {
 	// Observe the aftermath through the same pixel pipeline.
 	after, err := r.opts.Source.Grab(ctx)
 	if err != nil {
+		if r.noteWaiting(err) {
+			return nil
+		}
 		return fmt.Errorf("capture after action: %w", err)
 	}
 	r.offerFrame(after)

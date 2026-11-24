@@ -75,11 +75,33 @@ func (s *Server) instanceWS(w http.ResponseWriter, r *http.Request) {
 	send := func(v any) bool { return sink.SendJSON(v) == nil }
 
 	var sess *bridge.Session
-	if got, ok := s.mgr.AndroidSession(id); ok {
-		sess = got
-		detach := sess.Attach(sink)
-		defer detach()
+	var detach func()
+	defer func() {
+		if detach != nil {
+			detach()
+		}
+	}()
+	// The Android app connects before (or while) it creates the instance, and a
+	// rotated/restarted client can switch instances on the same socket. Bind to
+	// the current session lazily instead of snapshotting it once at upgrade
+	// time; otherwise frames and actions are silently rejected forever with
+	// "this instance does not accept binary frames".
+	bind := func() *bridge.Session {
+		got, ok := s.mgr.AndroidSession(id)
+		if !ok {
+			return sess
+		}
+		if got != sess {
+			if detach != nil {
+				detach()
+				detach = nil
+			}
+			sess = got
+			detach = sess.Attach(sink)
+		}
+		return sess
 	}
+	bind()
 
 	events, unsub := s.mgr.Bus().Subscribe(256)
 	defer unsub()
@@ -101,6 +123,7 @@ func (s *Server) instanceWS(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if item.binary != nil {
+				bind()
 				if sess == nil {
 					if !send(map[string]any{"type": "error", "error": "this instance does not accept binary frames"}) {
 						return
@@ -136,6 +159,7 @@ func (s *Server) instanceWS(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			case "hello":
+				bind()
 				if sess != nil {
 					sess.SetClient(msg.Client, msg.Device)
 				}
@@ -143,10 +167,12 @@ func (s *Server) instanceWS(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			case "ack":
+				bind()
 				if sess != nil {
 					sess.Ack(msg.ID, msg.OK, msg.ErrorCode, msg.ErrorText, msg.ActionType, msg.ExecutedMS)
 				}
 			case "human":
+				bind()
 				if sess != nil && msg.Active != nil {
 					sess.SetHuman(*msg.Active, msg.Reason)
 					if !send(map[string]any{"type": "ack", "human": *msg.Active, "note": "human control updated"}) {

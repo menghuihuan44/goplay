@@ -123,6 +123,11 @@ type Policy struct {
 	total int
 	rng   *rand.Rand
 	stats PolicyStats
+
+	// idleStreak counts consecutive wait/back decisions. A screen-reading agent
+	// that keeps choosing "wait" looks alive but never touches the game, so after
+	// a couple of passive choices the next decision must try an active action.
+	idleStreak int
 }
 
 type PolicyStats struct {
@@ -248,6 +253,18 @@ func (p *Policy) Decide(ctx context.Context, in Input) Decision {
 		}
 	}
 
+	p.mu.Lock()
+	idle := p.idleStreak
+	p.mu.Unlock()
+	if idle >= 2 && isPassive(d.Action) {
+		if alt, ok := bestActive(cands); ok {
+			d.Action = alt.Action
+			d.Score = alt.Score
+			d.Source = "explore"
+			d.Reason = fmt.Sprintf("连续 %d 次等待/返回后强制探索：%s", idle, alt.Action.Key())
+		}
+	}
+
 	if err := p.val.Validate(d.Action, legal); err != nil && d.Action.Kind != "wait" {
 		d.Fallback = true
 		d.Source = "fallback"
@@ -257,6 +274,11 @@ func (p *Policy) Decide(ctx context.Context, in Input) Decision {
 	d.ActionKey = d.Action.Key()
 	d.LatencyMS = float64(time.Since(start).Microseconds()) / 1000.0
 	p.mu.Lock()
+	if isPassive(d.Action) {
+		p.idleStreak++
+	} else {
+		p.idleStreak = 0
+	}
 	p.stats.Decisions++
 	p.mu.Unlock()
 	if p.reg != nil {
@@ -266,6 +288,25 @@ func (p *Policy) Decide(ctx context.Context, in Input) Decision {
 		}
 	}
 	return d
+}
+
+// isPassive marks actions that do not interact with the game. "back" is treated
+// as passive too: in an unfamiliar game it can leave the match instead of
+// advancing it, so forced exploration prefers taps/swipes.
+func isPassive(a domain.Action) bool {
+	return a.Kind == "wait" || a.Kind == "back" || a.HasTag("idle")
+}
+
+// bestActive returns the highest-scored non-passive candidate from the already
+// sorted list. It is only a nudge: if the profile offers no active action the
+// decision stays unchanged.
+func bestActive(cands []Candidate) (Candidate, bool) {
+	for _, c := range cands {
+		if !isPassive(c.Action) {
+			return c, true
+		}
+	}
+	return Candidate{}, false
 }
 
 // filter applies only hard vetoes: instance constraints, forbidden tags, and

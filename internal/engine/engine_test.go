@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -100,6 +101,46 @@ func TestRunnerLearnsAndWins(t *testing.T) {
 	}
 	if dead && snap.Stats.BestProgress == 0 {
 		t.Fatalf("died without progress")
+	}
+}
+
+type transientSource struct {
+	inner perception.Source
+	fails int
+}
+
+func (s *transientSource) Grab(ctx context.Context) (domain.Frame, error) {
+	if s.fails > 0 {
+		s.fails--
+		return domain.Frame{}, fmt.Errorf("%w: no Android client connected", domain.ErrTransient)
+	}
+	return s.inner.Grab(ctx)
+}
+func (s *transientSource) Describe() string { return s.inner.Describe() }
+func (s *transientSource) Close() error     { return s.inner.Close() }
+
+func TestTransientFrameLossWaitsInsteadOfFailing(t *testing.T) {
+	h := newHarness(t, "transient-1", 5)
+	flaky := &transientSource{inner: h.runner.opts.Source, fails: 20}
+	h.runner.opts.Source = flaky
+	h.runner.Start()
+	defer h.runner.Stop()
+	var waitReason string
+	waitFor(t, 5*time.Second, "waiting state", func() bool {
+		snap := h.runner.Snapshot()
+		waitReason = snap.WaitReason
+		return snap.Waiting
+	})
+	if waitReason == "" || strings.Contains(waitReason, domain.ErrTransient.Error()) {
+		t.Fatalf("wait reason should be user-facing, got %q", waitReason)
+	}
+	waitFor(t, 10*time.Second, "recovered actions", func() bool { return h.runner.Snapshot().Stats.Actions > 0 })
+	snap := h.runner.Snapshot()
+	if snap.Stats.Errors != 0 || snap.Status == domain.StatusError {
+		t.Fatalf("transient loss must not be a terminal error: status=%s errors=%d last=%s", snap.Status, snap.Stats.Errors, snap.Stats.LastError)
+	}
+	if snap.Waiting {
+		t.Fatalf("waiting flag should clear after frames return: %+v", snap)
 	}
 }
 

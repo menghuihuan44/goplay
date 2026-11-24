@@ -1,6 +1,7 @@
 package com.goplay.mobile.protocol
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonElement
 
 /**
  * Wire protocol v1 constants shared by the Android client, the Go core and
@@ -86,6 +87,8 @@ data class ServerMessage(
     val status: String? = null,
     val intervalMs: Long? = null,
     val error: String? = null,
+    /** Full instance snapshot, present on type="snapshot" (schema owned by Go). */
+    val instance: JsonElement? = null,
 )
 
 @Serializable

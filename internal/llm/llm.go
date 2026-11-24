@@ -106,13 +106,34 @@ type Router struct {
 	api    Provider
 	local  Provider
 	routes map[string]RouteConfig
+
+	statMu sync.Mutex
+	stats  map[string]*roleStat
+}
+
+// roleStat is the runtime evidence that a role actually executed. It is
+// deliberately in-memory: routing health is a live signal, not game memory.
+type roleStat struct {
+	Calls       int64
+	Errors      int64
+	LastAt      time.Time
+	LastModel   string
+	LastProv    string
+	LastLatency time.Duration
+	LastError   string
 }
 
 func NewRouter(mode string, api, local Provider) *Router {
 	if mode == "" {
 		mode = "auto"
 	}
-	return &Router{mode: mode, api: api, local: local, routes: make(map[string]RouteConfig)}
+	return &Router{
+		mode:   mode,
+		api:    api,
+		local:  local,
+		routes: make(map[string]RouteConfig),
+		stats:  make(map[string]*roleStat),
+	}
 }
 
 // Set replaces the mode and both providers atomically.
@@ -378,30 +399,86 @@ func (p *routeProvider) Available(ctx context.Context) bool {
 
 func (p *routeProvider) Complete(ctx context.Context, req Request) (Response, error) {
 	rr := p.router.resolveRoute(p.role)
+	start := time.Now()
+	finish := func(resp Response, err error) (Response, error) {
+		model, provider := resp.Model, resp.Provider
+		if model == "" {
+			model = rr.model
+		}
+		if provider == "" && err == nil {
+			provider = resp.Provider
+		}
+		p.router.record(p.role, provider, model, time.Since(start), err)
+		return resp, err
+	}
 	switch rr.mode {
 	case "offline":
-		return Response{}, ErrNoProvider
+		return finish(Response{}, ErrNoProvider)
 	case "api":
 		if rr.api == nil {
-			return Response{}, ErrNoProvider
+			return finish(Response{}, ErrNoProvider)
 		}
-		return rr.api.Complete(ctx, req)
+		resp, err := rr.api.Complete(ctx, req)
+		return finish(resp, err)
 	case "local":
 		if rr.local == nil {
-			return Response{}, ErrNoProvider
+			return finish(Response{}, ErrNoProvider)
 		}
-		return rr.local.Complete(ctx, req)
+		resp, err := rr.local.Complete(ctx, req)
+		return finish(resp, err)
 	default:
 		if rr.local != nil && rr.local.Available(ctx) {
 			if resp, err := rr.local.Complete(ctx, req); err == nil {
-				return resp, nil
+				return finish(resp, nil)
 			}
 		}
 		if rr.api != nil && rr.api.Available(ctx) {
-			return rr.api.Complete(ctx, req)
+			resp, err := rr.api.Complete(ctx, req)
+			return finish(resp, err)
 		}
-		return Response{}, ErrNoProvider
+		return finish(Response{}, ErrNoProvider)
 	}
+}
+
+// record stores the latest call evidence for one role. It is intentionally
+// cheap: one mutex acquisition per LLM call, no allocation on the hot path
+// beyond the map lookup.
+func (r *Router) record(role, provider, model string, latency time.Duration, err error) {
+	r.statMu.Lock()
+	defer r.statMu.Unlock()
+	if r.stats == nil {
+		r.stats = make(map[string]*roleStat)
+	}
+	st := r.stats[role]
+	if st == nil {
+		st = &roleStat{}
+		r.stats[role] = st
+	}
+	st.Calls++
+	st.LastAt = time.Now()
+	st.LastLatency = latency
+	if provider != "" {
+		st.LastProv = provider
+	}
+	if model != "" {
+		st.LastModel = model
+	}
+	if err != nil {
+		st.Errors++
+		st.LastError = err.Error()
+	} else {
+		st.LastError = ""
+	}
+}
+
+func (r *Router) roleStats() map[string]roleStat {
+	r.statMu.Lock()
+	defer r.statMu.Unlock()
+	out := make(map[string]roleStat, len(r.stats))
+	for role, st := range r.stats {
+		out[role] = *st
+	}
+	return out
 }
 
 // RoutesStatus reports the effective provider/model for every role. It is
@@ -423,13 +500,41 @@ func (r *Router) RoutesStatus(ctx context.Context) map[string]any {
 	}
 
 	out := make(map[string]any, len(roles))
+	stats := r.roleStats()
 	for _, role := range roles {
 		rr := r.resolveRoute(role)
 		entry := map[string]any{
-			"mode":      rr.mode,
-			"model":     rr.model,
-			"available": false,
-			"provider":  "",
+			"mode":        rr.mode,
+			"model":       rr.model,
+			"available":   false,
+			"provider":    "",
+			"implemented": role == RolePerception || role == RoleStrategy || role == RoleLanguage,
+			"calls":       int64(0),
+			"errors":      int64(0),
+			"state":       "idle",
+		}
+		if !entry["implemented"].(bool) {
+			entry["state"] = "not_wired"
+		}
+		if st, ok := stats[role]; ok {
+			entry["calls"] = st.Calls
+			entry["errors"] = st.Errors
+			if st.LastModel != "" {
+				entry["model"] = st.LastModel
+			}
+			if st.LastProv != "" {
+				entry["provider"] = st.LastProv
+			}
+			if !st.LastAt.IsZero() {
+				entry["last_at"] = st.LastAt.Format(time.RFC3339)
+			}
+			entry["last_latency_ms"] = st.LastLatency.Milliseconds()
+			if st.LastError != "" {
+				entry["last_error"] = st.LastError
+				entry["state"] = "error"
+			} else if entry["implemented"].(bool) {
+				entry["state"] = "working"
+			}
 		}
 		if rc, ok := configured[role]; ok {
 			if rc.Mode != "" {
@@ -462,11 +567,11 @@ func (r *Router) RoutesStatus(ctx context.Context) map[string]any {
 			entry["available"] = chosen.Available(ctx)
 		}
 		note := rr.reason()
-		if role == RoleAnalysis || role == RoleMemory {
+		if !entry["implemented"].(bool) {
 			if note != "" {
-				note += "; 已配置，规则层暂未调用"
+				note += "; 该层尚未接入调用点，选择会被保存，但当前由规则层处理"
 			} else {
-				note = "已配置，规则层暂未调用"
+				note = "该层尚未接入调用点，选择会被保存，但当前由规则层处理"
 			}
 		}
 		if note != "" {
@@ -474,6 +579,9 @@ func (r *Router) RoutesStatus(ctx context.Context) map[string]any {
 		}
 		if !entry["available"].(bool) && entry["note"] == nil {
 			entry["note"] = rr.reason()
+		}
+		if !entry["available"].(bool) && entry["state"] != "error" && entry["state"] != "not_wired" {
+			entry["state"] = "unavailable"
 		}
 		out[role] = entry
 	}
