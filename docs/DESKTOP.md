@@ -95,6 +95,8 @@ Windows 高 DPI（125%/150%/200%）下，桌面壳使用 `third_party/webview_go
 - 通用 Lua 解释器修复了“把扁平 world map 当 values 读”的 bug：真实游戏画面变化现在会计入 reward，不再出现画面明显切换却 reward=0。连续成功的同一动作会加权重复，连续无回报才换动作；默认不再发送 Escape。
 - 真实 `th06c.exe` 实测（无任何游戏专用代码）：从标题→难度→STAGE 1→弹幕战斗，40 秒 156 动作、93 个有效动作、reward 70.22、0 错误、0 误接管。真实游戏里聊天发送 `press z`，trace 记录 `directive | 执行你的指令：press z`，决策来源为 `directive`，动作以 z 键执行；下一条 trace 继续观察并回到 heuristic。
 
+![v0.6.0 最终 Windows 包在真实东方 STAGE 1 中的画面](assets/real-touhou-v06.jpg)
+
 ![游戏卡上的有效动作与 AI 思维链](assets/games-trace.png)
 
 ### 多模型与语音（v0.6.0）
