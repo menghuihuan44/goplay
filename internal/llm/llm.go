@@ -508,7 +508,7 @@ func (r *Router) RoutesStatus(ctx context.Context) map[string]any {
 			"model":       rr.model,
 			"available":   false,
 			"provider":    "",
-			"implemented": role == RolePerception || role == RoleStrategy || role == RoleLanguage,
+			"implemented": role == RolePerception || role == RoleAnalysis || role == RoleStrategy || role == RoleLanguage,
 			"calls":       int64(0),
 			"errors":      int64(0),
 			"state":       "idle",

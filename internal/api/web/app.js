@@ -5,7 +5,7 @@ var S={
   cfg:null, health:null, events:[], filter:'all', loading:false, suspendGames:false,
   voiceTarget:null, voice:null, eventsAt:0, ws:null, poll:null, staticLoaded:false,
   visionDirty:false, isAndroid:false, host:null, aiRoutes:null, routeDraft:null, diag:{}, diagAt:{},
-  diagBusy:{}, starting:{}, pkgs:{}, frameNonce:0
+  diagBusy:{}, starting:{}, pkgs:{}, frameNonce:0, teach:{}, teachId:null
 };
 var $=function(sel,root){return (root||document).querySelector(sel)};
 var $$=function(sel,root){return Array.prototype.slice.call((root||document).querySelectorAll(sel))};
@@ -259,6 +259,91 @@ function screenPanel(v){
     +'<div class="screen-empty">还没有画面。检查录屏权限，并保持截屏运行。<br><button class="link-btn" data-perm="capture">开始截屏</button></div>'
     +'</div>';
 }
+function teachPanel(v){
+  var t=(v&&v.teaching)||{};
+  var steps=num(t.steps,0), demos=num(t.demos,0);
+  if(t.recording){
+    return '<div class="teach-live"><span class="teach-eye">◉</span><div><b>AI 正在看你怎么玩</b><small>已记录 '+steps+' 步画面与输入；你操作结束后会整理成示范，之后在相似画面复用。</small></div><button class="link-btn" data-teach="'+esc(v.id)+'">查看</button></div>';
+  }
+  if(steps>0||demos>0){
+    var used=num(t.uses,0), hits=num(t.hints,0), sim=num(t.hint_similarity,0);
+    var usedText=used>0?('AI 已模仿 '+used+' 次'+(hits>0?'/命中相似示范 '+hits+' 次':'')+(sim>0?'（最近相似度 '+Math.round(sim*100)+'%）':'')+'。'):'';
+    return '<div class="teach-live learned"><span>🎓</span><div><b>已学会 '+demos+' 段示范 · '+steps+' 步</b><small>'+esc(usedText+(t.last_note||'在相似画面会优先模仿你的操作，再根据结果调整。'))+'</small></div><button class="link-btn" data-teach="'+esc(v.id)+'">查看</button></div>';
+  }
+  if(v.status==='human_control'){
+    return '<div class="teach-live"><span>👀</span><div><b>AI 正在观察你的操作</b><small>记录画面、按键和点击；你放开键鼠后 AI 继续，并复用刚学到的动作。</small></div></div>';
+  }
+  return '';
+}
+function teachButton(v){
+  var t=(v&&v.teaching)||{}; var n=num(t.steps,0);
+  if(!n&&!num(t.demos,0)&&!t.recording&&v.status!=='human_control') return '';
+  return '<button class="pill-btn" data-teach="'+esc(v.id)+'">🎓 示范 '+n+'</button>';
+}
+function teachImage(v,rel){
+  if(!rel) return '';
+  return '/api/instances/'+encodeURIComponent(v.id)+'/teach/frame?path='+encodeURIComponent(rel);
+}
+function demoStepHTML(v,step){
+  var before=teachImage(v,step.before_image), after=teachImage(v,step.after_image);
+  var action=step.action||{};
+  var label=action.kind||'动作';
+  if(action.input&&action.input.key) label=action.input.key+' 键';
+  if(action.input&&action.input.type==='click') label='点击 ('+Math.round(num(action.input.x,0)*100)+'%, '+Math.round(num(action.input.y,0)*100)+'%)';
+  return '<div class="teach-step">'
+    +'<div class="teach-shots">'
+      +(before?'<figure><img loading="lazy" src="'+before+'" alt="操作前画面"><figcaption>操作前</figcaption></figure>':'')
+      +(after?'<figure><img loading="lazy" src="'+after+'" alt="操作后画面"><figcaption>操作后</figcaption></figure>':'')
+    +'</div>'
+    +'<div class="teach-step-text"><b>'+esc(label)+'</b><p>'+esc(step.note||'')+'</p><small>意图：'+esc(step.intent||'操作')+(step.similarity?' · 相似度 '+Math.round(num(step.similarity,0)*100)+'%':'')+'</small></div>'
+  +'</div>';
+}
+function renderTeaching(id){
+  var info=S.teach[id]||{status:{},demos:[]}, t=info.status||{}, demos=Array.isArray(info.demos)?info.demos:[];
+  var body=$('#teachBody'); if(!body) return;
+  var used=num(t.uses,0), hits=num(t.hints,0), sim=num(t.hint_similarity,0);
+  var statusLine=t.recording?('正在记录：已 '+num(t.steps,0)+' 步'):('你接管游戏时，AI 会记录画面、按键和点击。'+(used>0?(' 已模仿 '+used+' 次/命中 '+hits+' 次'+(sim>0?'（相似度 '+Math.round(sim*100)+'%）':'')+'。'):''));
+  var html='<div class="teach-status"><div><b>'+(t.enabled!==false?'学习已开启':'学习已关闭')+'</b><small>'+esc(statusLine)+'</small></div>'
+    +'<button class="pill-btn" data-teachtoggle="'+esc(id)+'">'+(t.enabled!==false?'暂停学习':'开启学习')+'</button>'
+    +'<button class="pill-btn danger-text" data-teachclear="'+esc(id)+'">清空示范</button></div>';
+  if(t.last_note) html+='<p class="teach-note">'+esc(t.last_note)+'</p>';
+  if(!demos.length){
+    html+='<div class="empty">还没有示范。进入游戏后接管一会儿，或让别人替你玩几步；AI 会把画面变化和按键记录下来。</div>';
+  }else{
+    demos=demos.slice().reverse();
+    html+='<div class="teach-demos">'+demos.map(function(d){
+      var steps=Array.isArray(d.steps)?d.steps:[];
+      var shown=steps.slice(-8);
+      return '<section class="teach-demo"><div class="teach-demo-head"><div><b>'+esc(d.summary||'一段人工示范')+'</b><small>'+esc(d.source||'human-takeover')+' · '+steps.length+' 步 · '+esc(ago(d.ended_at||d.started_at))+'</small></div></div>'
+        +(shown.length?shown.map(function(st){return demoStepHTML({id:id},st)}).join(''):'<p class="muted small">这段示范没有记录到动作。</p>')
+      +'</section>';
+    }).join('')+'</div>';
+  }
+  body.innerHTML=html;
+}
+async function openTeaching(id){
+  S.teachId=id;
+  var m=$('#teachModal'); if(!m) return;
+  m.classList.remove('hidden');
+  $('#teachBody').innerHTML='<div class="muted">正在读取示范…</div>';
+  try{
+    var info=await api('/api/instances/'+encodeURIComponent(id)+'/teach');
+    S.teach[id]=info; renderTeaching(id);
+  }catch(e){ $('#teachBody').innerHTML='<div class="empty">读取失败：'+esc(e.message)+'</div>'; }
+}
+function closeTeaching(){ $('#teachModal').classList.add('hidden'); S.teachId=null; }
+async function toggleTeaching(id){
+  var info=S.teach[id]||{}, t=info.status||{};
+  try{
+    var next=await api('/api/instances/'+encodeURIComponent(id)+'/teach',{method:'POST',body:{enabled:t.enabled===false}});
+    S.teach[id]=next; renderTeaching(id); toast(next.status&&next.status.enabled!==false?'已开启示范学习':'已暂停示范学习');
+  }catch(e){toast(e.message,true)}
+}
+async function clearTeaching(id){
+  if(!window.confirm('清空这个游戏学到的示范？已经沉淀到记忆里的经验不会删除。')) return;
+  try{ await api('/api/instances/'+encodeURIComponent(id)+'/teach',{method:'DELETE'}); toast('示范已清空'); await openTeaching(id); }
+  catch(e){toast(e.message,true)}
+}
 function fullCard(v){
   var st=statusInfo(v), disp=displayOf(v), stats=v.stats||{}, memory=v.memory||{};
   var progress=pct(disp.progress);
@@ -290,6 +375,7 @@ function fullCard(v){
     +'<div class="gc-head"><div style="min-width:0;flex:1"><h3>'+esc(v.name||v.id)+'</h3><div class="gc-meta">'+sourceIcon(v.source_kind)+' '+esc(v.profile||'')+' · seed '+esc(v.seed||0)+'</div></div>'+outcome+'<span class="status '+st.key+'">'+st.label+'</span></div>'
     +(errorActive(v)?errorCard(v):'')
     +(v.waiting?'<p class="gc-notes wait-note">AI 正在等待：'+esc(v.wait_reason||'连接暂时中断')+'。核心保持运行并自动恢复，恢复后会继续操作；这不是动作错误。</p>':'')
+    +teachPanel(v)
     +'<div class="gc-summary"><span class="dot '+(running?'on':'')+'"></span><span>'+esc(disp.summary||'等待第一帧…')+'</span></div>'
     +(progress!==null?'<div class="progress"><div class="labels"><span>'+esc(disp.progressLabel)+'</span><b>'+fmtPct(progress)+'</b></div><div class="bar"><i style="width:'+fmtPct(progress)+'%"></i></div></div>':'')
     +'<div class="gc-stats mini-stats"><div><span>动作</span><b>'+Math.round(stat(v,'actions',0))+'</b></div><div><span>决策</span><b>'+Math.round(stat(v,'decisions',0))+'</b></div><div><span>错误</span><b class="'+(stat(v,'errors',0)?'danger-text':'')+'">'+Math.round(stat(v,'errors',0))+'</b></div></div>'
@@ -301,7 +387,7 @@ function fullCard(v){
     +(chat?'<div class="chat-lines">'+chat+'</div>':'')
     +'<div class="gc-chat"><textarea rows="2" maxlength="500" data-input="'+esc(v.id)+'" placeholder="说话或输入约束，例如：先别打那个 Boss"></textarea><button class="mic-btn call-btn '+(voice?'active':'')+'" data-call="'+esc(v.id)+'" title="实时语音通话">🎙 '+(voice?'通话中':'通话')+'</button><button class="send-btn" data-send="'+esc(v.id)+'">发送</button></div>'
     +'<div class="gc-chat-hint">Enter 发送 · Shift+Enter 换行 · 指令在下一个决策周期生效'+(voice?' · <b class="lime">通话中，说完会自动发送</b>':'')+'</div>'
-    +'<div class="card-controls">'+controls+'<button class="pill-btn" data-mem="'+esc(v.id)+'">记忆 '+Math.round(num(memory.bytes,0)/1024)+' KB</button><button class="pill-btn danger-text" data-act="delete" data-id="'+esc(v.id)+'">删除</button></div>'
+    +'<div class="card-controls">'+controls+teachButton(v)+'<button class="pill-btn" data-mem="'+esc(v.id)+'">记忆 '+Math.round(num(memory.bytes,0)/1024)+' KB</button><button class="pill-btn danger-text" data-act="delete" data-id="'+esc(v.id)+'">删除</button></div>'
     +'</article>';
 }
 
@@ -1255,6 +1341,14 @@ function bind(){
     if(pref){deletePref(pref.getAttribute('data-pref'));return}
     var mem=ev.target.closest('[data-mem]');
     if(mem){go('memory');return}
+    var teach=ev.target.closest('[data-teach]');
+    if(teach){openTeaching(teach.getAttribute('data-teach'));return}
+    var tt=ev.target.closest('[data-teachtoggle]');
+    if(tt){toggleTeaching(tt.getAttribute('data-teachtoggle'));return}
+    var tc=ev.target.closest('[data-teachclear]');
+    if(tc){clearTeaching(tc.getAttribute('data-teachclear'));return}
+    if(ev.target.closest('#closeTeach')){closeTeaching();return}
+    if(ev.target.id==='teachModal'){closeTeaching();return}
     var diagAct=ev.target.closest('[data-diagact]');
     if(diagAct){diagAction(diagAct.getAttribute('data-diagact'),diagAct.getAttribute('data-id'));return}
     var diagLoad=ev.target.closest('[data-diagload]');
@@ -1305,7 +1399,7 @@ function bind(){
     },160);
   });
   document.addEventListener('keydown',function(ev){
-    if(ev.key==='Escape'){closeModal();return}
+    if(ev.key==='Escape'){closeTeaching();closeModal();return}
     if(ev.target.matches&&ev.target.matches('[data-input]')){
       if(ev.key==='Enter'&&!ev.shiftKey){ev.preventDefault();sendChat(ev.target.getAttribute('data-input'))}
     }

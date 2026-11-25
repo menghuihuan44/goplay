@@ -131,16 +131,21 @@ func TestValidatorRejectsBadCoords(t *testing.T) {
 		t.Fatal("expected coordinate rejection")
 	}
 }
-func TestShootingGamesFirePeriodically(t *testing.T) {
+func TestDemoHintWinsOnlyWhenLegal(t *testing.T) {
 	p := New(nil, nil, DefaultConfig())
-	acts := []domain.Action{
-		{Kind: "move_left", Target: "dodge", Tags: []string{"move"}, Risk: 0.05,
-			Params: map[string]any{"safety": 0.9}, Input: &domain.InputSpec{Type: "key", Key: "left"}},
-		{Kind: "shoot", Target: "enemy", Tags: []string{"combat", "damage"}, Risk: 0.1,
-			Input: &domain.InputSpec{Type: "key", Key: "z"}},
+	legal := []domain.Action{
+		{Kind: "press_enter", Target: "menu", Risk: 0.05, Input: &domain.InputSpec{Type: "key", Key: "enter"}},
+		{Kind: "wait", Target: "screen", Risk: 0, Input: &domain.InputSpec{Type: "wait"}},
 	}
-	d := p.Decide(context.Background(), Input{State: mockState(), Actions: acts})
-	if d.Action.Kind != "shoot" || d.Source != "combat" {
-		t.Fatalf("first decision should fire, got kind=%q source=%q", d.Action.Kind, d.Source)
+	demo := domain.Action{Kind: "demo_key_z", Target: "game", Risk: 0.05,
+		Input: &domain.InputSpec{Type: "key", Key: "z"}}
+	d := p.Decide(context.Background(), Input{State: mockState(), Actions: legal, Demo: []domain.Action{demo}})
+	if d.Action.Kind == "demo_key_z" {
+		t.Fatalf("demo action outside the legal set must not be used: %+v", d)
+	}
+	legal = append(legal, demo)
+	d = p.Decide(context.Background(), Input{State: mockState(), Actions: legal, Demo: []domain.Action{demo}, DemoReason: "模仿示范"})
+	if d.Action.Kind != "demo_key_z" || d.Source != "demo" || !d.Demo {
+		t.Fatalf("expected legal demo hint, got kind=%q source=%q demo=%v", d.Action.Kind, d.Source, d.Demo)
 	}
 }

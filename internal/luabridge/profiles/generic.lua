@@ -66,6 +66,13 @@ function p.actions(s)
     key_action("move_left", "a", { "move", "left" }, 0.2, "move left"),
     key_action("move_right", "d", { "move", "right" }, 0.2, "move right"),
     key_action("interact", "e", { "interact" }, 0.2, "context interaction"),
+    key_action("press_z", "z", { "action", "primary" }, 0.2, "primary attack / confirm"),
+    key_action("press_x", "x", { "action", "secondary" }, 0.25, "secondary action"),
+    key_action("press_shift", "shift", { "modifier", "focus" }, 0.15, "focus or slow movement"),
+    key_action("arrow_up", "up", { "move", "up" }, 0.2, "move up"),
+    key_action("arrow_down", "down", { "move", "down" }, 0.2, "move down"),
+    key_action("arrow_left", "left", { "move", "left" }, 0.2, "move left"),
+    key_action("arrow_right", "right", { "move", "right" }, 0.2, "move right"),
   }
   -- A coarse normalized grid lets a vision policy choose somewhere to click
   -- without inventing raw screen coordinates. The validator still checks [0,1].

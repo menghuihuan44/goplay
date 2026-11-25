@@ -54,6 +54,7 @@ type Decision struct {
 	Fallback   bool
 	LatencyMS  float64
 	LLMUsed    bool
+	Demo       bool
 }
 
 type Input struct {
@@ -63,6 +64,10 @@ type Input struct {
 	Rules    domain.InstanceRules
 	Hints    []string
 	ForceLLM bool
+	// Demo carries actions learned from a human demonstration. They are only
+	// hints: the policy still checks that the action is in the current legal set.
+	Demo       []domain.Action
+	DemoReason string
 }
 
 type arm struct {
@@ -253,20 +258,24 @@ func (p *Policy) Decide(ctx context.Context, in Input) Decision {
 		}
 	}
 
-	// Shooting games expose a "shoot" action, but pure dodge scoring never
-	// picks it (shooting does not reduce bullet density), so the AI would dodge
-	// forever and never damage anything. Every other decision, fire.
-	if d.Source == "heuristic" {
-		p.mu.Lock()
-		n := p.stats.Decisions
-		p.mu.Unlock()
-		if n%2 == 0 {
-			if c, ok := firstKind(cands, "shoot"); ok {
-				d.Action = c.Action
-				d.Score = c.Score
-				d.Source = "combat"
-				d.Reason = "keep firing while dodging"
+	// A learned demonstration is a strong hint, but never a hard override: it
+	// only wins when the action is legal right now. The user's constraints have
+	// already filtered the candidate set.
+	if len(in.Demo) > 0 {
+		for _, da := range in.Demo {
+			if !isLegal(legal, da) {
+				continue
 			}
+			d.Action = da
+			d.Score = 1.0
+			d.Source = "demo"
+			d.Demo = true
+			d.Reason = in.DemoReason
+			if d.Reason == "" {
+				d.Reason = "模仿人工示范"
+			}
+			d.Fallback = false
+			break
 		}
 	}
 
@@ -314,14 +323,13 @@ func isPassive(a domain.Action) bool {
 	return a.Kind == "wait" || a.Kind == "back" || a.HasTag("idle")
 }
 
-// firstKind returns the best-scored candidate of a given action kind.
-func firstKind(cands []Candidate, kind string) (Candidate, bool) {
-	for _, c := range cands {
-		if c.Action.Kind == kind {
-			return c, true
+func isLegal(legal []domain.Action, a domain.Action) bool {
+	for _, l := range legal {
+		if l.Key() == a.Key() {
+			return true
 		}
 	}
-	return Candidate{}, false
+	return false
 }
 
 // bestActive returns the highest-scored non-passive candidate from the already
@@ -390,7 +398,7 @@ func (p *Policy) score(key string, st domain.State, legal []domain.Action, ctl d
 			mean, visits = ar.mean, ar.visits
 		}
 		bonus := c * math.Sqrt(math.Log(float64(total)+1)/float64(visits+1))
-		adj := softAdjust(a, ctl) + survivalAdjust(a, st) + reflexAdjust(a, st)
+		adj := softAdjust(a, ctl) + survivalAdjust(a, st)
 		out = append(out, Candidate{
 			Action: a,
 			Score:  mean + bonus + adj,
@@ -430,38 +438,6 @@ func survivalAdjust(a domain.Action, st domain.State) float64 {
 		return 1.0
 	}
 	return 0
-}
-
-// reflexAdjust consumes an optional pixel-level safety score attached by a
-// game profile. It is only a positive bias: hard constraints have already
-// filtered the candidate set, and the value is capped so the bandit can still
-// explore. Profiles for non-shooter games simply omit params.safety.
-func reflexAdjust(a domain.Action, st domain.State) float64 {
-	if a.Params == nil {
-		return 0
-	}
-	safety := 0.0
-	switch v := a.Params["safety"].(type) {
-	case float64:
-		safety = v
-	case float32:
-		safety = float64(v)
-	case int:
-		safety = float64(v)
-	}
-	if safety <= 0 {
-		return 0
-	}
-	danger := st.Value("danger")
-	if danger < 0 {
-		danger = 0
-	}
-	if danger > 1 {
-		danger = 1
-	}
-	// A dangerous frame makes the safe direction dominate, but never more than
-	// 2.5 points: an untried action can still win through exploration.
-	return safety * (1.0 + 2.0*danger)
 }
 
 func softAdjust(a domain.Action, ctl domain.Control) float64 {

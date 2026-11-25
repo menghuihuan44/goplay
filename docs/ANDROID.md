@@ -1,7 +1,7 @@
 # Android 接入
 
 Android 是首要目标平台。v0.4 继续采用「手机完全独立」形态：Go 核心和 llama-server 作为 arm64 原生库随 APK 安装，由 Kotlin 壳以独立子进程启动在 loopback；WebView 加载核心内置的五页控制台。手机端仍然只负责“眼睛”和“手”，不注入游戏、不读游戏内存、不 hook 图形 API。
-v0.4 增加权限中心、创建前准备流程、结构化错误诊断、灵动岛保活、三档接管灵敏度与交还 AI、连续语音/TTS、多模型管理和六层 AI 路由。v0.4.1 修复旋转/进入游戏后重复报「旋转后重建截屏失败」：MediaProjection 只能创建一次 VirtualDisplay，现在复用同一个显示并调整尺寸与 Surface。v0.4.2 修复启动竞态：控制台把 WebSocket 桥接纳入就绪条件后再启动实例，核心动作最多等待 5 秒传输就绪，断线后不再复用旧帧。v0.4.4 增加语音自言自语；v0.4.5 把语音改为麦克风前台服务（切到游戏后识别不再被 onPause 关闭），TTS 未就绪时排队而不是丢句，并优先中文语音；v0.4.3 修复游玩中长时断流：核心把断线/无帧归类为 transient，实例保持 running 并进入「等待画面」，恢复后继续而不是记成动作错误；WebSocket 在每帧与每条控制消息前重新绑定当前实例，录屏服务每 3 秒自动 ensureConnected；通用触摸 profile 连续两次 wait/back 后强制 tap/swipe。连续语音采用半双工：TTS 开始前暂停识别，播报结束或失败后自动恢复，避免把 AI 自己的声音识别成新指令。
+v0.4 增加权限中心、创建前准备流程、结构化错误诊断、灵动岛保活、三档接管灵敏度与交还 AI、连续语音/TTS、多模型管理和六层 AI 路由。v0.4.1 修复旋转/进入游戏后重复报「旋转后重建截屏失败」：MediaProjection 只能创建一次 VirtualDisplay，现在复用同一个显示并调整尺寸与 Surface。v0.4.2 修复启动竞态：控制台把 WebSocket 桥接纳入就绪条件后再启动实例，核心动作最多等待 5 秒传输就绪，断线后不再复用旧帧。v0.4.4 增加语音自言自语；v0.5.0 加入通用示范学习核心（Android 触摸采集尚未接入）；v0.4.5 把语音改为麦克风前台服务（切到游戏后识别不再被 onPause 关闭），TTS 未就绪时排队而不是丢句，并优先中文语音；v0.4.3 修复游玩中长时断流：核心把断线/无帧归类为 transient，实例保持 running 并进入「等待画面」，恢复后继续而不是记成动作错误；WebSocket 在每帧与每条控制消息前重新绑定当前实例，录屏服务每 3 秒自动 ensureConnected；通用触摸 profile 连续两次 wait/back 后强制 tap/swipe。连续语音采用半双工：TTS 开始前暂停识别，播报结束或失败后自动恢复，避免把 AI 自己的声音识别成新指令。
 
 - **眼睛**：MediaProjection + ImageReader 抓屏，JPEG 编码；
 - **手**：AccessibilityService 执行 tap/swipe/long_press/back/text；
@@ -108,7 +108,7 @@ POST /api/local/recommend
 
 ## 验证状态与限制
 
-- 已在 Windows 上构建 v0.4.5：`:app:testDebugUnitTest`（30 个 JVM 测试）与 `:app:assembleDebug` 成功；release APK 约 13.1MB，包内含 arm64 的 `libgoplaycore.so` 与 `libllama-server.so`，versionCode 9 / versionName 0.4.5。精确大小与 SHA256 见 `dist/release.json`。
+- 已在 Windows 上构建 v0.5.0：`:app:testDebugUnitTest`（30 个 JVM 测试）与 `:app:assembleDebug` 成功；release APK 约 13.1MB，包内含 arm64 的 `libgoplaycore.so` 与 `libllama-server.so`，versionCode 10 / versionName 0.5.0。精确大小与 SHA256 见 `dist/release.json`。
 - **尚未真机/模拟器验证**：本机 SDK 无 emulator/system-images，也没有连接设备。MediaProjection、无障碍手势、悬浮球、子进程、模型下载都仍需设备验证。
 - 未配置 release keystore 时回退 Android Debug 签名，只能本地安装，不能上架。
 - 真机重点验证：Android 14+ 前台服务类型与通知；厂商 ROM 对悬浮窗的额外限制；横屏坐标旋转；弱网/后台保活；低 RAM 设备下载与推理延迟。

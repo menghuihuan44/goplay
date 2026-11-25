@@ -104,6 +104,24 @@ func TestRunnerLearnsAndWins(t *testing.T) {
 	}
 }
 
+func TestRunnerCanRestartAfterStop(t *testing.T) {
+	h := newHarnessN(t, "restart", 7, 100)
+	h.runner.Start()
+	waitFor(t, 10*time.Second, "first actions", func() bool {
+		return h.runner.Snapshot().Stats.Actions >= 3
+	})
+	before := h.runner.Snapshot().Stats.Actions
+	h.runner.Stop()
+	if snap := h.runner.Snapshot(); snap.Status != domain.StatusStopped || snap.Stats.Errors != 0 {
+		t.Fatalf("deliberate stop must be clean: status=%s errors=%d last=%s", snap.Status, snap.Stats.Errors, snap.Stats.LastError)
+	}
+	h.runner.Start()
+	waitFor(t, 10*time.Second, "actions after restart", func() bool {
+		return h.runner.Snapshot().Stats.Actions > before
+	})
+	h.runner.Stop()
+}
+
 type transientSource struct {
 	inner perception.Source
 	fails int

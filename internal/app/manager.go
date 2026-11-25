@@ -5,6 +5,7 @@ package app
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -32,6 +33,7 @@ import (
 	"goplay/internal/perception"
 	"goplay/internal/policy"
 	"goplay/internal/scheduler"
+	"goplay/internal/teach"
 )
 
 const (
@@ -101,11 +103,13 @@ type managed struct {
 	source   perception.Source
 	analyzer perception.Analyzer
 	executor action.Executor
-	human    *action.MockHuman
+	human    action.HumanDetector
 	sched    *scheduler.Scheduler
 	pol      *policy.Policy
 	runner   *engine.Runner
 	sess     *bridge.Session
+	teacher  *teach.Recorder
+	teach    *teach.Store
 }
 
 // Manager owns every live instance and the cross-instance stores.
@@ -287,9 +291,6 @@ func (m *Manager) build(spec Spec) error {
 		human = sess
 		src = sess
 		base := perception.Analyzer(perception.GenericAnalyzer{})
-		if spec.ProfileID == "touhou" {
-			base = perception.NewShmupAnalyzer()
-		}
 		an = perception.NewVisionAnalyzer(m.router.For(llm.RolePerception), base)
 		ex = sess
 	} else {
@@ -315,9 +316,6 @@ func (m *Manager) build(spec Spec) error {
 		human = sh
 		src = &ctxSource{inner: ns}
 		base := perception.Analyzer(perception.GenericAnalyzer{})
-		if spec.ProfileID == "touhou" {
-			base = perception.NewShmupAnalyzer()
-		}
 		an = perception.NewVisionAnalyzer(m.router.For(llm.RolePerception), base)
 		ex = we
 	}
@@ -325,20 +323,20 @@ func (m *Manager) build(spec Spec) error {
 	sch := scheduler.New(spec.ID, spec.Name, prof.Rules, m.mem, nil, m.reg, ctlPath)
 	pol := policy.New(m.router.For(llm.RoleStrategy), m.reg, policy.DefaultConfig())
 	tickMS, settleMS, maxActions := spec.TickMS, 120, m.cfg.MaxActionRate
-	if spec.ProfileID == "touhou" {
-		// Shooters are continuous-control games: a 250ms tick plus 120ms settle
-		// looks like standing still in a bullet stream. Shorten both while
-		// keeping the same rate limiter and takeover checks.
-		if tickMS <= 0 || tickMS > 120 {
-			tickMS = 120
-		}
-		settleMS = 45
-		if maxActions < 16 {
-			maxActions = 16
+	var teacher *teach.Recorder
+	var teachStore *teach.Store
+	if ts, terr := teach.Open(filepath.Join(m.cfg.DataDir, "instances", safeDir(spec.ID), "teach")); terr != nil {
+		m.log.Warn("open teaching store", "instance", spec.ID, "err", terr)
+	} else {
+		teachStore = ts
+		teacher = teach.NewRecorder(ts, spec.ID)
+		if m.router != nil {
+			teacher.SetReflector(&demoReflector{m: m})
 		}
 	}
 	opts := engine.Options{
 		ID: spec.ID, Name: spec.Name, Profile: prof, Source: src, Analyzer: an,
+		Teacher:  teacher,
 		Executor: ex, Human: human, Sched: sch, Policy: pol,
 		Memory: m.mem.Instance(spec.ID), Bus: m.bus, Metrics: m.reg,
 		Save:  func() error { return m.mem.SaveInstance(spec.ID) },
@@ -357,7 +355,8 @@ func (m *Manager) build(spec Spec) error {
 	}
 	mi := &managed{
 		spec: spec, profile: prof, game: game, source: src, analyzer: an,
-		executor: ex, human: mockH, sched: sch, pol: pol, runner: runner, sess: sess,
+		executor: ex, human: human, sched: sch, pol: pol, runner: runner, sess: sess,
+		teacher: teacher, teach: teachStore,
 	}
 	m.mu.Lock()
 	m.insts[spec.ID] = mi
@@ -423,6 +422,55 @@ func (m *Manager) Get(id string) (InstanceView, error) {
 		Snapshot: snap, SourceKind: mi.spec.SourceKind, Seed: mi.spec.Seed,
 		MaxEpisodes: mi.spec.MaxEpisodes, CreatedAt: mi.spec.CreatedAt,
 	}, nil
+}
+
+// TeachInfo returns the demonstrations learned for one instance.
+func (m *Manager) TeachInfo(id string) (teach.Info, error) {
+	mi, ok := m.get(id)
+	if !ok {
+		return teach.Info{}, fmt.Errorf("instance %q not found", id)
+	}
+	if mi.teacher == nil {
+		return teach.Info{Status: teach.Status{Enabled: false}}, nil
+	}
+	return mi.teacher.Info(), nil
+}
+
+// SetTeaching enables or disables demonstration learning for one instance.
+func (m *Manager) SetTeaching(id string, enabled bool) error {
+	mi, ok := m.get(id)
+	if !ok {
+		return fmt.Errorf("instance %q not found", id)
+	}
+	if mi.teacher == nil {
+		return fmt.Errorf("instance %q has no teaching store", id)
+	}
+	mi.teacher.SetEnabled(enabled)
+	return nil
+}
+
+// ClearTeaching deletes every learned demonstration and thumbnail.
+func (m *Manager) ClearTeaching(id string) error {
+	mi, ok := m.get(id)
+	if !ok {
+		return fmt.Errorf("instance %q not found", id)
+	}
+	if mi.teacher == nil {
+		return fmt.Errorf("instance %q has no teaching store", id)
+	}
+	return mi.teacher.Clear()
+}
+
+// TeachImage resolves a thumbnail path from the instance's teaching store.
+func (m *Manager) TeachImage(id, rel string) (string, error) {
+	mi, ok := m.get(id)
+	if !ok {
+		return "", fmt.Errorf("instance %q not found", id)
+	}
+	if mi.teacher == nil || mi.teach == nil {
+		return "", fmt.Errorf("instance %q has no teaching store", id)
+	}
+	return mi.teach.ImagePath(rel)
 }
 
 // List returns every instance, sorted by id.
@@ -668,12 +716,19 @@ func (m *Manager) Delete(id string) error {
 		return fmt.Errorf("instance %q not found", id)
 	}
 	mi.runner.Stop()
+	if mi.teacher != nil {
+		mi.teacher.End(time.Now())
+	}
 	mi.profile.Close()
 	mi.source.Close()
 	mi.executor.Close()
+	if closer, ok := mi.human.(interface{ Close() error }); ok {
+		_ = closer.Close()
+	}
 	if err := m.mem.DeleteInstance(id); err != nil {
 		m.log.Warn("delete memory", "id", id, "err", err)
 	}
+	_ = os.RemoveAll(filepath.Join(m.cfg.DataDir, "instances", safeDir(id), "teach"))
 	m.emit("instance.deleted", id, nil)
 	return err
 }
@@ -780,9 +835,15 @@ func (m *Manager) Close(ctx context.Context) error {
 	m.mu.RUnlock()
 	for _, mi := range list {
 		mi.runner.Stop()
+		if mi.teacher != nil {
+			mi.teacher.End(time.Now())
+		}
 		mi.profile.Close()
 		mi.source.Close()
 		mi.executor.Close()
+		if closer, ok := mi.human.(interface{ Close() error }); ok {
+			_ = closer.Close()
+		}
 	}
 	if err := m.mem.SaveAll(); err != nil {
 		return err
@@ -843,6 +904,60 @@ func (m *Manager) LocalStatus() (localruntime.Status, bool) {
 		return localruntime.Status{}, false
 	}
 	return rt.Status(), true
+}
+
+// demoReflector lets the analysis route explain a finished demonstration.
+type demoReflector struct{ m *Manager }
+
+func (r *demoReflector) Reflect(ctx context.Context, demo teach.Demo) (string, error) {
+	return r.m.reflectDemo(ctx, demo)
+}
+
+func (m *Manager) reflectDemo(ctx context.Context, demo teach.Demo) (string, error) {
+	if m.router == nil {
+		return "", nil
+	}
+	p := m.router.For(llm.RoleAnalysis)
+	if p == nil || !p.Available(ctx) {
+		return "", nil
+	}
+	start := 0
+	if len(demo.Steps) > 3 {
+		start = len(demo.Steps) - 3
+	}
+	var lines []string
+	var images []string
+	for _, st := range demo.Steps[start:] {
+		lines = append(lines, fmt.Sprintf("- 意图=%s，动作=%s，记录=%s", st.Intent, st.Action.Key(), st.Note))
+		if demo.Dir == "" {
+			continue
+		}
+		for _, rel := range []string{st.BeforeImage, st.AfterImage} {
+			if rel == "" {
+				continue
+			}
+			raw, err := os.ReadFile(filepath.Join(demo.Dir, filepath.FromSlash(rel)))
+			if err != nil || len(raw) == 0 {
+				continue
+			}
+			images = append(images, base64.StdEncoding.EncodeToString(raw))
+		}
+	}
+	prompt := "用户刚刚人工接管游戏并示范了这些操作：\n" + strings.Join(lines, "\n") +
+		"\n\n请用一句中文说明：用户可能想达成什么，以及 AI 以后在相似画面应该注意什么。只根据上面的按键记录和（如果看得到）前后截图，不要编造。"
+	req := llm.Request{
+		System: "你是一个游戏示范分析器。你的输出会直接展示给用户，必须简短、诚实、可检验。",
+		Prompt: prompt, Images: images, Temperature: 0.2, MaxTokens: 180,
+	}
+	resp, err := p.Complete(ctx, req)
+	if err != nil && len(images) > 0 {
+		req.Images = nil
+		resp, err = p.Complete(ctx, req)
+	}
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(resp.Text), nil
 }
 
 // AndroidSession returns the bridge session for an Android instance.

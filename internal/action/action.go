@@ -39,6 +39,25 @@ type HumanDetector interface {
 	State(ctx context.Context) HumanState
 }
 
+// InputEvent is one raw keyboard or pointer event observed while a human is
+// playing. It is deliberately device-level: the teaching layer records what the
+// user actually pressed or clicked, not what a game profile guessed it meant.
+type InputEvent struct {
+	Type   string    `json:"type"` // key, mouse_down
+	Key    string    `json:"key,omitempty"`
+	Button string    `json:"button,omitempty"`
+	X      float64   `json:"x,omitempty"` // normalized 0..1
+	Y      float64   `json:"y,omitempty"`
+	At     time.Time `json:"at"`
+}
+
+// InputObserver is implemented by detectors that can report discrete input
+// events. The engine drains it only while the human has control, and filters
+// the agent's own injected events in the detector.
+type InputObserver interface {
+	DrainInputEvents() []InputEvent
+}
+
 // InjectedInputMarker is implemented by detectors that can distinguish the
 // agent's own synthesized input from a real human keystroke. The engine calls
 // MarkInjected immediately after a successful SendInput action.

@@ -123,7 +123,7 @@ func TestRoutesStatusMarksUnwiredLayers(t *testing.T) {
 		if !ok {
 			t.Fatalf("missing role %s in status: %+v", role, st)
 		}
-		if role == RoleAnalysis || role == RoleMemory {
+		if role == RoleMemory || role == RoleValidation {
 			note, _ := entry["note"].(string)
 			if !strings.Contains(note, "尚未接入") {
 				t.Fatalf("%s note = %q", role, note)

@@ -25,6 +25,7 @@ import (
 	"goplay/internal/perception"
 	"goplay/internal/policy"
 	"goplay/internal/scheduler"
+	"goplay/internal/teach"
 )
 
 // Config tunes one runner. Defaults are production-safe; tests shorten them.
@@ -53,12 +54,15 @@ type Options struct {
 	Sched    *scheduler.Scheduler
 	Policy   *policy.Policy
 	Memory   *memory.InstanceMemory
-	Save     func() error
-	Reset    func() error // optional: reset the game for the next episode
-	Bus      *bus.Bus
-	Metrics  *metrics.Registry
-	Config   Config
-	Logger   *slog.Logger
+	// Teacher records human demonstrations and proposes learned actions. It is
+	// optional so tests and headless instances can run without a store.
+	Teacher *teach.Recorder
+	Save    func() error
+	Reset   func() error // optional: reset the game for the next episode
+	Bus     *bus.Bus
+	Metrics *metrics.Registry
+	Config  Config
+	Logger  *slog.Logger
 }
 
 // EpisodeResult is one finished attempt. It is the raw material for the
@@ -164,6 +168,8 @@ func (r *Runner) Start() {
 		return
 	}
 	r.started = true
+	r.stopReq = false
+	r.done = make(chan struct{})
 	ctx, cancel := context.WithCancel(context.Background())
 	r.cancel = cancel
 	r.status = domain.StatusStarting
@@ -179,7 +185,15 @@ func (r *Runner) Start() {
 		r.frameLoop(ctx)
 	}()
 	go func() {
+		// Deferred in reverse: finish first, then clear started, and only then
+		// close done. A caller that waits for done can restart immediately
+		// without racing either the old status write or the started flag.
 		defer close(r.done)
+		defer func() {
+			r.mu.Lock()
+			r.started = false
+			r.mu.Unlock()
+		}()
 		defer r.finish()
 		r.loop(ctx)
 	}()
@@ -189,13 +203,14 @@ func (r *Runner) Stop() {
 	r.mu.Lock()
 	cancel := r.cancel
 	started := r.started
+	done := r.done
 	r.stopReq = true
 	r.mu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
 	if started {
-		<-r.done
+		<-done
 		r.frameWG.Wait()
 	}
 }
@@ -232,6 +247,9 @@ func (r *Runner) Resume() {
 		r.status = domain.StatusRunning
 	}
 	r.mu.Unlock()
+	if r.opts.Teacher != nil {
+		r.opts.Teacher.End(time.Now())
+	}
 	r.emit("instance.resumed", nil)
 	if wasHuman {
 		r.emit("instance.human_released", map[string]any{"reason": "user-released"})
@@ -271,6 +289,7 @@ type Snapshot struct {
 	// excluded from JSON so periodic snapshots stay small.
 	FrameJPEG []byte                  `json:"-"`
 	Memory    memory.Stats            `json:"memory"`
+	Teaching  teach.Status            `json:"teaching"`
 	Episodes  []EpisodeResult         `json:"episodes,omitempty"`
 	Chat      []scheduler.ChatMessage `json:"chat,omitempty"`
 }
@@ -287,6 +306,7 @@ type DecisionView struct {
 	LatencyMS float64       `json:"latency_ms,omitempty"`
 	Fallback  bool          `json:"fallback,omitempty"`
 	LLMUsed   bool          `json:"llm_used,omitempty"`
+	Demo      bool          `json:"demo,omitempty"`
 }
 
 func (r *Runner) Snapshot() Snapshot {
@@ -298,7 +318,7 @@ func (r *Runner) Snapshot() Snapshot {
 			Action: r.lastDec.Action, Score: r.lastDec.Score, Source: r.lastDec.Source,
 			Reason: r.lastDec.Reason, StateKey: r.lastDec.StateKey, ActionKey: r.lastDec.ActionKey,
 			LatencyMS: r.lastDec.LatencyMS, Fallback: r.lastDec.Fallback, LLMUsed: r.lastDec.LLMUsed,
-			Provider: r.lastDec.Provider, Model: r.lastDec.Model,
+			Provider: r.lastDec.Provider, Model: r.lastDec.Model, Demo: r.lastDec.Demo,
 		},
 		Paused: r.paused, Human: r.human,
 		Waiting: r.waiting, WaitReason: r.waitReason, WaitSince: r.waitSince,
@@ -315,6 +335,9 @@ func (r *Runner) Snapshot() Snapshot {
 	r.frameMu.Unlock()
 	s.Policy = r.opts.Policy.Stats()
 	s.Memory = r.opts.Memory.StatsSnapshot()
+	if r.opts.Teacher != nil {
+		s.Teaching = r.opts.Teacher.Status()
+	}
 	s.Chat = r.opts.Sched.ChatLog()
 	if len(s.Chat) > 40 {
 		s.Chat = s.Chat[len(s.Chat)-40:]
@@ -487,6 +510,7 @@ func (r *Runner) tick(ctx context.Context) {
 	hs := r.opts.Human.State(ctx)
 	if hs.Active {
 		r.markHuman(hs, now)
+		r.observeHuman(ctx, now)
 		r.drain(scheduler.BoundaryHumanTakeover, now)
 		return
 	}
@@ -504,6 +528,9 @@ func (r *Runner) tick(ctx context.Context) {
 			r.status = domain.StatusRunning
 		}
 		r.mu.Unlock()
+		if r.opts.Teacher != nil {
+			r.opts.Teacher.End(now)
+		}
 		r.emit("instance.human_released", nil)
 	}
 
@@ -515,6 +542,11 @@ func (r *Runner) tick(ctx context.Context) {
 		return
 	}
 	if err := r.step(ctx); err != nil {
+		// A deliberate stop cancels the runner context. That is not a game or
+		// action failure, so it must not turn the instance card into an error.
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return
+		}
 		r.fail(err)
 	}
 }
@@ -551,6 +583,25 @@ func (r *Runner) markHuman(hs action.HumanState, now time.Time) {
 		}
 	}
 	r.emit("instance.human_takeover", map[string]any{"reason": hs.Reason})
+}
+
+// observeHuman feeds a human-control tick to the teaching recorder. It drains
+// raw input events even when no recorder is attached so the detector buffer
+// cannot grow during a long takeover.
+func (r *Runner) observeHuman(ctx context.Context, now time.Time) {
+	var events []action.InputEvent
+	if obs, ok := r.opts.Human.(action.InputObserver); ok {
+		events = obs.DrainInputEvents()
+	}
+	if r.opts.Teacher == nil {
+		return
+	}
+	frame, err := r.opts.Source.Grab(ctx)
+	if err != nil {
+		return
+	}
+	r.offerFrame(frame)
+	r.opts.Teacher.Observe(frame, events, true, now)
 }
 
 func (r *Runner) drain(kind scheduler.BoundaryKind, now time.Time) scheduler.BoundaryResult {
@@ -662,6 +713,17 @@ func (r *Runner) step(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("profile actions: %w", err)
 	}
+	// A demonstrated action is injected into the current legal set, not applied
+	// blindly: policy still validates it and the executor still checks focus.
+	var demoActs []domain.Action
+	demoReason := ""
+	if r.opts.Teacher != nil {
+		if h, ok := r.opts.Teacher.Hint(frame); ok {
+			demoActs = append(demoActs, h.Action)
+			demoReason = fmt.Sprintf("模仿你的示范（画面相似度 %.0f%%）：%s", h.Similarity*100, h.Note)
+			acts = append(append([]domain.Action(nil), demoActs...), acts...)
+		}
+	}
 	r.mu.Lock()
 	r.lastActions = append([]domain.Action(nil), acts...)
 	r.mu.Unlock()
@@ -698,8 +760,12 @@ func (r *Runner) step(ctx context.Context) error {
 	ctl := res.Control
 	dec := r.opts.Policy.Decide(ctx, policy.Input{
 		State: pst, Actions: acts, Control: ctl, Rules: r.opts.Profile.Rules, Hints: ctl.Hints,
+		Demo: demoActs, DemoReason: demoReason,
 	})
 	r.opts.Metrics.Observe(metrics.DecisionLatencyMS, dec.LatencyMS)
+	if dec.Source == "demo" && r.opts.Teacher != nil {
+		r.opts.Teacher.MarkUsed()
+	}
 	if dec.Fallback {
 		r.opts.Metrics.Inc(metrics.PolicyFallbackTotal, 1)
 	}
@@ -954,6 +1020,9 @@ func (r *Runner) save() error {
 }
 
 func (r *Runner) finish() {
+	if r.opts.Teacher != nil {
+		r.opts.Teacher.End(time.Now())
+	}
 	r.mu.Lock()
 	if r.status != domain.StatusError {
 		r.status = domain.StatusStopped
