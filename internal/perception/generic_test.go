@@ -60,3 +60,28 @@ func hasTag(tags []string, want string) bool {
 	}
 	return false
 }
+
+func TestGenericAnalyzerUsesOCRText(t *testing.T) {
+	a := NewGenericAnalyzer()
+	f := solidFrame(64, 48, 10, 10, 10)
+	f.Meta = map[string]string{
+		"ocr": `[{"text":"继续游戏","x":0.72,"y":0.35,"w":0.2,"h":0.05},{"text":"开始游戏","x":0.5,"y":0.6,"w":0.2,"h":0.05}]`,
+	}
+	st, world, err := a.Analyze(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Values["text_count"] != 2 {
+		t.Fatalf("expected 2 OCR labels, got %v", st.Values["text_count"])
+	}
+	if st.Text["ui_text"] != "继续游戏 · 开始游戏" {
+		t.Fatalf("ui_text not exposed: %q", st.Text["ui_text"])
+	}
+	if !hasTag(st.Tags, "ui_text") {
+		t.Fatalf("expected ui_text tag, got %v", st.Tags)
+	}
+	regions, ok := world["ui_regions"].([]any)
+	if !ok || len(regions) != 2 {
+		t.Fatalf("ui_regions missing: %#v", world["ui_regions"])
+	}
+}

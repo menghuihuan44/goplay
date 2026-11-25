@@ -33,17 +33,28 @@ const (
 	maxJPEGBytes   = 8 << 20
 )
 
+// TextRegion is one OCR text box from the Android client. Coordinates are
+// normalized to 0..1 of the captured frame; X/Y are the box centre.
+type TextRegion struct {
+	Text string  `json:"text"`
+	X    float64 `json:"x"`
+	Y    float64 `json:"y"`
+	W    float64 `json:"w"`
+	H    float64 `json:"h"`
+}
+
 // FrameHeader is the JSON header carried inside a GPF1 frame.
 type FrameHeader struct {
-	CapturedAtMS int64  `json:"capturedAtMs"`
-	Width        int    `json:"width"`
-	Height       int    `json:"height"`
-	Quality      int    `json:"quality"`
-	Rotation     int    `json:"rotation"`
-	Sequence     int64  `json:"sequence"`
-	Source       string `json:"source"`
-	InstanceID   string `json:"instanceId"`
-	Bytes        int    `json:"bytes"`
+	CapturedAtMS int64        `json:"capturedAtMs"`
+	Width        int          `json:"width"`
+	Height       int          `json:"height"`
+	Quality      int          `json:"quality"`
+	Rotation     int          `json:"rotation"`
+	Sequence     int64        `json:"sequence"`
+	Source       string       `json:"source"`
+	InstanceID   string       `json:"instanceId"`
+	Bytes        int          `json:"bytes"`
+	TextRegions  []TextRegion `json:"textRegions,omitempty"`
 }
 
 // Transport is the write side of one client connection. SendJSON must be safe
@@ -258,6 +269,11 @@ func (s *Session) PushFrame(h FrameHeader, jpg []byte) error {
 		Width: b.Dx(), Height: b.Dy(), RGBA: rgba.Pix, At: at,
 		Source: "android-mediaprojection",
 		Meta:   map[string]string{"rotation": fmt.Sprint(h.Rotation), "quality": fmt.Sprint(h.Quality), "sequence": fmt.Sprint(h.Sequence)},
+	}
+	if len(h.TextRegions) > 0 {
+		if raw, err := json.Marshal(h.TextRegions); err == nil {
+			f.Meta["ocr"] = string(raw)
+		}
 	}
 	s.mu.Lock()
 	s.latest = &f

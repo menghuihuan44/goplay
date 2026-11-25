@@ -34,6 +34,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
@@ -344,6 +346,18 @@ class MainActivity : AppCompatActivity() {
         loading.addView(loadingBar)
         loading.addView(retryButton)
         root.addView(loading)
+        // Android 15/16 draw apps edge-to-edge by default. Without insets the
+        // console header slid under the status bar (the "+ new game" pill
+        // overlapped the clock). Pad the whole shell, not just the WebView, so
+        // the loading screen is safe too.
+        ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
+            val bars = insets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout(),
+            )
+            view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+            insets
+        }
+        ViewCompat.requestApplyInsets(root)
         setContentView(root)
     }
 

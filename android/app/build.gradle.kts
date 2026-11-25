@@ -66,8 +66,8 @@ android {
         applicationId = "com.goplay.mobile"
         minSdk = 26
         targetSdk = 35
-        versionCode = 12
-        versionName = "0.6.1"
+        versionCode = 13
+        versionName = "0.6.2"
         ndk {
             // The Go core and llama-server ship as prebuilt arm64 libraries.
             // Go's android/amd64 target needs cgo + the NDK, so x86_64
@@ -141,6 +141,9 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    // Bundled on-device OCR (Chinese + Latin). No Play Services, no network:
+    // the model files ship inside the APK so reading menus also works offline.
+    implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
 
     testImplementation("junit:junit:4.13.2")
 }

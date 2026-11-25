@@ -117,6 +117,42 @@ func TestGenericTouchInterpretsFlatSceneChange(t *testing.T) {
 	}
 }
 
+func TestGenericTouchTapsOCRLabels(t *testing.T) {
+	p, err := LoadBuiltin("generic_touch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	world := map[string]any{
+		"ui_regions": []any{
+			map[string]any{"text": "开始游戏", "x": 0.5, "y": 0.62, "w": 0.2, "h": 0.06},
+			map[string]any{"text": "继续游戏", "x": 0.5, "y": 0.4, "w": 0.2, "h": 0.06},
+		},
+	}
+	st, err := p.Observe(world, domain.State{Values: map[string]float64{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Values["ui_count"] != 2 {
+		t.Fatalf("OCR count not folded into state: %+v", st.Values)
+	}
+	acts, err := p.Actions(world, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, a := range acts {
+		if a.Kind == "tap_text" && a.Input != nil && a.Input.Type == "tap" {
+			if math.Abs(a.Input.Y-0.62) < 0.001 || math.Abs(a.Input.Y-0.4) < 0.001 {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected a tap_text action on an OCR box, got %+v", acts)
+	}
+}
+
 func TestNoActionsWhenTerminal(t *testing.T) {
 	p, err := LoadBuiltin("mock_dungeon")
 	if err != nil {

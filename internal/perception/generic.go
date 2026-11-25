@@ -1,9 +1,13 @@
 package perception
 
 import (
+	"encoding/json"
 	"fmt"
+
+	"goplay/internal/bridge"
 	"hash/fnv"
 	"math"
+	"strings"
 	"sync"
 
 	"goplay/internal/domain"
@@ -169,10 +173,32 @@ func (a *GenericAnalyzer) Analyze(f domain.Frame) (domain.State, map[string]any,
 	} else if delta < 0.008 {
 		summary += " · 静态"
 	}
+	// OCR boxes come from the phone (on-device ML Kit). They are the difference
+	// between random 3x3 tapping and actually pressing "开始游戏"/"继续游戏".
+	regions := parseOCR(f.Meta["ocr"])
+	uiText := make([]string, 0, len(regions))
+	uiRegions := make([]any, 0, len(regions))
+	for _, r := range regions {
+		uiText = append(uiText, r.Text)
+		uiRegions = append(uiRegions, map[string]any{
+			"text": r.Text, "x": r.X, "y": r.Y, "w": r.W, "h": r.H,
+		})
+	}
+	values["text_count"] = float64(len(regions))
+	text := map[string]string{"visual": fmt.Sprintf("画面变化 %.0f%% · 边缘 %.0f%%", change*100, edgeRatio*100)}
+	if len(uiText) > 0 {
+		joined := strings.Join(uiText, " · ")
+		if len([]rune(joined)) > 400 {
+			joined = string([]rune(joined)[:400]) + "…"
+		}
+		text["ui_text"] = joined
+		summary += fmt.Sprintf(" · 文字 %d", len(regions))
+		tags = append(tags, "ui_text")
+	}
 	st := domain.State{
 		Summary:    summary,
 		Values:     values,
-		Text:       map[string]string{"visual": fmt.Sprintf("画面变化 %.0f%% · 边缘 %.0f%%", change*100, edgeRatio*100)},
+		Text:       text,
 		Tags:       tags,
 		Confidence: 0.55,
 		Hash:       sig,
@@ -182,6 +208,7 @@ func (a *GenericAnalyzer) Analyze(f domain.Frame) (domain.State, map[string]any,
 		"warm_ratio": values["warm_ratio"], "dark_ratio": values["dark_ratio"],
 		"edge_ratio": edgeRatio, "frame_delta": delta, "scene_change": change,
 		"scene_changed": sceneChanged, "scene_hash": sig,
+		"ui_text": strings.Join(uiText, " · "), "ui_regions": uiRegions,
 	}
 	return st, world, nil
 }
@@ -209,4 +236,25 @@ func visualSignature(rr, gg, bb []float64) string {
 		_, _ = h.Write([]byte{q(rr[i]), q(gg[i]), q(bb[i])})
 	}
 	return fmt.Sprintf("%016x", h.Sum64())
+}
+
+// parseOCR decodes the Android client's normalized OCR boxes. A malformed
+// payload is ignored: perception must never fail because text recognition did.
+func parseOCR(raw string) []bridge.TextRegion {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var out []bridge.TextRegion
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return nil
+	}
+	clean := out[:0]
+	for _, r := range out {
+		r.Text = strings.TrimSpace(r.Text)
+		if r.Text == "" || r.X < 0 || r.X > 1 || r.Y < 0 || r.Y > 1 {
+			continue
+		}
+		clean = append(clean, r)
+	}
+	return clean
 }

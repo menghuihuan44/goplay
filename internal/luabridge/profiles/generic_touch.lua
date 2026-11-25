@@ -24,9 +24,30 @@ function profile.observe(s)
   if type(s.text) == "table" then
     for k, v in pairs(s.text) do text[k] = v end
   end
+  local vals = {}
+  if type(s.values) == "table" then
+    for k, v in pairs(s.values) do vals[k] = v end
+  end
+  -- OCR boxes arrive as world.ui_regions (normalized centre coordinates).
+  -- Fold them into values/text so actions() can emit a real tap on each label.
+  local regions = type(s.ui_regions) == "table" and s.ui_regions or {}
+  local n = 0
+  for i = 1, math.min(#regions, 8) do
+    local r = regions[i]
+    if type(r) == "table" and type(r.text) == "string" and r.text ~= "" then
+      n = n + 1
+      vals["ui_" .. n .. "_x"] = num(r.x, 0)
+      vals["ui_" .. n .. "_y"] = num(r.y, 0)
+      text["ui_" .. n .. "_text"] = r.text
+    end
+  end
+  vals.ui_count = n
+  if n > 0 then
+    tags[#tags+1] = "ui_text"
+  end
   return {
     summary = s.summary or "unknown touch screen",
-    values = s.values or {},
+    values = vals,
     text = text,
     tags = tags,
     confidence = num(s.confidence, 0.3),
@@ -38,13 +59,29 @@ function profile.actions(s)
     { kind = "wait", target = "screen", tags = {"idle"}, input = { type = "wait", duration_ms = 300 } },
     { kind = "back", target = "screen", tags = {"ui", "back"}, input = { type = "back" } },
   }
+  -- Labels read from the screen: tap the actual text box, not a blind cell.
+  local uiCount = num(s.values and s.values.ui_count, 0)
+  for i = 1, uiCount do
+    local x = num(s.values["ui_" .. i .. "_x"], -1)
+    local y = num(s.values["ui_" .. i .. "_y"], -1)
+    local label = (s.text and s.text["ui_" .. i .. "_text"]) or ""
+    if x > 0.02 and x < 0.98 and y > 0.02 and y < 0.98 then
+      acts[#acts+1] = {
+        kind = "tap_text",
+        target = "text:" .. string.sub(label, 1, 32),
+        tags = {"ui", "text", "ocr", label},
+        risk = 0.1,
+        input = { type = "tap", x = x, y = y },
+      }
+    end
+  end
   local xs = {0.25, 0.5, 0.75}
   local ys = {0.30, 0.55, 0.80}
   for iy, y in ipairs(ys) do
     for ix, x in ipairs(xs) do
       acts[#acts+1] = {
         kind = "tap", target = string.format("screen_%d_%d", ix, iy),
-        tags = {"ui", "select", string.format("cell_%d_%d", ix, iy)},
+        tags = {"ui", "select", "grid", string.format("cell_%d_%d", ix, iy)},
         risk = 0.15,
         input = { type = "tap", x = x, y = y },
       }

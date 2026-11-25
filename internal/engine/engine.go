@@ -819,6 +819,7 @@ func (r *Runner) step(ctx context.Context) error {
 	r.traceEvent("see", st.Summary, map[string]any{
 		"tags": st.Tags, "scene_change": st.Value("scene_change"),
 		"frame_delta": st.Value("frame_delta"), "edge_ratio": st.Value("edge_ratio"),
+		"text_count": st.Value("text_count"), "ui_text": truncateRunes(st.Text["ui_text"], 120),
 		"hash": shortHash(st.Hash),
 	})
 
@@ -1376,4 +1377,16 @@ func progressOf(st domain.State, world map[string]any) float64 {
 		p = 0.999 // only an explicit win reaches 1.0
 	}
 	return p
+}
+
+// truncateRunes keeps trace payloads small while preserving valid UTF-8.
+func truncateRunes(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
 }

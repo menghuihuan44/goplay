@@ -502,7 +502,7 @@ func (p *Policy) score(key string, st domain.State, legal []domain.Action, ctl d
 			mean, visits = ar.mean, ar.visits
 		}
 		bonus := c * math.Sqrt(math.Log(float64(total)+1)/float64(visits+1))
-		adj := softAdjust(a, ctl) + survivalAdjust(a, st)
+		adj := softAdjust(a, ctl) + survivalAdjust(a, st) + textTapAdjust(a, st)
 		// If the previous action produced a real scene transition, try the same
 		// input again before moving on. This is game-agnostic: on a menu it
 		// confirms the next step, in gameplay it keeps firing. It is only a
@@ -533,6 +533,19 @@ func (p *Policy) score(key string, st domain.State, legal []domain.Action, ctl d
 // survivalAdjust is a small, game-agnostic safety prior: when perceived HP is
 // low, healing outranks damage. It is a baseline, not a replacement for
 // learned values, and it never removes a legal action.
+// textTapAdjust is game-agnostic: when OCR found readable labels, tapping one
+// of them is far more meaningful than a blind grid cell. It is only a bonus;
+// the action still has to be legal and the executor still checks focus.
+func textTapAdjust(a domain.Action, st domain.State) float64 {
+	if st.Value("text_count") <= 0 {
+		return 0
+	}
+	if a.Kind == "tap_text" || a.HasTag("ocr") {
+		return 1.2
+	}
+	return 0
+}
+
 func survivalAdjust(a domain.Action, st domain.State) float64 {
 	maxHP := st.Value("max_hp")
 	if maxHP <= 0 {

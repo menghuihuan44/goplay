@@ -355,7 +355,13 @@ function tracePanel(v){
   var label={see:'看画面',think:'选动作',directive:'听指令',prior:'游戏先验',act:'按下去',result:'看结果',wait:'等待',resume:'恢复',recover:'自动修复'};
   var rows=tr.map(function(e){
     var d=e.data||{}, extra='';
-    if(e.phase==='see'){ if(d.frame_delta!==undefined) extra='变化 '+(num(d.frame_delta,0)*100).toFixed(1)+'%'; }
+    if(e.phase==='see'){
+      var bits=[];
+      if(d.frame_delta!==undefined) bits.push('变化 '+(num(d.frame_delta,0)*100).toFixed(1)+'%');
+      if(num(d.text_count,0)>0) bits.push('读到 '+num(d.text_count,0)+' 段文字');
+      if(d.ui_text) bits.push('「'+String(d.ui_text).slice(0,80)+'」');
+      extra=bits.join(' · ');
+    }
     else if(e.phase==='think'){ extra=(d.source?'来源 '+d.source:'')+(d.reason?' · '+d.reason:''); }
     else if(e.phase==='act'){ var inp=d.input||{}; extra=(inp.type||'')+(inp.key?' '+inp.key:'')+(inp.x!==undefined?' @'+(num(inp.x,0)*100).toFixed(0)+'%,'+(num(inp.y,0)*100).toFixed(0)+'%':''); }
     else if(e.phase==='result'){ extra='奖励 '+(num(d.reward,0)).toFixed(2)+(d.effective===false?' · 无有效变化':' · 有效')+(d.terminal?' · 终局':''); }

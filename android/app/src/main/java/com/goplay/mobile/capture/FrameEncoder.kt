@@ -12,7 +12,9 @@ import java.io.ByteArrayOutputStream
  * is stripped before compression.
  */
 object FrameEncoder {
-    fun encode(image: Image, quality: Int): ByteArray? {
+    /** Copy the RGBA ImageReader plane into a tight ARGB bitmap. The caller
+     *  owns the returned bitmap and must recycle it. */
+    fun toBitmap(image: Image): Bitmap? {
         if (image.width <= 0 || image.height <= 0) return null
         val plane = image.planes.firstOrNull() ?: return null
         val pixelStride = plane.pixelStride
@@ -26,24 +28,32 @@ object FrameEncoder {
         val buffer = plane.buffer
         buffer.rewind()
         var padded: Bitmap? = null
-        var cropped: Bitmap? = null
         try {
             padded = Bitmap.createBitmap(paddedWidth, image.height, Bitmap.Config.ARGB_8888)
             padded.copyPixelsFromBuffer(buffer)
-            cropped = if (paddedWidth == image.width) {
-                padded
-            } else {
-                Bitmap.createBitmap(padded, 0, 0, image.width, image.height)
+            if (paddedWidth == image.width) {
+                val out = padded
+                padded = null
+                return out
             }
-            val out = ByteArrayOutputStream(image.width * image.height / 4)
-            val ok = cropped.compress(Bitmap.CompressFormat.JPEG, quality.coerceIn(1, 100), out)
-            if (!ok) return null
-            return out.toByteArray()
+            return Bitmap.createBitmap(padded, 0, 0, image.width, image.height)
         } catch (e: Throwable) {
             return null
         } finally {
-            if (cropped != null && cropped !== padded) cropped.recycle()
             padded?.recycle()
+        }
+    }
+
+    fun encode(image: Image, quality: Int): ByteArray? {
+        val bitmap = toBitmap(image) ?: return null
+        return try {
+            val out = ByteArrayOutputStream(bitmap.width * bitmap.height / 4)
+            val ok = bitmap.compress(Bitmap.CompressFormat.JPEG, quality.coerceIn(1, 100), out)
+            if (!ok) null else out.toByteArray()
+        } catch (e: Throwable) {
+            null
+        } finally {
+            bitmap.recycle()
         }
     }
 }

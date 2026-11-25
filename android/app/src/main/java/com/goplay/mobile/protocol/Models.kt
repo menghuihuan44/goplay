@@ -121,6 +121,17 @@ data class HumanSignal(
     val reason: String = "accessibility",
 )
 
+/** One OCR text box, normalized to 0..1 of the captured frame. x/y are the
+ *  box centre so the core can tap it directly without knowing pixels. */
+@Serializable
+data class TextRegion(
+    val text: String,
+    val x: Double,
+    val y: Double,
+    val w: Double,
+    val h: Double,
+)
+
 @Serializable
 data class FrameHeader(
     val capturedAtMs: Long,
@@ -132,6 +143,9 @@ data class FrameHeader(
     val source: String = "media_projection",
     val instanceId: String? = null,
     val bytes: Int? = null,
+    /** On-device OCR of this frame. The core taps these boxes instead of
+     *  guessing a 3x3 grid, which is what made touch play look random. */
+    val textRegions: List<TextRegion> = emptyList(),
 )
 
 /** Request body for POST /api/message. */

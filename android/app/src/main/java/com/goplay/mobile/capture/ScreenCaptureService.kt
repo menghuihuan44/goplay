@@ -31,8 +31,10 @@ import com.goplay.mobile.data.SessionState
 import com.goplay.mobile.net.CoreClient
 import com.goplay.mobile.notifications.Notifications
 import com.goplay.mobile.overlay.AiRuntime
+import com.goplay.mobile.ocr.OcrRecognizer
 import com.goplay.mobile.overlay.OverlayController
 import com.goplay.mobile.protocol.FrameHeader
+import com.goplay.mobile.protocol.TextRegion
 import java.util.Locale
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -91,6 +93,12 @@ class ScreenCaptureService : Service() {
 
     private var lastSentAt = 0L
     private var lastNotifyAt = 0L
+    private var lastOcrAt = 0L
+
+    /** Latest on-device OCR result; attached to the next outgoing frame so the
+     *  core can tap real labels instead of a blind grid. */
+    @Volatile private var textRegions: List<TextRegion> = emptyList()
+    private val ocr by lazy { OcrRecognizer { regions -> textRegions = regions } }
     private var lastConnectAttempt = 0L
     private var fpsWindowStart = 0L
     private var fpsFrames = 0
@@ -210,6 +218,10 @@ class ScreenCaptureService : Service() {
 
     override fun onDestroy() {
         stopCapture()
+        try {
+            ocr.close()
+        } catch (_: Exception) {
+        }
         serviceScope.cancel()
         super.onDestroy()
     }
@@ -493,6 +505,17 @@ class ScreenCaptureService : Service() {
             }
             lastSentAt = now
             graph.metrics.onFrameCaptured(jpeg.size)
+            if (now - lastOcrAt >= 1200L) {
+                lastOcrAt = now
+                val bitmap = FrameEncoder.toBitmap(image)
+                if (bitmap != null) {
+                    try {
+                        ocr.recognize(bitmap)
+                    } catch (_: Exception) {
+                        bitmap.recycle()
+                    }
+                }
+            }
             val header = FrameHeader(
                 capturedAtMs = System.currentTimeMillis(),
                 width = captureWidth,
@@ -501,6 +524,7 @@ class ScreenCaptureService : Service() {
                 rotation = rotationDegrees(rotation),
                 sequence = 0L,
                 source = "media_projection",
+                textRegions = textRegions,
             )
             graph.client.sendFrame(jpeg, header)
             countFps(now)

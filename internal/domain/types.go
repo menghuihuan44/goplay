@@ -355,6 +355,7 @@ var displayLabels = map[string]string{
 	"score": "分数", "level": "等级", "timer": "时间", "gold": "金币",
 	"xp": "经验", "ammo": "弹药", "room": "房间", "rooms": "房间数",
 	"wave": "波次", "mana": "法力",
+	"ui_text": "画面文字", "text_count": "可点文字",
 }
 
 // BuildDisplay projects one perception state into UI fields. Fields are derived
@@ -382,6 +383,9 @@ func BuildDisplay(st State, stats InstanceStats, lastAction, lastReason string) 
 		if len(dv.Fields) >= maxDisplayFields {
 			break
 		}
+		if hiddenDisplayKey(k) {
+			continue
+		}
 		if field, ok := displayField(st, k); ok {
 			dv.Fields = append(dv.Fields, field)
 		}
@@ -389,6 +393,18 @@ func BuildDisplay(st State, stats InstanceStats, lastAction, lastReason string) 
 	dv.Outcome = displayOutcome(st, stats)
 	dv.Progress, dv.ProgressLabel = displayProgress(st)
 	return dv
+}
+
+// hiddenDisplayKey keeps profile plumbing (OCR tap coordinates) out of the HUD;
+// the readable ui_text row already tells the user what the AI can see.
+func hiddenDisplayKey(key string) bool {
+	if key == "ui_count" || key == "ui_text" {
+		return false
+	}
+	if strings.HasPrefix(key, "ui_") && (strings.HasSuffix(key, "_x") || strings.HasSuffix(key, "_y")) {
+		return true
+	}
+	return false
 }
 
 func displayField(st State, key string) (DisplayField, bool) {
