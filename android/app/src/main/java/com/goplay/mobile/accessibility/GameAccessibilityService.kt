@@ -12,6 +12,7 @@ import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
 import android.util.DisplayMetrics
+import android.view.KeyEvent
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -109,12 +110,60 @@ class GameAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         instance = this
         config = TakeoverSensitivity.config(graph?.settingsStore?.load()?.takeoverSensitivity)
+        // Ask the system to deliver hardware keys (volume/back) even when the
+        // game's SurfaceView consumes touches. We observe keys and never consume
+        // them, so the game still receives its own input.
+        try {
+            val info = serviceInfo ?: AccessibilityServiceInfo()
+            info.flags = info.flags or AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS
+            serviceInfo = info
+        } catch (e: Exception) {
+            logs()?.log("请求按键事件失败：" + (e.message ?: e.javaClass.simpleName))
+        }
         refreshImePackages()
         logs()?.log(
             "无障碍服务已连接（手势能力=" +
                 (((serviceInfo?.capabilities ?: 0) and AccessibilityServiceInfo.CAPABILITY_CAN_PERFORM_GESTURES) != 0) +
                 "，接管灵敏度=" + config.level + "）"
         )
+    }
+
+    /**
+     * Hardware keys are the one input signal a SurfaceView game cannot swallow
+     * for us. Volume keys are observed (not consumed) as an explicit "I want to
+     * take over" gesture; the island's button does the same thing. Touch
+     * exploration is deliberately NOT enabled because it would intercept the
+     * game's own taps.
+     */
+    override fun onKeyEvent(event: KeyEvent?): Boolean {
+        if (event == null) return false
+        if (event.action == KeyEvent.ACTION_DOWN &&
+            (event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN ||
+                event.keyCode == KeyEvent.KEYCODE_VOLUME_UP ||
+                event.keyCode == KeyEvent.KEYCODE_BACK)
+        ) {
+            if (SystemClock.elapsedRealtime() >= suppressHumanUntil && !humanActive) {
+                activateHuman(SystemClock.elapsedRealtime())
+                graph?.logs?.log("检测到硬件键，用户接管输入（不拦截按键本身）")
+            }
+        }
+        return false
+    }
+
+    /**
+     * Called by the island: true = user takes control now, false = hand back.
+     * This bypasses the event heuristics entirely, so it works on any game.
+     */
+    fun setHumanControl(active: Boolean) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post { setHumanControl(active) }
+            return
+        }
+        if (active) {
+            if (!humanActive) activateHuman(SystemClock.elapsedRealtime())
+        } else {
+            releaseHuman()
+        }
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -336,7 +385,9 @@ class GameAccessibilityService : AccessibilityService() {
                 lastYieldLogAt = now
                 logs()?.log("AI 动作让出输入（" + yieldReason + "）：" + BUSY_MESSAGE)
             }
-            callback(ExecutionResult(false, ERROR_USER_BUSY, BUSY_MESSAGE, 0L))
+            // "Held", not "failed": the AI is alive and observing, it simply
+            // must not inject a gesture while the user is on the island/keyboard.
+            callback(ExecutionResult(true, null, BUSY_MESSAGE + "（本次未注入）", 0L))
             return
         }
         beginAiAction()

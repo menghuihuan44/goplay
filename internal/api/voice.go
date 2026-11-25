@@ -17,9 +17,9 @@ func (s *Server) voiceView() map[string]any {
 	if base == "" {
 		base = strings.TrimSpace(s.cfg.LLM.BaseURL)
 	}
-	note := "系统语音由手机/浏览器朗读；API/本机模式走 OpenAI 兼容的 /audio/speech 接口。"
+	note := "系统语音由手机/浏览器朗读；API 模式走 OpenAI 兼容的 /audio/speech 接口。"
 	if v.TTSMode == "local" {
-		note = "本机 TTS 需要一个本地 OpenAI 兼容语音服务；GoPlay 不把语音模型打进安装包，未配置时会回退系统语音。"
+		note = "手机本机音色使用设备已安装的系统 TTS 引擎；GoPlay 不把神经语音模型打进安装包，可在系统语音设置里安装中文离线音色。"
 	}
 	return map[string]any{
 		"enabled": v.Enabled, "tts_mode": v.TTSMode, "asr_mode": v.ASRMode,
@@ -130,9 +130,9 @@ func (s *Server) speakVoice(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "voice is disabled")
 		return
 	}
-	if v.TTSMode == "" || v.TTSMode == "system" {
+	if v.TTSMode == "" || v.TTSMode == "system" || v.TTSMode == "local" {
 		writeJSON(w, http.StatusConflict, map[string]any{
-			"error": "system TTS is played by the phone/browser", "code": "system_tts",
+			"error": "system/local TTS is played by the device, not the core", "code": "system_tts",
 		})
 		return
 	}

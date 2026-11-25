@@ -26,6 +26,9 @@ class OverlayController(
         fun onExpandedChanged(expanded: Boolean)
         fun onOpenApp()
 
+        /** Explicit "我来操作" / "交还 AI" from the expanded island. */
+        fun onHumanToggle(human: Boolean)
+
         /** "恢复截屏": reopen the app so it can request MediaProjection again. */
         fun onRecoverCapture()
     }

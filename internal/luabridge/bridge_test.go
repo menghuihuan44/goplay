@@ -96,6 +96,27 @@ func TestGenericInterpretsFlatSceneChange(t *testing.T) {
 	}
 }
 
+func TestGenericTouchInterpretsFlatSceneChange(t *testing.T) {
+	p, err := LoadBuiltin("generic_touch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	// The engine passes the flat world map, not {"values": {...}}.
+	before := map[string]any{"frame_delta": 0.0, "scene_change": 0.0}
+	after := map[string]any{"frame_delta": 0.06, "scene_change": 0.5}
+	in, err := p.Interpret(before, after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in.Reward < 0.05 {
+		t.Fatalf("touch scene change must be effective, got %+v", in)
+	}
+	if in.Note == "no meaningful touch change" {
+		t.Fatalf("touch change was not reported: %+v", in)
+	}
+}
+
 func TestNoActionsWhenTerminal(t *testing.T) {
 	p, err := LoadBuiltin("mock_dungeon")
 	if err != nil {

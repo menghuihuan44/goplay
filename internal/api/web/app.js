@@ -344,9 +344,15 @@ async function clearTeaching(id){
   try{ await api('/api/instances/'+encodeURIComponent(id)+'/teach',{method:'DELETE'}); toast('示范已清空'); await openTeaching(id); }
   catch(e){toast(e.message,true)}
 }
+function priorPanel(v){
+  var p=(v.game_prior||'').trim();
+  if(!p) return '';
+  return '<div class="prior-box"><div class="prior-head">AI 对这个游戏的先验假设 <span>软提示，不是按键脚本</span></div><p>'+esc(p)+'</p></div>';
+}
+
 function tracePanel(v){
   var tr=(v.trace||[]).slice(-8); if(!tr.length) return '';
-  var label={see:'看画面',think:'选动作',directive:'听指令',act:'按下去',result:'看结果',wait:'等待',resume:'恢复',recover:'自动修复'};
+  var label={see:'看画面',think:'选动作',directive:'听指令',prior:'游戏先验',act:'按下去',result:'看结果',wait:'等待',resume:'恢复',recover:'自动修复'};
   var rows=tr.map(function(e){
     var d=e.data||{}, extra='';
     if(e.phase==='see'){ if(d.frame_delta!==undefined) extra='变化 '+(num(d.frame_delta,0)*100).toFixed(1)+'%'; }
@@ -396,6 +402,7 @@ function fullCard(v){
     +(fields?'<div class="dyn-grid">'+fields+'</div>':'<p class="form-note">AI 还没有从这个画面里识别出可展示的属性；它会继续观察和学习。</p>')
     +(tags?'<div class="gc-tags">'+tags+'</div>':'')
     +screenPanel(v)
+    +priorPanel(v)
     +'<div class="now-line"><div><span class="muted small">AI 正在做什么</span><b>'+esc(action)+'</b></div><div class="now-reason">'+esc(disp.lastReason||dec.reason||'等待决策边界')+'</div><div class="now-meta">'+esc(dec.provider||'')+(dec.model?' · '+esc(dec.model):'')+(dec.latency_ms?' · '+fmtMS(dec.latency_ms)+' ms':'')+(dec.fallback?' · 回退':'' )+'</div></div>'
     +tracePanel(v)
     +notes
@@ -451,8 +458,9 @@ function renderGames(){
   $('#gameList').innerHTML=list.length?list.map(fullCard).join(''):'<div class="empty">'+(S.instances.length?'这个筛选下没有游戏。':'还没有游戏。创建一个，AI 就会开始看画面并决策。')+'</div>';
   var grid=$('#profileGrid');
   if(grid){
-    grid.innerHTML=(S.profiles||[]).map(function(p){
-      return '<button class="profile-card" data-profile="'+esc(p.id)+'" style="text-align:left"><div class="pid">'+esc(p.id)+'</div><b>'+esc(p.name||p.id)+'</b><p>'+esc(p.description||'通用 Lua 配置')+'</p></button>';
+    grid.innerHTML=(S.profiles||[]).filter(function(p){return p.id==='generic'||p.id==='generic_touch'}).map(function(p){
+      var how=p.id==='generic_touch'?'触摸：点按、滑动、返回':'键鼠：点击、按键、等待';
+      return '<div class="profile-card" style="text-align:left;cursor:default"><div class="pid">自动 · '+esc(p.id)+'</div><b>'+esc(p.name||p.id)+'</b><p>'+esc(p.description||'设备动作适配器')+'</p><p class="route-help">'+esc(how)+'；不包含任何游戏攻略。</p></div>';
     }).join('');
   }
 }
@@ -526,19 +534,63 @@ function renderAI(){
   renderRoutes();
   renderVoice(llm.voice||{});
 }
-function voiceModeLabel(m){return m==='api'?'API TTS':m==='local'?'本地/自建 TTS':'系统语音'}
+function voiceModeLabel(m){return m==='api'?'API TTS':m==='local'?'手机本机音色':'系统语音'}
+var API_TTS_MODELS=[{value:'tts-1',label:'tts-1'},{value:'tts-1-hd',label:'tts-1-hd'},{value:'gpt-4o-mini-tts',label:'gpt-4o-mini-tts'}];
+var API_TTS_VOICES=['alloy','echo','fable','onyx','nova','shimmer'];
+S.ttsVoices=S.ttsVoices||[];S.ttsSelected=S.ttsSelected||'';
+function setSelectOptions(id,items,current){
+  var sel=$(id); if(!sel) return;
+  var html=items.map(function(o){return '<option value="'+esc(o.value)+'">'+esc(o.label)+'</option>'}).join('');
+  sel.innerHTML=html;
+  var found=false;
+  for(var i=0;i<sel.options.length;i++){ if(sel.options[i].value===current){sel.selectedIndex=i;found=true;break} }
+  if(!found){
+    if(current){var o=document.createElement('option');o.value=current;o.textContent=current+'（当前）';sel.appendChild(o);sel.value=current}
+    else sel.selectedIndex=0;
+  }
+}
+function fillVoiceSelects(v){
+  // Replacing <option> nodes can emit a change event in some engines. Those
+  // synthetic events must not mark the form dirty, otherwise the next poll
+  // stops syncing and the user is left with stale API voice options.
+  S.voiceRendering=true;
+  try{
+  var mode=(v&&v.tts_mode)||'system';
+  if(mode==='api'){
+    setSelectOptions('#voiceModel',API_TTS_MODELS,(v&&v.model)||'tts-1');
+    setSelectOptions('#voiceName',API_TTS_VOICES.map(function(x){return{value:x,label:x}}),(v&&v.voice)||'alloy');
+  }else{
+    setSelectOptions('#voiceModel',[{value:'system',label:'系统默认'}],'system');
+    var voices=(S.ttsVoices||[]).map(function(x){return{value:x.name,label:x.label||x.name}});
+    voices.unshift({value:'',label:'自动选择中文音色'});
+    setSelectOptions('#voiceName',voices,S.ttsSelected||'');
+  }
+  var bw=$('#voiceBaseWrap'), base=$('#voiceBase');
+  if(bw) bw.style.display=mode==='api'?'':'none';
+  if(base) base.disabled=mode!=='api';
+  } finally { S.voiceRendering=false; }
+}
+function refreshTTSVoices(){
+  if(!(window.GoPlayHost&&window.GoPlayHost.ttsVoices)) {fillVoiceSelects(S.llm&&S.llm.voice);return}
+  try{
+    var raw=window.GoPlayHost.ttsVoices();
+    var res=typeof raw==='string'?JSON.parse(raw):raw;
+    if(res&&res.voices){S.ttsVoices=res.voices;S.ttsSelected=res.selected||'';}
+  }catch(e){}
+  fillVoiceSelects(S.llm&&S.llm.voice);
+}
 function renderVoice(v){
   v=v||{};
   fillIfIdle('voiceASR',v.asr_mode||'system');
   fillIfIdle('voiceTTS',v.tts_mode||'system');
   fillIfIdle('voiceBase',v.base_url||'');
-  fillIfIdle('voiceModel',v.model||'tts-1');
-  fillIfIdle('voiceName',v.voice||'alloy');
   fillIfIdle('voiceSpeed',v.speed===undefined?'1':v.speed);
+  if(!S.voiceDirty) fillVoiceSelects(v);
   if(document.activeElement!==$('#voiceEnabled')) $('#voiceEnabled').checked=v.enabled!==false;
   var t=$('#voiceTag'); if(t){t.textContent=v.enabled===false?'已静音':voiceModeLabel(v.tts_mode);t.className='tag '+(v.enabled===false?'':'ok')}
-  var n=$('#voiceNote'); if(n) n.textContent=v.note||'Key 只保存在本机；本机模式不打包语音模型，失败会自动回退系统语音。';
+  var n=$('#voiceNote'); if(n) n.textContent=v.note||'手机本机音色使用系统 TTS 引擎；可在系统语音设置里安装中文离线音色。';
   renderVoiceStatus();
+  if(!S.ttsVoices.length) refreshTTSVoices();
 }
 function renderVoiceStatus(){
   var box=$('#voiceStatus'); if(!box) return;
@@ -989,7 +1041,7 @@ async function createGame(ev){
   if(!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(id)){toast('实例 ID 只能包含字母、数字、下划线和短横线',true);return}
   var auto=$('#fAuto').checked, launch=$('#fLaunch').checked;
   var targetWindow=($('#fTargetWindow').value||'').trim();
-  var body={id:id,name:name,profile_id:profile,source_kind:src,target_window:src==='windows'?targetWindow:'',seed:0,max_episodes:Math.max(1,parseInt($('#fEpisodes').value||'1',10)),auto_start:(src==='android'||src==='windows')?false:auto};
+  var body={id:id,name:name,profile_id:profile,source_kind:src,target_window:src==='windows'?targetWindow:'',package_name:src==='android'?pkg:'',seed:0,max_episodes:Math.max(1,parseInt($('#fEpisodes').value||'1',10)),auto_start:(src==='android'||src==='windows')?false:auto};
   var btn=$('#createForm button[type="submit"]'); btn.disabled=true; btn.textContent='创建中…';
   try{
     await api('/api/instances',{method:'POST',body:body});
@@ -1187,7 +1239,10 @@ function speakReply(text){
   var v=(S.llm&&S.llm.voice)||S.voiceCfg||{};
   if(v.enabled===false) return;
   var mode=v.tts_mode||'system';
-  if(mode==='api'||mode==='local'){serverSpeak(text,function(){nativeSpeak(text)});return}
+  // "local" means the device's own offline TTS engine, not a bundled neural
+  // model: Android cannot ship one inside a small APK. Only an explicit API
+  // TTS endpoint is proxied through the core.
+  if(mode==='api'){serverSpeak(text,function(){nativeSpeak(text)});return}
   nativeSpeak(text);
 }
 function updateCallUI(){
@@ -1287,6 +1342,9 @@ window.goplayVoiceFinal=function(text){
   var t=String(text||'').trim(); if(!t) return;
   setHostVoice({last_heard:t});
   var ta=$('[data-input="'+S.voiceTarget+'"]'); if(ta){ta.value=t;ta.placeholder='说话或输入约束…'}
+  // On Android the native VoiceBridge already forwards the final utterance to
+  // the core over REST. Sending again from JS would double-send the command.
+  if(window.GoPlayHost&&window.GoPlayHost.startConversation) return;
   sendChat(S.voiceTarget,t);
 };
 window.goplayVoicePartial=function(text){var t=String(text||'').trim();if(t)setHostVoice({last_heard:t,listening:true});if(!S.voiceTarget)return;var ta=$('[data-input="'+S.voiceTarget+'"]');if(ta)ta.placeholder='听到：'+t};
@@ -1330,11 +1388,16 @@ async function clearAPI(){
 }
 async function saveVoice(ev){
   ev.preventDefault();
-  var body={enabled:$('#voiceEnabled').checked,tts_mode:$('#voiceTTS').value,asr_mode:$('#voiceASR').value,base_url:$('#voiceBase').value.trim(),model:$('#voiceModel').value.trim(),voice:$('#voiceName').value.trim(),speed:Number($('#voiceSpeed').value||'1')};
+  var mode=$('#voiceTTS').value;
+  var body={enabled:$('#voiceEnabled').checked,tts_mode:mode,asr_mode:$('#voiceASR').value,base_url:mode==='api'?$('#voiceBase').value.trim():'',model:mode==='api'?$('#voiceModel').value.trim():'tts-1',voice:mode==='api'?$('#voiceName').value.trim():'system',speed:Number($('#voiceSpeed').value||'1')};
+  if(mode!=='api'&&window.GoPlayHost&&window.GoPlayHost.setTTSVoice){
+    var picked=$('#voiceName').value;
+    try{var vr=JSON.parse(window.GoPlayHost.setTTSVoice(picked));if(vr&&vr.ok===false){toast('切换本机音色失败：'+(vr.error||'未知'),true)}else{S.ttsSelected=picked||''}}catch(e){}
+  }
   var key=$('#voiceKey').value.trim(); if(key) body.api_key=key;
   try{
     var res=await api('/api/voice',{method:'POST',body:body});
-    S.llm=S.llm||{}; S.llm.voice=res; $('#voiceKey').value='';
+    S.llm=S.llm||{}; S.llm.voice=res; $('#voiceKey').value=''; S.voiceDirty=false;
     toast('语音设置已保存'); renderVoice(res);
   }catch(e){toast('保存语音设置失败：'+e.message,true)}
 }
@@ -1541,6 +1604,20 @@ function bind(){
   $('#apiForm').addEventListener('submit',saveAPI);
   $('#voiceForm').addEventListener('submit',saveVoice);
   $('#voiceTest').addEventListener('click',function(){speakReply('这是一句语音测试。现在你可以听到 AI 的声音了。')});
+  $('#voiceTTS').addEventListener('change',function(){
+    if(S.voiceRendering) return;
+    S.voiceDirty=true;
+    var v={}; for(var k in (S.llm&&S.llm.voice||{})) v[k]=S.llm.voice[k];
+    v.tts_mode=this.value; fillVoiceSelects(v);
+  });
+  ['voiceName','voiceModel','voiceBase'].forEach(function(id){
+    var el=$('#'+id); if(el) el.addEventListener('change',function(){if(!S.voiceRendering) S.voiceDirty=true});
+  });
+  $('#voiceRefreshVoices').addEventListener('click',function(){refreshTTSVoices();toast('已刷新本机音色')});
+  $('#voiceOpenTTSSettings').addEventListener('click',function(){
+    if(window.GoPlayHost&&window.GoPlayHost.openTTSSettings){window.GoPlayHost.openTTSSettings();return}
+    toast('当前环境没有系统语音设置入口',true);
+  });
   $('#voiceClear').addEventListener('click',clearVoiceKey);
   $('#voiceClearBase').addEventListener('click',clearVoiceBase);
   $('#prefForm').addEventListener('submit',addPref);

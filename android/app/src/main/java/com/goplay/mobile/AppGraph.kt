@@ -1,6 +1,8 @@
 package com.goplay.mobile
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import com.goplay.mobile.accessibility.ActionRouter
 import com.goplay.mobile.accessibility.GameAccessibilityService
 import com.goplay.mobile.capture.ScreenCaptureService
@@ -13,6 +15,8 @@ import com.goplay.mobile.data.SettingsStore
 import com.goplay.mobile.local.LocalCore
 import com.goplay.mobile.net.CoreClient
 import com.goplay.mobile.net.CoreRest
+import com.goplay.mobile.voice.VoiceBridge
+import com.goplay.mobile.voice.VoiceState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -42,6 +46,7 @@ class AppGraph(context: Context) {
 
     /** IO scope for the WebSocket supervisor and REST calls made by the app. */
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     val client = CoreClient(
         settingsStore = settingsStore,
@@ -58,6 +63,23 @@ class AppGraph(context: Context) {
 
     private val _session = MutableStateFlow(SessionState())
     val session: StateFlow<SessionState> = _session.asStateFlow()
+
+    /** The WebView that should receive JS callbacks; null while no Activity is attached. */
+    @Volatile
+    var webViewEval: ((String) -> Unit)? = null
+
+    /**
+     * Process-wide voice pipeline. It used to live in MainActivity, so leaving
+     * the activity for the game could let the recognizer die with it. Owning it
+     * here means an active conversation survives while the game is foreground.
+     */
+    val voice = VoiceBridge(
+        context = appContext,
+        log = { message -> logs.log("Voice: " + message) },
+        evaluate = { script -> webViewEval?.invoke(script) },
+        onState = { state -> onVoiceState(state) },
+        onUtterance = { text -> sendVoiceUtterance(text) },
+    )
 
     init {
         client.actionHandler = { spec -> actions.handle(spec) }
@@ -122,6 +144,54 @@ class AppGraph(context: Context) {
                 paused = capture.paused,
                 lastError = capture.error ?: it.lastError,
             )
+        }
+    }
+
+    /**
+     * Mirrors real voice facts into the session snapshot and, when a WebView is
+     * attached, into the console. Called from the main thread by VoiceBridge.
+     */
+    private fun onVoiceState(state: VoiceState) {
+        _session.update {
+            it.copy(
+                aiListening = state.listening,
+                aiSpeaking = state.speaking,
+                aiLastHeard = state.lastHeard.ifBlank { it.aiLastHeard },
+                aiLastSpoken = state.lastSpoken.ifBlank { it.aiLastSpoken },
+            )
+        }
+        val json = org.json.JSONObject()
+            .put("listening", state.listening)
+            .put("speaking", state.speaking)
+            .put("last_heard", state.lastHeard)
+            .put("last_spoken", state.lastSpoken)
+            .put("error", state.error ?: org.json.JSONObject.NULL)
+            .toString()
+        webViewEval?.invoke("window.goplayVoiceState && window.goplayVoiceState(" + json + ")")
+    }
+
+    /**
+     * A final utterance must reach the core even when the WebView is paused
+     * behind a fullscreen game. Sending over REST here (not from JS) keeps the
+     * conversation alive; the reply is spoken through the same native TTS.
+     */
+    private fun sendVoiceUtterance(text: String) {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return
+        logs.log("语音指令：" + trimmed)
+        scope.launch {
+            val result = rest.sendMessage(trimmed)
+            logs.log("语音指令发送: " + result.display())
+            val body = result.body ?: return@launch
+            val reply = try {
+                org.json.JSONObject(body).optString("reply", "")
+            } catch (_: Exception) {
+                ""
+            }
+            if (reply.isNotBlank()) {
+                // TextToSpeech belongs to the main thread; this coroutine is IO.
+                mainHandler.post { voice.speak(reply) }
+            }
         }
     }
 

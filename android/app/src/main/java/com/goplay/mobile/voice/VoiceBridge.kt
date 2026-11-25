@@ -46,8 +46,11 @@ class VoiceBridge(
     private val evaluate: (String) -> Unit,
     /** Called with a fresh snapshot on every voice state change. */
     private val onState: ((VoiceState) -> Unit)? = null,
+    /** A final utterance that must reach the core even without a WebView. */
+    private val onUtterance: ((String) -> Unit)? = null,
 ) {
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val prefs = context.getSharedPreferences("goplay_voice", Context.MODE_PRIVATE)
 
     private var recognizer: SpeechRecognizer? = null
     private var listening = false
@@ -173,6 +176,59 @@ class VoiceBridge(
         resumeAfterSpeech()
     }
 
+    /** A system TTS voice the user can pick in the console. */
+    data class TtsVoice(val name: String, val label: String, val locale: String)
+
+    /** Lists installed system voices, Chinese first. */
+    fun voices(): List<TtsVoice> {
+        ensureTts()
+        val engine = tts ?: return emptyList()
+        val all = try {
+            engine.voices.orEmpty()
+        } catch (e: Exception) {
+            log("读取系统音色失败: " + e.message)
+            return emptyList()
+        }
+        return all.asSequence()
+            .filter { it.locale != null }
+            .sortedWith(
+                compareByDescending<android.speech.tts.Voice> { it.locale.language == "zh" }
+                    .thenBy { it.name },
+            )
+            .map { voice ->
+                val locale = voice.locale
+                TtsVoice(
+                    name = voice.name,
+                    label = voice.name + " · " + locale.toLanguageTag(),
+                    locale = locale.toLanguageTag(),
+                )
+            }
+            .toList()
+    }
+
+    /** Persists and applies one system voice. Empty keeps the automatic choice. */
+    fun setVoice(name: String): String? {
+        ensureTts()
+        prefs.edit().putString(KEY_TTS_VOICE, name).apply()
+        val engine = tts ?: return "TTS 不可用"
+        if (!ttsReady) return "TTS 正在初始化，请稍后重试"
+        if (name.isBlank()) {
+            chooseChineseVoice(engine)
+            return null
+        }
+        val voice = try {
+            engine.voices?.firstOrNull { it.name == name }
+        } catch (e: Exception) {
+            null
+        } ?: return "系统没有这个音色：" + name
+        val result = engine.setVoice(voice)
+        if (result != TextToSpeech.SUCCESS) return "切换音色失败（" + result + "）"
+        log("已切换系统音色 " + name)
+        return null
+    }
+
+    fun voiceName(): String = prefs.getString(KEY_TTS_VOICE, "").orEmpty()
+
     /**
      * Restarts listening after an utterance unless the user ended the call.
      * A denied/failed TTS also lands here, so a broken TTS never silences the call.
@@ -268,6 +324,9 @@ class VoiceBridge(
                 current = current.copy(lastHeard = text, error = null)
                 publishState()
                 emit("window.goplayVoiceFinal(" + JSONObject.quote(text) + ")")
+                // Native delivery keeps the conversation alive when the WebView
+                // is paused behind a fullscreen game.
+                onUtterance?.invoke(text)
             }
             // Continuous conversation: speak again after every final utterance.
             restartDelayMs = BASE_RESTART_MS
@@ -360,7 +419,12 @@ class VoiceBridge(
             TextToSpeech(context) { status ->
                 if (status == TextToSpeech.SUCCESS) {
                     val engine = tts
-                    val chosen = chooseChineseVoice(engine)
+                    val saved = prefs.getString(KEY_TTS_VOICE, "").orEmpty()
+                    val chosen = if (saved.isNotBlank() && applyVoiceByName(engine, saved)) {
+                        engine?.voice?.locale ?: Locale.getDefault()
+                    } else {
+                        chooseChineseVoice(engine)
+                    }
                     try {
                         engine?.setAudioAttributes(
                             AudioAttributes.Builder()
@@ -397,6 +461,21 @@ class VoiceBridge(
      * Prefer a real Chinese voice. If the device only has an English engine the
      * Chinese text may be skipped entirely, which looked like the AI was mute.
      */
+    private fun applyVoiceByName(engine: TextToSpeech?, name: String): Boolean {
+        if (engine == null) return false
+        val voice = try {
+            engine.voices?.firstOrNull { it.name == name }
+        } catch (e: Exception) {
+            null
+        } ?: return false
+        return try {
+            engine.setVoice(voice) == TextToSpeech.SUCCESS
+        } catch (e: Exception) {
+            Log.w(TAG, "set TTS voice failed: " + e.message)
+            false
+        }
+    }
+
     private fun chooseChineseVoice(engine: TextToSpeech?): Locale {
         if (engine == null) return Locale.getDefault()
         val candidates = listOf(Locale.SIMPLIFIED_CHINESE, Locale.CHINESE, Locale.getDefault())
@@ -499,6 +578,7 @@ class VoiceBridge(
 
     companion object {
         private const val TAG = "GoPlayVoice"
+        private const val KEY_TTS_VOICE = "tts_voice"
         private const val UTTERANCE_ID = "goplay-reply"
         private const val MAX_SPEAK_CHARS = 600
         private const val BASE_RESTART_MS = 300L

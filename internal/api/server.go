@@ -184,6 +184,7 @@ type createRequest struct {
 	ProfileID     string `json:"profile_id"`
 	SourceKind    string `json:"source_kind"`
 	TargetWindow  string `json:"target_window"`
+	PackageName   string `json:"package_name"`
 	Seed          int64  `json:"seed"`
 	MaxEpisodes   int    `json:"max_episodes"`
 	TickMS        int    `json:"tick_ms"`
@@ -207,8 +208,8 @@ func (s *Server) createInstance(w http.ResponseWriter, r *http.Request) {
 	}
 	spec := app.Spec{
 		ID: req.ID, Name: req.Name, ProfileID: req.ProfileID, SourceKind: req.SourceKind,
-		TargetWindow: req.TargetWindow,
-		Seed:         req.Seed, MaxEpisodes: req.MaxEpisodes, TickMS: req.TickMS,
+		TargetWindow: req.TargetWindow, PackageName: req.PackageName,
+		Seed: req.Seed, MaxEpisodes: req.MaxEpisodes, TickMS: req.TickMS,
 		HumanResumeMS: req.HumanResumeMS, AutoStart: auto,
 	}
 	view, err := s.mgr.Create(spec)

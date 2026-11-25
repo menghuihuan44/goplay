@@ -45,16 +45,21 @@ func DefaultConfig() Config {
 
 // Options wires one game instance. Every field except Bus/Logger is required.
 type Options struct {
-	ID       string
-	Name     string
-	Profile  *luabridge.Profile
-	Source   perception.Source
-	Analyzer perception.Analyzer
-	Executor action.Executor
-	Human    action.HumanDetector
-	Sched    *scheduler.Scheduler
-	Policy   *policy.Policy
-	Memory   *memory.InstanceMemory
+	ID   string
+	Name string
+	// GameName/Package describe what the user launched. They are context for
+	// the prior-knowledge layer and the policy prompt, never hard-coded keys.
+	GameName    string
+	GamePackage string
+	GamePrior   string
+	Profile     *luabridge.Profile
+	Source      perception.Source
+	Analyzer    perception.Analyzer
+	Executor    action.Executor
+	Human       action.HumanDetector
+	Sched       *scheduler.Scheduler
+	Policy      *policy.Policy
+	Memory      *memory.InstanceMemory
 	// Teacher records human demonstrations and proposes learned actions. It is
 	// optional so tests and headless instances can run without a store.
 	Teacher *teach.Recorder
@@ -109,6 +114,8 @@ type Runner struct {
 	epStart      time.Time
 	epActions    int64
 	epReward     float64
+	gamePrior    string
+	gamePriorAt  time.Time
 
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -155,11 +162,13 @@ func New(opts Options) (*Runner, error) {
 	}
 	return &Runner{
 		opts: opts, cfg: cfg, log: log,
-		lim:     action.NewLimiter(cfg.MaxActionsSec),
-		status:  domain.StatusStopped,
-		done:    make(chan struct{}),
-		frameCh: make(chan domain.Frame, 1),
-		epStart: time.Now(),
+		lim:         action.NewLimiter(cfg.MaxActionsSec),
+		status:      domain.StatusStopped,
+		done:        make(chan struct{}),
+		frameCh:     make(chan domain.Frame, 1),
+		epStart:     time.Now(),
+		gamePrior:   opts.GamePrior,
+		gamePriorAt: time.Now(),
 	}, nil
 }
 
@@ -260,6 +269,26 @@ func (r *Runner) Resume() {
 	}
 }
 
+// SetGamePrior installs a soft, model-generated hypothesis about the game
+// (genre, likely goals, what to watch). It is context for the policy prompt,
+// never a list of hard-coded keys. The trace records when it arrived so the UI
+// can distinguish "learned some context" from "starting from zero".
+func (r *Runner) SetGamePrior(text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	r.mu.Lock()
+	if text == r.gamePrior {
+		r.mu.Unlock()
+		return
+	}
+	r.gamePrior = text
+	r.gamePriorAt = time.Now()
+	r.mu.Unlock()
+	r.traceEvent("prior", "获得游戏先验知识（软提示，不写死按键）", map[string]any{"text": text})
+}
+
 // trace appends one visible thought-chain event. It is called from the single
 // decision loop, but also from event handlers, so it takes the lock.
 func (r *Runner) traceEvent(phase, msg string, data map[string]any) {
@@ -313,6 +342,9 @@ type Snapshot struct {
 	// Trace is the agent's visible thought chain: what it saw, what it chose,
 	// what it pressed, and what changed. It is capped and safe to show in the UI.
 	Trace []TraceEvent `json:"trace,omitempty"`
+	// GamePrior is the model-generated, soft hypothesis about this game. It is
+	// shown in the UI so the user can tell "learned genre" from "no idea yet".
+	GamePrior string `json:"game_prior,omitempty"`
 }
 
 type TraceEvent struct {
@@ -351,9 +383,10 @@ func (r *Runner) Snapshot() Snapshot {
 		},
 		Paused: r.paused, Human: r.human,
 		Waiting: r.waiting, WaitReason: r.waitReason, WaitSince: r.waitSince,
-		Control:  r.opts.Sched.Control(),
-		Episodes: append([]EpisodeResult(nil), r.episodesList...),
-		Trace:    append([]TraceEvent(nil), r.trace...),
+		Control:   r.opts.Sched.Control(),
+		Episodes:  append([]EpisodeResult(nil), r.episodesList...),
+		Trace:     append([]TraceEvent(nil), r.trace...),
+		GamePrior: r.gamePrior,
 	}
 	r.mu.Unlock()
 	s.Display = domain.BuildDisplay(s.State, s.Stats, s.Stats.LastAction, s.Decision.Reason)
@@ -849,8 +882,17 @@ func (r *Runner) step(ctx context.Context) error {
 	// while hard constraints still filter them.
 	var directiveActs []domain.Action
 	directiveReason := ""
+	skippedKeyboard := 0
 	for _, d := range r.opts.Sched.TakeDirectives() {
 		act := d.Action
+		// The Android client is touch-only: turning "press Z" into a key event
+		// would reach the bridge and fail with "keyboard action ... is not
+		// supported by the touch client". Drop it here with a trace instead of
+		// surfacing an action error the user cannot fix.
+		if act.Input != nil && act.Input.Type == "key" && r.opts.Profile.ID == "generic_touch" {
+			skippedKeyboard++
+			continue
+		}
 		// If the profile already exposes this exact input, run the profile
 		// action instead of the synthetic directive action. Executors such as
 		// the mock game validate the action kind, and the UI reads better when
@@ -865,6 +907,9 @@ func (r *Runner) step(ctx context.Context) error {
 		if directiveReason == "" {
 			directiveReason = "执行你的指令：" + d.Text
 		}
+	}
+	if skippedKeyboard > 0 {
+		r.traceEvent("directive", "触摸端不支持键盘指令，已忽略；可以改用“点哪里/滑动方向”", map[string]any{"skipped_keyboard": skippedKeyboard})
 	}
 	if len(directiveActs) > 0 {
 		r.traceEvent("directive", directiveReason, map[string]any{"count": len(directiveActs)})
@@ -885,8 +930,12 @@ func (r *Runner) step(ctx context.Context) error {
 	}
 
 	ctl := res.Control
+	r.mu.Lock()
+	gameName, gamePackage, gamePrior := r.opts.GameName, r.opts.GamePackage, r.gamePrior
+	r.mu.Unlock()
 	dec := r.opts.Policy.Decide(ctx, policy.Input{
 		State: pst, Actions: acts, Control: ctl, Rules: r.opts.Profile.Rules, Hints: ctl.Hints,
+		GameName: gameName, GamePackage: gamePackage, GamePrior: gamePrior,
 		Demo: demoActs, DemoReason: demoReason,
 		Directive: directiveActs, DirectiveReason: directiveReason,
 	})

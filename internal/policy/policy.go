@@ -68,6 +68,12 @@ type Input struct {
 	Rules    domain.InstanceRules
 	Hints    []string
 	ForceLLM bool
+	// GameName/Package and GamePrior are context for the LLM. The prior is a
+	// soft hypothesis (genre, goals, what to watch), never a hard-coded key
+	// script: the legal actions still come from the game profile.
+	GameName    string
+	GamePackage string
+	GamePrior   string
 	// Demo carries actions learned from a human demonstration. They are only
 	// hints: the policy still checks that the action is in the current legal set.
 	Demo       []domain.Action
@@ -712,6 +718,21 @@ func groundLLMAction(kind, target string, legal []domain.Action) (domain.Action,
 
 func buildPrompt(in Input, legal []domain.Action, recent []string) string {
 	var b strings.Builder
+	if in.GameName != "" || in.GamePackage != "" {
+		b.WriteString("GAME: ")
+		b.WriteString(in.GameName)
+		if in.GamePackage != "" {
+			b.WriteString(" (package ")
+			b.WriteString(in.GamePackage)
+			b.WriteString(")")
+		}
+		b.WriteString("\n")
+	}
+	if in.GamePrior != "" {
+		b.WriteString("GAME PRIOR (soft hypothesis from a previous analysis; use it to form expectations, do not invent actions):\n")
+		b.WriteString(short(in.GamePrior, 600))
+		b.WriteString("\n")
+	}
 	b.WriteString("STATE: ")
 	b.WriteString(in.State.Summary)
 	b.WriteString("\n")

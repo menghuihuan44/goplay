@@ -43,7 +43,6 @@ import com.goplay.mobile.data.TakeoverSensitivity
 import com.goplay.mobile.input.InputGate
 import com.goplay.mobile.notifications.Notifications
 import com.goplay.mobile.voice.VoiceBridge
-import com.goplay.mobile.voice.VoiceState
 import com.goplay.mobile.voice.VoiceKeepAliveService
 import java.util.Locale
 import java.util.concurrent.CountDownLatch
@@ -106,7 +105,6 @@ class MainActivity : AppCompatActivity() {
     private var pendingLaunchPackage: String? = null
     private var launchScheduled = false
 
-    private var voice: VoiceBridge? = null
     private var pendingVoiceStart = false
     private var releaseHttp: OkHttpClient? = null
 
@@ -212,6 +210,9 @@ class MainActivity : AppCompatActivity() {
         Notifications.ensureChannel(this)
         buildContentView()
         configureWebView()
+        // The console lives in the WebView; attach it to the process-wide voice
+        // pipeline while this Activity exists.
+        graph.webViewEval = { script -> emitJs(script) }
         observeCore()
         graph.localCore.start(lifecycleScope)
         // Initialise TTS now, not on the first narration: the opening line was
@@ -255,9 +256,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
-        VoiceKeepAliveService.stop(this)
-        voice?.release()
-        voice = null
+        // VoiceBridge is process-wide, not Activity-wide: keep an active
+        // conversation alive when the console Activity is recreated. Only stop
+        // the foreground service when nobody is listening.
+        if (!graph.voice.isListening) VoiceKeepAliveService.stop(this)
+        graph.webViewEval = null
         pendingLaunchPackage = null
         releaseHttp?.dispatcher?.executorService?.shutdown()
         releaseHttp?.connectionPool?.evictAll()
@@ -805,35 +808,7 @@ class MainActivity : AppCompatActivity() {
 
     // ---- voice -------------------------------------------------------------
 
-    private fun voiceBridge(): VoiceBridge = voice ?: VoiceBridge(
-        context = this,
-        log = { message -> graph.logs.log("Voice: " + message) },
-        evaluate = { script -> emitJs(script) },
-        onState = { state -> onVoiceState(state) },
-    ).also { voice = it }
-
-    /**
-     * Real voice facts. The island needs them to show whether the AI is hearing
-     * or speaking, and the console mirrors them through window.goplayVoiceState.
-     */
-    private fun onVoiceState(state: VoiceState) {
-        graph.updateSession {
-            it.copy(
-                aiListening = state.listening,
-                aiSpeaking = state.speaking,
-                aiLastHeard = state.lastHeard.ifBlank { it.aiLastHeard },
-                aiLastSpoken = state.lastSpoken.ifBlank { it.aiLastSpoken },
-            )
-        }
-        val json = JSONObject()
-            .put("listening", state.listening)
-            .put("speaking", state.speaking)
-            .put("last_heard", state.lastHeard)
-            .put("last_spoken", state.lastSpoken)
-            .put("error", state.error ?: JSONObject.NULL)
-            .toString()
-        emitJs("window.goplayVoiceState && window.goplayVoiceState(" + json + ")")
-    }
+    private fun voiceBridge(): VoiceBridge = graph.voice
 
     private fun hasMicPermission(): Boolean =
         ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
@@ -1089,7 +1064,7 @@ class MainActivity : AppCompatActivity() {
         val settings = graph.settingsStore.load()
         val core = graph.localCore.state.value
         val snapshot = permissionSnapshot()
-        val voiceState = voice?.state ?: VoiceState()
+        val voiceState = graph.voice.state
         val voiceJson = JSONObject()
             .put("listening", voiceState.listening)
             .put("speaking", voiceState.speaking)
@@ -1274,7 +1249,7 @@ class MainActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun stopConversation(): String = uiJson {
-            voice?.stop()
+            graph.voice.stop()
             VoiceKeepAliveService.stop(this@MainActivity)
             JSONObject().put("ok", true).put("listening", false).toString()
         }
@@ -1295,8 +1270,50 @@ class MainActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun stopSpeaking(): String = uiJson {
-            voice?.stopSpeaking()
+            graph.voice.stopSpeaking()
             JSONObject().put("ok", true).toString()
+        }
+
+        /** Installed system TTS voices, Chinese first, plus the selected one. */
+        @JavascriptInterface
+        fun ttsVoices(): String = uiJson {
+            val list = JSONArray()
+            graph.voice.voices().forEach { voice ->
+                list.put(
+                    JSONObject()
+                        .put("name", voice.name)
+                        .put("label", voice.label)
+                        .put("locale", voice.locale),
+                )
+            }
+            JSONObject()
+                .put("ok", true)
+                .put("selected", graph.voice.voiceName())
+                .put("voices", list)
+                .toString()
+        }
+
+        @JavascriptInterface
+        fun setTTSVoice(name: String): String = uiJson {
+            val error = graph.voice.setVoice(name)
+            if (error == null) {
+                JSONObject().put("ok", true).put("selected", name).toString()
+            } else {
+                JSONObject().put("ok", false).put("error", error).toString()
+            }
+        }
+
+        @JavascriptInterface
+        fun openTTSSettings(): String {
+            runOnUiThread {
+                val intent = Intent("com.android.settings.TTS_SETTINGS")
+                try {
+                    startActivity(intent)
+                } catch (_: Exception) {
+                    runCatching { startActivity(Intent(Settings.ACTION_SETTINGS)) }
+                }
+            }
+            return "{\"ok\":true}"
         }
 
         @JavascriptInterface
@@ -1343,8 +1360,7 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun quit(): String {
             runOnUiThread {
-                voice?.release()
-                voice = null
+                graph.voice.release()
                 stopCapture()
                 graph.localCore.stop()
                 finishAndRemoveTask()

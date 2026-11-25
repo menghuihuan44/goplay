@@ -23,6 +23,7 @@ import android.view.Surface
 import android.view.WindowManager
 import com.goplay.mobile.GoPlayApp
 import com.goplay.mobile.MainActivity
+import com.goplay.mobile.accessibility.GameAccessibilityService
 import com.goplay.mobile.data.AppSettings
 import com.goplay.mobile.data.BatteryMonitor
 import com.goplay.mobile.data.NetworkMonitor
@@ -650,6 +651,15 @@ class ScreenCaptureService : Service() {
                     handleOverlayExpandedChanged(expanded)
                 }
 
+                override fun onHumanToggle(human: Boolean) {
+                    // Explicit takeover/release must work even when the game is a
+                    // SurfaceView and emits no accessibility click events.
+                    GameAccessibilityService.instance?.setHumanControl(human)
+                        ?: graph.client.sendHuman(human)
+                    graph.logs.log(if (human) "灵动岛：用户接管输入" else "灵动岛：交还 AI 控制")
+                    updateOverlayState(connected = graph.client.isConnected)
+                }
+
                 override fun onOpenApp() {
                     try {
                         startActivity(
@@ -678,45 +688,21 @@ class ScreenCaptureService : Service() {
     }
 
     /**
-     * The island expand/collapse is the user's input intent signal: while it is
-     * open the AI must not receive actions (the core pause), and the
-     * accessibility service additionally refuses gestures through InputGate.
+     * Expanding the island is an observation gesture, not a pause request: the
+     * user is opening the panel to see what the AI is doing. Only touch input is
+     * yielded (InputGate + the accessibility service); capture, analysis and
+     * decisions keep running so the panel shows live data rather than a frozen
+     * snapshot. Explicit pause still comes from the panel's pause button.
      */
     private fun handleOverlayExpandedChanged(expanded: Boolean) {
-        if (expanded) {
-            graph.logs.log("悬浮球展开：用户可能正在输入，AI 暂停")
-            if (paused) {
-                graph.logs.log("AI 已暂停（用户手动暂停或已让出），保持暂停")
-                return
-            }
-            if (projection == null) {
-                // Degraded service without a projection: nothing local to pause,
-                // but the core must still stop dispatching actions.
-                restPausedByOverlay = true
-                serviceScope.launch {
-                    val result = graph.rest.pause("overlay")
-                    graph.logs.log("REST pause（悬浮球展开）: " + result.display())
-                }
-                return
-            }
-            pausedByOverlay = true
-            pauseCapture()
-            return
-        }
-        graph.logs.log("悬浮球收起")
-        if (restPausedByOverlay) {
-            restPausedByOverlay = false
-            serviceScope.launch {
-                val result = graph.rest.resume()
-                graph.logs.log("REST resume（悬浮球收起）: " + result.display())
-            }
-        }
-        if (!pausedByOverlay) return
-        pausedByOverlay = false
-        if (paused) {
-            graph.logs.log("用户输入结束，恢复 AI 控制")
-            resumeCapture()
-        }
+        graph.logs.log(
+            if (expanded) {
+                "悬浮球展开：AI 继续看画面和决策，只让出触摸输入"
+            } else {
+                "悬浮球收起：AI 可继续操作"
+            },
+        )
+        updateOverlayState(connected = graph.client.isConnected)
     }
 
     /**

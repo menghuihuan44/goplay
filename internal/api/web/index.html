@@ -95,7 +95,7 @@
           </div>
         </div>
         <div id="gameList" class="game-grid"><div class="empty">加载中…</div></div>
-        <div class="section-head"><div><h2>可用的游戏配置</h2><p>Lua 描述游戏语义；不熟悉的游戏会从零开始试探和学习。</p></div></div>
+        <div class="section-head"><div><h2>动作适配器（自动选择）</h2><p>你不需要为每个游戏挑配置。Android 用触摸适配器，Windows 用键鼠适配器；这是“怎么按键/怎么点”的设备层，不是攻略。AI 仍然看画面、理解、试错和学习。</p></div></div>
         <div id="profileGrid" class="profile-grid"></div>
       </section>
 
@@ -150,17 +150,17 @@
         </div>
 
         <section class="panel voice-panel">
-          <div class="panel-head"><div><h3>实时语音（ASR / TTS 层）</h3><p>听你说话用手机/浏览器的系统识别；AI 怎么说话可以选择系统语音、API TTS 或本地/自建 TTS 接口。</p></div><span class="tag" id="voiceTag">系统语音</span></div>
+          <div class="panel-head"><div><h3>实时语音（ASR / TTS 层）</h3><p>识别用手机/浏览器的系统语音服务。合成可选系统离线音色或 API TTS；GoPlay 不把神经语音模型打进安装包，手机上的“本地”指系统已安装的离线音色。</p></div><span class="tag" id="voiceTag">系统语音</span></div>
           <div id="voiceStatus" class="voice-status">还没有语音状态。开始实时通话后这里会显示 AI 是否在听、是否在说、听到了什么、说了什么。</div>
           <form id="voiceForm" class="form compact-form">
             <div class="form-row">
               <label>语音识别<select id="voiceASR"><option value="system">系统识别（推荐）</option><option value="off">关闭识别</option></select></label>
-              <label>语音合成<select id="voiceTTS"><option value="system">系统语音（免费、离线）</option><option value="api">API TTS</option><option value="local">本地/自建 TTS 接口</option></select></label>
+              <label>语音合成<select id="voiceTTS"><option value="system">系统语音（免费、离线）</option><option value="local">手机本机音色（系统 TTS）</option><option value="api">API TTS（需接口和 Key）</option></select></label>
             </div>
-            <label>TTS 接口地址<input id="voiceBase" placeholder="留空则复用上面 API 地址，例如 http://127.0.0.1:8080/v1" autocomplete="off"></label>
+            <label id="voiceBaseWrap">TTS 接口地址<input id="voiceBase" placeholder="留空则复用上面 API 地址，例如 http://127.0.0.1:8080/v1" autocomplete="off"></label>
             <div class="form-row">
-              <label>模型<input id="voiceModel" placeholder="tts-1" autocomplete="off"></label>
-              <label>音色<input id="voiceName" placeholder="alloy" autocomplete="off"></label>
+              <label>模型<select id="voiceModel"><option value="tts-1">tts-1</option><option value="tts-1-hd">tts-1-hd</option><option value="gpt-4o-mini-tts">gpt-4o-mini-tts</option></select></label>
+              <label>音色<select id="voiceName"><option value="alloy">alloy</option><option value="echo">echo</option><option value="fable">fable</option><option value="onyx">onyx</option><option value="nova">nova</option><option value="shimmer">shimmer</option></select></label>
             </div>
             <div class="form-row">
               <label>API Key<input id="voiceKey" type="password" placeholder="留空则不修改" autocomplete="new-password"></label>
@@ -170,10 +170,12 @@
             <div class="form-actions wrap">
               <button type="submit" class="primary-btn">保存语音设置</button>
               <button type="button" class="pill-btn" id="voiceTest">试听一句</button>
+              <button type="button" class="link-btn" id="voiceRefreshVoices">刷新本机音色</button>
+              <button type="button" class="link-btn" id="voiceOpenTTSSettings">系统语音设置</button>
               <button type="button" class="link-btn" id="voiceClearBase">清除接口地址</button>
               <button type="button" class="link-btn danger-text" id="voiceClear">清除 TTS Key</button>
             </div>
-            <p class="form-note" id="voiceNote">Key 只保存在本机；本机模式不打包语音模型，需要你提供一个本地 OpenAI 兼容语音服务，失败会自动回退系统语音。</p>
+            <p class="form-note" id="voiceNote">Key 只保存在本机。手机“本机音色”使用系统 TTS 引擎，可在系统语音设置里安装中文离线音色；API 模式失败会自动回退系统语音。</p>
           </form>
         </section>
 
@@ -235,7 +237,7 @@
 
           <section class="panel wide hidden" id="takeoverPanel">
             <h3>接管与语音</h3>
-            <p class="form-note" style="margin-top:0">人工操作会被识别为接管。灵敏度过高会把误触当成接管；过低则要明显操作才交还。</p>
+            <p class="form-note" style="margin-top:0">很多游戏用 SurfaceView，系统不会把游戏内触摸上报给无障碍服务，所以灵敏度只对“可检测的触摸/界面事件”生效。任何游戏都可以用灵动岛的「我来操作」按钮或音量键立即接管；接管后再点「交还 AI 控制」。</p>
             <label class="field-label">接管灵敏度
               <select id="takeoverSens">
                 <option value="low">低 · 明显操作才接管</option>
@@ -308,7 +310,8 @@
         </label>
       </div>
       <label>显示名称<input id="fName" placeholder="例如：地牢试炼"></label>
-      <label>游戏配置<select id="fProfile"></select></label>
+      <label style="display:none">游戏配置<select id="fProfile"></select></label>
+      <p class="form-note">动作适配器按设备自动选择（Android 触摸、Windows 键鼠、Mock 测试），不需要手动配置；它不是攻略，AI 仍然看画面、理解并学习。</p>
       <div class="form-row">
         <label>实例 ID<input id="fId" pattern="[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}" placeholder="game-xxxx"></label>
         <label>回合上限<input id="fEpisodes" type="number" min="1" max="1000" value="1"></label>

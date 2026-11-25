@@ -8,7 +8,7 @@ v0.4.1 修复进入游戏/旋转后反复报「截屏已停止：旋转后重建
 
 v0.4.2 修复启动竞态：旧版在录屏服务刚启动、WebSocket 尚未 attach 时就允许核心开始第一轮决策，核心会报 `execute 'wait|screen': bridge: no Android client connected`。现在控制台把「手机桥接」纳入就绪条件，准备好后 900ms 轮询确认 WS 已连才启动实例；核心侧动作最多等待 5 秒传输就绪，断线后的旧帧也不再复用。设置页可看到桥接状态并点「重新连接」。
 
-v0.6.0 增加两层可观测与输入隔离：游戏卡显示动作/有效动作/决策/错误和 see/think/act/result 思维链；Android 在灵动岛展开、前台是 GoPlay/输入法、前台包不是当前游戏时，AI 手势会返回 user_busy 让出输入，AI 手势期间悬浮窗不可触摸，避免 AI 自己点掉灵动岛或往输入框打字。等待画面超过 3 秒会请求重建截屏；本机支持多个 llama-server 并发和按层指定模型，语音 ASR/TTS 可在 AI 大脑独立选择。v0.5.0 增加通用示范学习核心：人工接管时记录画面、按键/点击和动作意图，在相似画面复用；不包含具体游戏专用逻辑。Android 端目前只复用核心，触摸事件尚未接入 teach 记录，因此示范采集暂只在 Windows 端可用。v0.4.4 增加开局/每 10 个动作的语音自言自语，并让桌面端只把键鼠发给绑定的游戏窗口；Android 本机继续复用 0.4.3 的断流恢复。v0.4.3 继续修游玩中长时断流：核心不再把「no Android client / no frame」当成动作错误，而是保持实例运行并显示「等待画面」，传输恢复后自动继续；WebSocket 每次收到帧都重新绑定当前实例；录屏服务每 3 秒自动重连。通用触摸 profile 连续两次等待/返回后强制点击或滑动，避免真实游戏里只空等。灵动岛现在显示 AI 状态/最近动作/理由/进度/错误；AI 大脑每层增加自动逻辑说明、运行时调用次数和已下载模型下拉；设置页增加持续实时通话入口。
+v0.6.1 修复语音与查看体验：语音桥改为进程级单例并由麦克风前台服务保活，切到游戏后连续识别继续；本机音色直接使用系统离线 TTS，可选择已安装音色，不再误走核心的 OpenAI TTS；点开灵动岛只让出触摸输入，不暂停截屏/分析/决策；新增「我来操作/交还 AI」按钮与音量键显式接管。Android 实例强制 generic_touch，修复真机 “keyboard action not supported by the touch client” 与触摸 reward 恒 0；新建 Android 实例会带包名给分析层生成游戏先验软提示。v0.6.0 增加两层可观测与输入隔离：游戏卡显示动作/有效动作/决策/错误和 see/think/act/result 思维链；Android 在灵动岛展开、前台是 GoPlay/输入法、前台包不是当前游戏时，AI 手势会返回 user_busy 让出输入，AI 手势期间悬浮窗不可触摸，避免 AI 自己点掉灵动岛或往输入框打字。等待画面超过 3 秒会请求重建截屏；本机支持多个 llama-server 并发和按层指定模型，语音 ASR/TTS 可在 AI 大脑独立选择。v0.5.0 增加通用示范学习核心：人工接管时记录画面、按键/点击和动作意图，在相似画面复用；不包含具体游戏专用逻辑。Android 端目前只复用核心，触摸事件尚未接入 teach 记录，因此示范采集暂只在 Windows 端可用。v0.4.4 增加开局/每 10 个动作的语音自言自语，并让桌面端只把键鼠发给绑定的游戏窗口；Android 本机继续复用 0.4.3 的断流恢复。v0.4.3 继续修游玩中长时断流：核心不再把「no Android client / no frame」当成动作错误，而是保持实例运行并显示「等待画面」，传输恢复后自动继续；WebSocket 每次收到帧都重新绑定当前实例；录屏服务每 3 秒自动重连。通用触摸 profile 连续两次等待/返回后强制点击或滑动，避免真实游戏里只空等。灵动岛现在显示 AI 状态/最近动作/理由/进度/错误；AI 大脑每层增加自动逻辑说明、运行时调用次数和已下载模型下拉；设置页增加持续实时通话入口。
 
 包名：`com.goplay.mobile`。协议：[`PROTOCOL.md`](PROTOCOL.md)。
 
@@ -20,7 +20,7 @@ v0.6.0 增加两层可观测与输入隔离：游戏卡显示动作/有效动作
 
 - 环境：JDK 17.0.21 (Temurin)、Gradle 8.10.2（wrapper）、AGP 8.7.3、Kotlin 2.0.21、cmdline-tools 23.0、Platform 35、Build-Tools 35.0.0；SDK 位于仓库外的 `C:\Android\sdk`。
 - 原生核心：`CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build -buildmode=pie -ldflags "-s -w"` 产出 `libgoplaycore.so`（v0.4 约 10.3MB）；llama-server 已 strip 为 `libllama-server.so`（13,174,768B）。两者放入 `app/src/main/jniLibs/arm64-v8a/`；`cmd/goplay-release -target android` 会自动重建/布置它们。
-- 产物：`:app:assembleDebug` / `:app:assembleRelease` **BUILD SUCCESSFUL**；v0.6.0 release APK 约 13.1MB、debug APK 约 14.9MB，包内 `lib/arm64-v8a/` 两个原生库存在，`aapt` 显示 versionCode 11 / versionName 0.6.0 / native-code arm64-v8a。精确大小与 SHA256 以 `dist/release.json`、`dist/SHA256SUMS.txt` 为准。
+- 产物：`:app:assembleDebug` / `:app:assembleRelease` **BUILD SUCCESSFUL**；v0.6.1 release APK 约 13.1MB、debug APK 约 14.9MB，包内 `lib/arm64-v8a/` 两个原生库存在，`aapt` 显示 versionCode 12 / versionName 0.6.1 / native-code arm64-v8a。精确大小与 SHA256 以 `dist/release.json`、`dist/SHA256SUMS.txt` 为准。
 - 签名：未提供 release 密钥时按设计回退 debug 签名（CN=Android Debug），可本地安装，**不可用于商店发布**。
 - 测试：`:app:testDebugUnitTest` 的 30 个 JVM 测试全部通过；本目录未包含 MediaProjection/无障碍/悬浮窗/语音的 instrumentation 测试。
 - **尚未在真机或模拟器上安装运行**：本机 SDK 没有 emulator/system-images，也没有连接设备。MediaProjection、AccessibilityService、悬浮球展开、本机核心子进程、模型下载仍需要设备验证。

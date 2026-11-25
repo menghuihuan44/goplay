@@ -54,7 +54,13 @@ type Spec struct {
 	// TargetWindow is an optional window-title substring. When set, only input
 	// while that window is foreground counts as human takeover; the agent's own
 	// console and other programs are ignored.
-	TargetWindow  string    `json:"target_window,omitempty"`
+	TargetWindow string `json:"target_window,omitempty"`
+	// PackageName is the Android package the user picked. It lets the prior
+	// knowledge layer ask about the right game even when the label is generic.
+	PackageName string `json:"package_name,omitempty"`
+	// GamePrior is a short, model-generated hypothesis about this game: genre,
+	// likely goals and what to watch. It is a soft hint, never a key script.
+	GamePrior     string    `json:"game_prior,omitempty"`
 	Seed          int64     `json:"seed"`
 	MaxEpisodes   int       `json:"max_episodes"`
 	TickMS        int       `json:"tick_ms"`
@@ -68,7 +74,13 @@ func (s *Spec) normalize() {
 	if s.SourceKind == "" {
 		s.SourceKind = SourceMock
 	}
-	if s.ProfileID == "" {
+	// Android can only inject taps/swipes through the touch client. Never keep
+	// a keyboard profile here, even if an older UI or registry explicitly asked
+	// for "generic": that produced errors like
+	// "bridge: keyboard action 'down' is not supported by the touch client".
+	if s.SourceKind == SourceAndroid {
+		s.ProfileID = "generic_touch"
+	} else if s.ProfileID == "" {
 		switch s.SourceKind {
 		case SourceMock:
 			s.ProfileID = "mock_dungeon"
@@ -122,9 +134,10 @@ type Manager struct {
 	log    *slog.Logger
 	local  *localruntime.Runtime
 
-	mu    sync.RWMutex
-	insts map[string]*managed
-	specs map[string]Spec
+	mu         sync.RWMutex
+	insts      map[string]*managed
+	specs      map[string]Spec
+	priorTried sync.Map // instance id -> struct{}, so prior generation runs once
 }
 
 type registryFile struct {
@@ -336,6 +349,7 @@ func (m *Manager) build(spec Spec) error {
 	}
 	opts := engine.Options{
 		ID: spec.ID, Name: spec.Name, Profile: prof, Source: src, Analyzer: an,
+		GameName: spec.Name, GamePackage: spec.PackageName, GamePrior: spec.GamePrior,
 		Teacher:  teacher,
 		Executor: ex, Human: human, Sched: sch, Policy: pol,
 		Memory: m.mem.Instance(spec.ID), Bus: m.bus, Metrics: m.reg,
@@ -396,7 +410,71 @@ func (m *Manager) Create(spec Spec) (InstanceView, error) {
 		}
 	}
 	m.emit("instance.created", spec.ID, map[string]any{"profile": spec.ProfileID, "source": spec.SourceKind})
+	// Ask the analysis role for a soft prior (genre/goals/what to watch) while
+	// the game starts. It is context for the policy prompt, never a key script.
+	if mi, ok := m.get(spec.ID); ok {
+		if _, loaded := m.priorTried.LoadOrStore(spec.ID, struct{}{}); !loaded {
+			go m.learnGamePrior(spec, mi)
+		}
+	}
 	return m.Get(spec.ID)
+}
+
+// learnGamePrior asks the analysis model what it may know about this game and
+// stores the answer as a soft hypothesis. Failure is silent: with no model the
+// instance simply starts from zero.
+func (m *Manager) learnGamePrior(spec Spec, mi *managed) {
+	if m.router == nil || mi == nil || mi.runner == nil {
+		return
+	}
+	if strings.TrimSpace(spec.GamePrior) != "" || spec.SourceKind == SourceMock {
+		return
+	}
+	p := m.router.For(llm.RoleAnalysis)
+	if p == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	if !p.Available(ctx) {
+		return
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "游戏名称：%s\n", spec.Name)
+	if spec.PackageName != "" {
+		fmt.Fprintf(&b, "包名：%s\n", spec.PackageName)
+	}
+	fmt.Fprintf(&b, "平台：%s\n", spec.SourceKind)
+	b.WriteString("请用中文写 2-3 句：这可能是什么类型的游戏、常见目标是什么、AI 应该优先观察画面里的哪些信息。")
+	b.WriteString("只给通用假设，明确说不确定的地方；不要编造具体按键、菜单路径或攻略细节。")
+	resp, err := p.Complete(ctx, llm.Request{
+		System:      "你是游戏理解助手。你的输出是给策略层的软先验，不是硬编码操作；不确定时直说不确定。",
+		Prompt:      b.String(),
+		Temperature: 0.3,
+		MaxTokens:   240,
+	})
+	if err != nil {
+		m.log.Debug("game prior unavailable", "instance", spec.ID, "err", err)
+		return
+	}
+	text := strings.TrimSpace(resp.Text)
+	if text == "" {
+		return
+	}
+	if runes := []rune(text); len(runes) > 600 {
+		text = string(runes[:600])
+	}
+	mi.runner.SetGamePrior(text)
+	m.mu.Lock()
+	if s, ok := m.specs[spec.ID]; ok {
+		s.GamePrior = text
+		m.specs[spec.ID] = s
+		_ = m.saveRegistryLocked()
+	}
+	m.mu.Unlock()
+	m.emit("instance.prior", spec.ID, map[string]any{
+		"text": text, "provider": resp.Provider, "model": resp.Model,
+	})
 }
 
 func (m *Manager) get(id string) (*managed, bool) {
@@ -498,6 +576,9 @@ func (m *Manager) Start(id string) error {
 	if !ok {
 		return fmt.Errorf("instance %q not found", id)
 	}
+	m.mu.RLock()
+	spec := m.specs[id]
+	m.mu.RUnlock()
 	mi.mu.Lock()
 	defer mi.mu.Unlock()
 	st := mi.runner.Status()
@@ -509,6 +590,11 @@ func (m *Manager) Start(id string) error {
 	}
 	mi.runner.Start()
 	m.emit("instance.start_requested", id, nil)
+	if strings.TrimSpace(spec.GamePrior) == "" {
+		if _, loaded := m.priorTried.LoadOrStore(id, struct{}{}); !loaded {
+			go m.learnGamePrior(spec, mi)
+		}
+	}
 	return nil
 }
 

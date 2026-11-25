@@ -48,6 +48,8 @@ class OverlayPanel(
     private val pauseButton: Button
     private val panelButton: Button
     private val stopButton: Button
+    /** Explicit takeover, because SurfaceView games emit no click events. */
+    private lateinit var takeoverButton: Button
 
     /** Full-width "恢复截屏" action, only shown after the capture stopped by itself. */
     private val recoverButton: Button
@@ -233,11 +235,33 @@ class OverlayPanel(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
             ).apply { topMargin = dp(2) },
         )
-
         val actions = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
+        takeoverButton = Button(context).apply {
+            text = "我来操作"
+            isAllCaps = false
+            textSize = 12f
+            minHeight = dp(38)
+            minimumHeight = dp(38)
+            visibility = GONE
+            setTextColor(ContextCompat.getColor(context, R.color.text_primary))
+            background = rounded(
+                fill = ContextCompat.getColor(context, R.color.surface_2),
+                radiusDp = 12f,
+                stroke = ContextCompat.getColor(context, R.color.accent),
+            )
+            stateListAnimator = null
+            setOnClickListener { callbacks.onHumanToggle(!lastAI.human) }
+        }
+        body.addView(
+            takeoverButton,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply { topMargin = dp(6) },
+        )
         pauseButton = Button(context).apply {
             text = "暂停"
             isAllCaps = false
@@ -512,6 +536,8 @@ class OverlayPanel(
         renderVoice(ai)
         pauseButton.text = if (lastPaused) "继续" else "暂停"
         pauseButton.isEnabled = lastRunning
+        takeoverButton.text = if (aiHuman) "交还 AI 控制" else "我来操作"
+        takeoverButton.visibility = if (lastRunning) VISIBLE else GONE
         // Stop stays enabled even after the projection died: it is the only way to
         // dismiss the kept-alive pill.
         stopButton.isEnabled = true

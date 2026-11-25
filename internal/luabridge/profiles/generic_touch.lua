@@ -57,21 +57,34 @@ function profile.actions(s)
   return acts
 end
 
+-- The engine passes the flattened world map (values live at the top level),
+-- the same shape generic.lua consumes. Reading only before.values made every
+-- touch result look like zero progress, which is why touch play looked random.
 function profile.interpret(before, after)
   local interp = { reward = 0, delta = 0, terminal = false, won = false, note = "touch frame delta" }
-  if type(before.values) == "table" and type(after.values) == "table" then
-    local sum = 0
-    for k, v in pairs(after.values) do
-      local b = before.values[k]
-      if type(v) == "number" and type(b) == "number" then
-        sum = sum + (v - b)
-      end
+  local bv = type(before.values) == "table" and before.values or before
+  local av = type(after.values) == "table" and after.values or after
+  if type(bv) ~= "table" or type(av) ~= "table" then return interp end
+  local sum = 0
+  for k, v in pairs(av) do
+    local b = bv[k]
+    if type(v) == "number" and type(b) == "number" then
+      sum = sum + (v - b)
     end
-    interp.delta = sum
-    interp.reward = math.max(-10, math.min(10, sum * 0.05))
   end
-  if after.won then interp.won = true; interp.reward = 20; interp.terminal = true end
-  if after.dead then interp.reward = -5; interp.terminal = true end
+  interp.delta = sum
+  local scene = num(av.scene_change, 0)
+  if scene > 0 then interp.reward = interp.reward + math.min(4, scene * 4) end
+  local delta = num(av.frame_delta, 0)
+  if delta > 0.02 then interp.reward = interp.reward + math.min(1, delta * 3) end
+  if sum > 0 then interp.reward = interp.reward + math.min(2, sum * 0.04) end
+  if interp.reward > 0.05 then
+    interp.note = string.format("touch changed scene %.0f%% (frame %.0f%%)", scene * 100, delta * 100)
+  else
+    interp.note = "no meaningful touch change"
+  end
+  if av.won then interp.won = true; interp.reward = 20; interp.terminal = true end
+  if av.dead then interp.reward = -5; interp.terminal = true end
   return interp
 end
 
