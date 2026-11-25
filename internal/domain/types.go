@@ -269,22 +269,23 @@ type InstanceConfig struct {
 }
 
 type InstanceStats struct {
-	Decisions      int64     `json:"decisions"`
-	Actions        int64     `json:"actions"`
-	Errors         int64     `json:"errors"`
-	Episodes       int64     `json:"episodes"`
-	Wins           int64     `json:"wins"`
-	Losses         int64     `json:"losses"`
-	HumanTakeovers int64     `json:"human_takeovers"`
-	Constraints    int64     `json:"constraints"`
-	Preferences    int64     `json:"preferences"`
-	Reward         float64   `json:"reward"`
-	Progress       float64   `json:"progress"`
-	BestProgress   float64   `json:"best_progress"`
-	LastDecisionAt time.Time `json:"last_decision_at,omitempty"`
-	LastAction     string    `json:"last_action,omitempty"`
-	LastError      string    `json:"last_error,omitempty"`
-	StartedAt      time.Time `json:"started_at,omitempty"`
+	Decisions        int64     `json:"decisions"`
+	Actions          int64     `json:"actions"`
+	EffectiveActions int64     `json:"effective_actions"`
+	Errors           int64     `json:"errors"`
+	Episodes         int64     `json:"episodes"`
+	Wins             int64     `json:"wins"`
+	Losses           int64     `json:"losses"`
+	HumanTakeovers   int64     `json:"human_takeovers"`
+	Constraints      int64     `json:"constraints"`
+	Preferences      int64     `json:"preferences"`
+	Reward           float64   `json:"reward"`
+	Progress         float64   `json:"progress"`
+	BestProgress     float64   `json:"best_progress"`
+	LastDecisionAt   time.Time `json:"last_decision_at,omitempty"`
+	LastAction       string    `json:"last_action,omitempty"`
+	LastError        string    `json:"last_error,omitempty"`
+	StartedAt        time.Time `json:"started_at,omitempty"`
 }
 
 type GameInstance struct {

@@ -76,6 +76,26 @@ func TestMockDungeonObserveActionsInterpret(t *testing.T) {
 	}
 }
 
+func TestGenericInterpretsFlatSceneChange(t *testing.T) {
+	p, err := LoadBuiltin("generic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	before := map[string]any{"frame_delta": 0.0, "scene_change": 0.0}
+	after := map[string]any{"frame_delta": 0.04, "scene_change": 0.44}
+	in, err := p.Interpret(before, after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in.Reward < 0.05 {
+		t.Fatalf("a visible scene change must count as effective, got %+v", in)
+	}
+	if in.Note == "no meaningful change" {
+		t.Fatalf("scene change was not reported: %+v", in)
+	}
+}
+
 func TestNoActionsWhenTerminal(t *testing.T) {
 	p, err := LoadBuiltin("mock_dungeon")
 	if err != nil {

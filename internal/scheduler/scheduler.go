@@ -60,6 +60,7 @@ type Scheduler struct {
 	path        string
 	lastControl domain.Control
 	lastAdapt   []domain.Adaptation
+	directives  []Directive
 }
 
 func New(instanceID, gameName string, rules domain.InstanceRules, mgr *memory.Manager, classifier Classifier, sink MetricsSink, persistPath string) *Scheduler {
@@ -95,6 +96,26 @@ func (s *Scheduler) Submit(msg Message) {
 }
 
 func (s *Scheduler) Pending() int { return s.buffer.Len() }
+
+// TakeDirectives removes and returns the pending one-shot instructions. The
+// engine calls this at the same event boundary as constraints and preferences,
+// so a typed instruction reaches the very next decision without waiting for the
+// LLM or a new episode.
+func (s *Scheduler) TakeDirectives() []Directive {
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]Directive, 0, len(s.directives))
+	kept := s.directives[:0]
+	for _, d := range s.directives {
+		if now.After(d.Expires) {
+			continue
+		}
+		out = append(out, d)
+	}
+	s.directives = kept
+	return out
+}
 
 func (s *Scheduler) InstanceID() string { return s.instanceID }
 
@@ -177,6 +198,18 @@ func (s *Scheduler) Boundary(kind BoundaryKind, cc ClassifyContext) BoundaryResu
 			}
 		case IntentCommand:
 			res.Commands = append(res.Commands, intent.Command)
+		case IntentDirective:
+			if intent.Directive != nil {
+				s.mu.Lock()
+				s.directives = append(s.directives, *intent.Directive)
+				if len(s.directives) > 8 {
+					s.directives = s.directives[len(s.directives)-8:]
+				}
+				s.mu.Unlock()
+				if s.metrics != nil {
+					s.metrics.Inc("directives_applied_total", 1)
+				}
+			}
 		}
 		if intent.Reply != "" {
 			s.AddChat(ChatMessage{ID: m.ID + "-r", Role: "assistant", Text: intent.Reply, Kind: string(intent.Kind)})

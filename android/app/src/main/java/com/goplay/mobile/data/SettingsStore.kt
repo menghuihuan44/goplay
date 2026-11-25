@@ -31,7 +31,17 @@ class SettingsStore(context: Context) {
         takeoverSensitivity = TakeoverSensitivity.normalize(
             prefs.getString(TakeoverSensitivity.PREFS_KEY, TakeoverSensitivity.HIGH),
         ),
+        activeGamePackage = prefs.getString(KEY_ACTIVE_GAME, "").orEmpty(),
     )
+
+    /**
+     * Remembers the game the user launched. The accessibility service only
+     * injects gestures into this package (plus the overlay/keyboard gate), so a
+     * stale value must never be treated as permission to poke another app.
+     */
+    fun setActiveGamePackage(pkg: String) {
+        prefs.edit().putString(KEY_ACTIVE_GAME, pkg.trim()).apply()
+    }
 
     /**
      * Writes one takeover sensitivity level. Returns the stored (normalized)
@@ -55,6 +65,9 @@ class SettingsStore(context: Context) {
                 "实例 ID 只能包含字母、数字、点、下划线和连字符，长度 1-64",
             )
         }
+        // The console form does not carry the launched game; a blank field must
+        // not erase what launchGame() remembered.
+        val storedGame = prefs.getString(KEY_ACTIVE_GAME, "").orEmpty()
         val normalized = input.copy(
             host = host,
             port = input.port.coerceIn(1, 65535),
@@ -63,6 +76,7 @@ class SettingsStore(context: Context) {
             targetFps = input.targetFps.coerceIn(1, 30),
             maxEdge = input.maxEdge.coerceIn(320, 3840),
             takeoverSensitivity = TakeoverSensitivity.normalize(input.takeoverSensitivity),
+            activeGamePackage = input.activeGamePackage.trim().ifBlank { storedGame },
         )
         prefs.edit()
             .putString(KEY_HOST, normalized.host)
@@ -74,6 +88,7 @@ class SettingsStore(context: Context) {
             .putBoolean(KEY_WIFI_ONLY, normalized.wifiOnlyDownloads)
             .putBoolean(KEY_AUTO_RECONNECT, normalized.autoReconnect)
             .putString(TakeoverSensitivity.PREFS_KEY, TakeoverSensitivity.normalize(normalized.takeoverSensitivity))
+            .putString(KEY_ACTIVE_GAME, normalized.activeGamePackage)
             .apply()
         return SaveResult(true, settings = normalized)
     }
@@ -88,6 +103,7 @@ class SettingsStore(context: Context) {
         private const val KEY_MAX_EDGE = "max_edge"
         private const val KEY_WIFI_ONLY = "wifi_only"
         private const val KEY_AUTO_RECONNECT = "auto_reconnect"
+        private const val KEY_ACTIVE_GAME = "active_game"
         private const val DEFAULT_HOST = "192.168.1.100"
 
         private val HOST = Regex("^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,252})$")

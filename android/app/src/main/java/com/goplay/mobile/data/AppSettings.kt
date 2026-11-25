@@ -14,6 +14,12 @@ data class AppSettings(
     val autoReconnect: Boolean = true,
     /** Human-takeover sensitivity, see [TakeoverSensitivity]. */
     val takeoverSensitivity: String = TakeoverSensitivity.HIGH,
+    /**
+     * Package of the game last launched from the console. The accessibility
+     * service refuses to inject gestures into any other foreground package.
+     * Empty = unknown (only GoPlay itself and keyboards are rejected).
+     */
+    val activeGamePackage: String = "",
 ) {
     val wsUrl: String
         get() = "ws://" + host + ":" + port + Protocol.WS_PATH_PREFIX + instanceId

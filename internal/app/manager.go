@@ -290,7 +290,7 @@ func (m *Manager) build(spec Spec) error {
 		sess = bridge.NewSession(spec.ID)
 		human = sess
 		src = sess
-		base := perception.Analyzer(perception.GenericAnalyzer{})
+		base := perception.Analyzer(perception.NewGenericAnalyzer())
 		an = perception.NewVisionAnalyzer(m.router.For(llm.RolePerception), base)
 		ex = sess
 	} else {
@@ -315,7 +315,7 @@ func (m *Manager) build(spec Spec) error {
 		}
 		human = sh
 		src = &ctxSource{inner: ns}
-		base := perception.Analyzer(perception.GenericAnalyzer{})
+		base := perception.Analyzer(perception.NewGenericAnalyzer())
 		an = perception.NewVisionAnalyzer(m.router.For(llm.RolePerception), base)
 		ex = we
 	}
@@ -886,6 +886,21 @@ func (m *Manager) AttachLocal(rt *localruntime.Runtime) {
 	m.mu.Lock()
 	m.local = rt
 	m.mu.Unlock()
+	m.SyncLocalProviders()
+}
+
+// SyncLocalProviders mirrors every running on-device model into the router so
+// role routes that name a model can talk to that exact llama-server instance.
+func (m *Manager) SyncLocalProviders() {
+	rt := m.LocalRuntime()
+	if rt == nil {
+		return
+	}
+	if m.router == nil {
+		return
+	}
+	m.router.SetLocal(rt.Provider())
+	m.router.SetLocalModels(rt.Providers())
 }
 
 // LocalRuntime returns the attached on-device runtime, or nil.

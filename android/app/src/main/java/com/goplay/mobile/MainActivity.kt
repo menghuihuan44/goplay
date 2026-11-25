@@ -40,8 +40,10 @@ import androidx.lifecycle.repeatOnLifecycle
 import com.goplay.mobile.accessibility.GameAccessibilityService
 import com.goplay.mobile.capture.ScreenCaptureService
 import com.goplay.mobile.data.TakeoverSensitivity
+import com.goplay.mobile.input.InputGate
 import com.goplay.mobile.notifications.Notifications
 import com.goplay.mobile.voice.VoiceBridge
+import com.goplay.mobile.voice.VoiceState
 import com.goplay.mobile.voice.VoiceKeepAliveService
 import java.util.Locale
 import java.util.concurrent.CountDownLatch
@@ -204,6 +206,9 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         graph = (application as GoPlayApp).graph
+        // Restore the game the AI is allowed to act on. Empty means "unknown",
+        // and the accessibility gate then still refuses GoPlay itself and IMEs.
+        InputGate.setActiveGamePackage(graph.settingsStore.load().activeGamePackage)
         Notifications.ensureChannel(this)
         buildContentView()
         configureWebView()
@@ -684,6 +689,15 @@ class MainActivity : AppCompatActivity() {
         }, delayMs)
     }
 
+    /**
+     * Remembers which game the AI may touch, in memory (InputGate, read by the
+     * accessibility service) and on disk (so a process restart still knows).
+     */
+    private fun rememberActiveGame(pkg: String) {
+        InputGate.setActiveGamePackage(pkg)
+        graph.settingsStore.setActiveGamePackage(pkg)
+    }
+
     private fun launchGamePackage(pkg: String): Boolean {
         val clean = pkg.trim()
         if (clean.isEmpty()) return false
@@ -696,6 +710,7 @@ class MainActivity : AppCompatActivity() {
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         return try {
             startActivity(intent)
+            rememberActiveGame(clean)
             true
         } catch (e: Exception) {
             toast("启动游戏失败：" + (e.message ?: e.javaClass.simpleName))
@@ -794,7 +809,31 @@ class MainActivity : AppCompatActivity() {
         context = this,
         log = { message -> graph.logs.log("Voice: " + message) },
         evaluate = { script -> emitJs(script) },
+        onState = { state -> onVoiceState(state) },
     ).also { voice = it }
+
+    /**
+     * Real voice facts. The island needs them to show whether the AI is hearing
+     * or speaking, and the console mirrors them through window.goplayVoiceState.
+     */
+    private fun onVoiceState(state: VoiceState) {
+        graph.updateSession {
+            it.copy(
+                aiListening = state.listening,
+                aiSpeaking = state.speaking,
+                aiLastHeard = state.lastHeard.ifBlank { it.aiLastHeard },
+                aiLastSpoken = state.lastSpoken.ifBlank { it.aiLastSpoken },
+            )
+        }
+        val json = JSONObject()
+            .put("listening", state.listening)
+            .put("speaking", state.speaking)
+            .put("last_heard", state.lastHeard)
+            .put("last_spoken", state.lastSpoken)
+            .put("error", state.error ?: JSONObject.NULL)
+            .toString()
+        emitJs("window.goplayVoiceState && window.goplayVoiceState(" + json + ")")
+    }
 
     private fun hasMicPermission(): Boolean =
         ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
@@ -1050,6 +1089,13 @@ class MainActivity : AppCompatActivity() {
         val settings = graph.settingsStore.load()
         val core = graph.localCore.state.value
         val snapshot = permissionSnapshot()
+        val voiceState = voice?.state ?: VoiceState()
+        val voiceJson = JSONObject()
+            .put("listening", voiceState.listening)
+            .put("speaking", voiceState.speaking)
+            .put("last_heard", voiceState.lastHeard)
+            .put("last_spoken", voiceState.lastSpoken)
+            .put("error", voiceState.error ?: JSONObject.NULL)
         val permissions = JSONObject()
             .put("overlay", snapshot.overlay)
             .put("accessibility", snapshot.accessibility)
@@ -1075,7 +1121,9 @@ class MainActivity : AppCompatActivity() {
             .put("overlayPermission", snapshot.overlay)
             .put("notificationPermission", snapshot.notification)
             .put("micPermission", hasMicPermission())
-            .put("voiceListening", voice?.isListening ?: false)
+            .put("voice", voiceJson)
+            .put("voiceListening", voiceState.listening)
+            .put("voiceSpeaking", voiceState.speaking)
             .put("takeoverSensitivity", settings.takeoverSensitivity)
             .put("activeInstance", settings.instanceId)
             .put("device", graph.device.summary)

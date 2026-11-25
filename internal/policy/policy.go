@@ -27,10 +27,14 @@ type Config struct {
 	MaxRisk  float64
 	Seed     int64
 	MaxCands int
+	// RepeatLimit is how many identical decisions in a row are tolerated before
+	// the policy deliberately tries a different legal action. A single repeated
+	// key is cheap to try once and poisonous when it becomes a loop.
+	RepeatLimit int
 }
 
 func DefaultConfig() Config {
-	return Config{UCB: 0.9, Prior: 0.4, LLMEvery: 12, MaxRisk: 0.9, Seed: 1, MaxCands: 24}
+	return Config{UCB: 0.9, Prior: 0.4, LLMEvery: 12, MaxRisk: 0.9, Seed: 1, MaxCands: 24, RepeatLimit: 3}
 }
 
 type Candidate struct {
@@ -68,6 +72,11 @@ type Input struct {
 	// hints: the policy still checks that the action is in the current legal set.
 	Demo       []domain.Action
 	DemoReason string
+	// Directive is a one-shot user instruction ("press Z"). It outranks learned
+	// demonstrations and UCB, but still has to be in the current legal set and
+	// still passes the validator: a typed instruction is not a safety bypass.
+	Directive       []domain.Action
+	DirectiveReason string
 }
 
 type arm struct {
@@ -133,6 +142,14 @@ type Policy struct {
 	// that keeps choosing "wait" looks alive but never touches the game, so after
 	// a couple of passive choices the next decision must try an active action.
 	idleStreak int
+
+	// lastActionKey/lastActionStreak detect a loop of the same key. recent keeps
+	// the last few recorded outcomes so the LLM prompt can see what just happened
+	// instead of guessing from a static state summary.
+	lastActionKey    string
+	lastActionStreak int
+	lastReward       float64
+	recent           []string
 }
 
 type PolicyStats struct {
@@ -162,6 +179,9 @@ func New(provider llm.Provider, reg *metrics.Registry, cfg Config) *Policy {
 	if cfg.Seed == 0 {
 		cfg.Seed = 1
 	}
+	if cfg.RepeatLimit <= 0 {
+		cfg.RepeatLimit = 3
+	}
 	return &Policy{
 		cfg: cfg, llm: provider, reg: reg, val: NewValidator(cfg.MaxRisk),
 		q: map[string]map[string]*arm{}, rng: rand.New(rand.NewSource(cfg.Seed)),
@@ -169,14 +189,25 @@ func New(provider llm.Provider, reg *metrics.Registry, cfg Config) *Policy {
 }
 
 // StateKey is coarse on purpose: a bandit needs repeated visits to learn, and
-// pixel-perfect states would never repeat.
+// pixel-perfect states would never repeat. It still has to distinguish a menu
+// from gameplay in an unknown game, so a few coarse visual buckets join the
+// semantic fields. Without them every unknown screen collapses into one arm
+// table and UCB happily loops on the first key it tried.
 func StateKey(s domain.State) string {
-	phase := s.Text["phase"]
+	phase := strings.ToLower(strings.TrimSpace(s.Text["phase"]))
+	if phase == "" {
+		for _, t := range s.Tags {
+			switch strings.ToLower(t) {
+			case "menu", "title", "playing", "gameplay", "battle", "map", "dialog", "gameover":
+				phase = strings.ToLower(t)
+			}
+			if phase != "" {
+				break
+			}
+		}
+	}
 	if phase == "" {
 		phase = "unknown"
-	}
-	if len(s.Tags) > 0 && phase == "unknown" {
-		phase = s.Tags[0]
 	}
 	hpBucket := 0
 	if max := s.Values["max_hp"]; max > 0 {
@@ -201,7 +232,28 @@ func StateKey(s domain.State) string {
 	case r >= 3:
 		rooms = 1
 	}
-	return fmt.Sprintf("%s|hp%d|room%d", phase, hpBucket, rooms)
+	bright := 0
+	switch b := s.Values["brightness"]; {
+	case b >= 190:
+		bright = 2
+	case b >= 110:
+		bright = 1
+	}
+	edge := 0
+	switch e := s.Values["edge_ratio"]; {
+	case e >= 0.10:
+		edge = 2
+	case e >= 0.03:
+		edge = 1
+	}
+	dark, warm := 0, 0
+	if s.Values["dark_ratio"] >= 0.5 {
+		dark = 1
+	}
+	if s.Values["warm_ratio"] >= 0.4 {
+		warm = 1
+	}
+	return fmt.Sprintf("%s|hp%d|room%d|v%d%d%d%d", phase, hpBucket, rooms, bright, edge, dark, warm)
 }
 
 func (p *Policy) Decide(ctx context.Context, in Input) Decision {
@@ -258,10 +310,30 @@ func (p *Policy) Decide(ctx context.Context, in Input) Decision {
 		}
 	}
 
+	// A direct user instruction is the strongest soft signal: the user is
+	// watching the screen and knows what to press next. It only wins when the
+	// action is legal right now, and it still goes through the validator below.
+	if len(in.Directive) > 0 {
+		for _, da := range in.Directive {
+			if !isLegal(legal, da) {
+				continue
+			}
+			d.Action = da
+			d.Score = 1.2
+			d.Source = "directive"
+			d.Reason = in.DirectiveReason
+			if d.Reason == "" {
+				d.Reason = "执行用户指令：" + da.Reason
+			}
+			d.Fallback = false
+			break
+		}
+	}
+
 	// A learned demonstration is a strong hint, but never a hard override: it
 	// only wins when the action is legal right now. The user's constraints have
 	// already filtered the candidate set.
-	if len(in.Demo) > 0 {
+	if d.Source != "directive" && len(in.Demo) > 0 {
 		for _, da := range in.Demo {
 			if !isLegal(legal, da) {
 				continue
@@ -282,12 +354,32 @@ func (p *Policy) Decide(ctx context.Context, in Input) Decision {
 	p.mu.Lock()
 	idle := p.idleStreak
 	p.mu.Unlock()
-	if idle >= 2 && isPassive(d.Action) {
+	if idle >= 2 && isPassive(d.Action) && d.Source != "directive" && d.Source != "demo" {
 		if alt, ok := bestActive(cands); ok {
 			d.Action = alt.Action
 			d.Score = alt.Score
 			d.Source = "explore"
 			d.Reason = fmt.Sprintf("连续 %d 次等待/返回后强制探索：%s", idle, alt.Action.Key())
+		}
+	}
+
+	// Break a verified loop: the same key pressed over and over is not
+	// "learning", it is a stuck policy. Demonstrations are user intent and are
+	// exempt; everything else alternates to the next legal active action.
+	p.mu.Lock()
+	repeat := p.lastActionStreak
+	lastKey := p.lastActionKey
+	lastReward := p.lastReward
+	p.mu.Unlock()
+	if repeat >= p.cfg.RepeatLimit && lastReward <= 0.05 && d.Source != "demo" && d.Source != "directive" && lastKey == d.Action.Key() {
+		for _, c := range cands {
+			if c.Action.Key() != d.Action.Key() && !isPassive(c.Action) {
+				d.Action = c.Action
+				d.Score = c.Score
+				d.Source = "explore"
+				d.Reason = fmt.Sprintf("连续 %d 次只重复 %s，换一个动作", repeat, lastKey)
+				break
+			}
 		}
 	}
 
@@ -304,6 +396,12 @@ func (p *Policy) Decide(ctx context.Context, in Input) Decision {
 		p.idleStreak++
 	} else {
 		p.idleStreak = 0
+	}
+	if d.ActionKey == p.lastActionKey {
+		p.lastActionStreak++
+	} else {
+		p.lastActionKey = d.ActionKey
+		p.lastActionStreak = 1
 	}
 	p.stats.Decisions++
 	p.mu.Unlock()
@@ -399,6 +497,13 @@ func (p *Policy) score(key string, st domain.State, legal []domain.Action, ctl d
 		}
 		bonus := c * math.Sqrt(math.Log(float64(total)+1)/float64(visits+1))
 		adj := softAdjust(a, ctl) + survivalAdjust(a, st)
+		// If the previous action produced a real scene transition, try the same
+		// input again before moving on. This is game-agnostic: on a menu it
+		// confirms the next step, in gameplay it keeps firing. It is only a
+		// bonus, and the anti-loop rule still breaks a low-reward repetition.
+		if p.lastReward >= 0.5 && p.lastActionKey == ak {
+			adj += 0.8
+		}
 		out = append(out, Candidate{
 			Action: a,
 			Score:  mean + bonus + adj,
@@ -489,6 +594,20 @@ func (p *Policy) UpdateKey(stateKey, actionKey string, reward float64) {
 	ar.visits++
 	ar.mean += (reward - ar.mean) / float64(ar.visits)
 	p.total++
+	p.lastReward = reward
+	if reward > 0.3 {
+		// A repeat that keeps paying off is intentional (firing, holding a
+		// direction), not a stuck loop.
+		p.lastActionStreak = 0
+	}
+	label := "progress"
+	if reward <= 0.01 {
+		label = "no visible progress"
+	}
+	p.recent = append(p.recent, fmt.Sprintf("%s => %s (reward %.2f)", actionKey, label, reward))
+	if len(p.recent) > 5 {
+		p.recent = p.recent[len(p.recent)-5:]
+	}
 }
 
 func (p *Policy) shouldLLM() bool {
@@ -514,7 +633,10 @@ func (p *Policy) QSize() int {
 }
 
 func (p *Policy) askLLM(ctx context.Context, in Input, legal []domain.Action) (domain.Action, llm.Response, error) {
-	prompt := buildPrompt(in, legal)
+	p.mu.Lock()
+	recent := append([]string(nil), p.recent...)
+	p.mu.Unlock()
+	prompt := buildPrompt(in, legal, recent)
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	resp, err := p.llm.Complete(ctx, llm.Request{
@@ -588,7 +710,7 @@ func groundLLMAction(kind, target string, legal []domain.Action) (domain.Action,
 	return domain.Action{}, false
 }
 
-func buildPrompt(in Input, legal []domain.Action) string {
+func buildPrompt(in Input, legal []domain.Action, recent []string) string {
 	var b strings.Builder
 	b.WriteString("STATE: ")
 	b.WriteString(in.State.Summary)
@@ -604,6 +726,12 @@ func buildPrompt(in Input, legal []domain.Action) string {
 		b.WriteString("INSTANCE RULES: ")
 		b.WriteString(strings.Join(in.Rules.Notes, "; "))
 		b.WriteString("\n")
+	}
+	if len(recent) > 0 {
+		b.WriteString("RECENT RESULTS (do not repeat a failed loop):\n")
+		for _, line := range recent {
+			b.WriteString("- " + line + "\n")
+		}
 	}
 	if len(in.Control.Hard) > 0 {
 		b.WriteString("HARD CONSTRAINTS (must obey):\n")

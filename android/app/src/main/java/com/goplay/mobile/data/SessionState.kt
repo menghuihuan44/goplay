@@ -29,4 +29,11 @@ data class SessionState(
     val aiWaitReason: String = "",
     val aiAt: Long = 0,
     val aiHuman: Boolean = false,
+
+    // Real voice state reported by VoiceBridge; empty/false means "no evidence
+    // yet" and the island must show nothing rather than invent activity.
+    val aiListening: Boolean = false,
+    val aiSpeaking: Boolean = false,
+    val aiLastHeard: String = "",
+    val aiLastSpoken: String = "",
 )

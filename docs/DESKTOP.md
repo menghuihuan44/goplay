@@ -88,6 +88,20 @@ Windows 高 DPI（125%/150%/200%）下，桌面壳使用 `third_party/webview_go
 
 ![示范详情：每步的操作前后画面与意图](assets/teach-modal.png)
 
+### 有效动作与思维链（v0.6.0）
+
+- 每个实例同时统计「动作数」和「有效动作数」：动作后 reward ≥ 0.05 才计为有效，避免把空转/等待当成进展。
+- 游戏卡展示最近 8 条 trace：看画面（frame_delta/edge/场景切换）、选动作（source/reason/candidates）、按下去（键位/坐标）、看结果（reward/是否有效）、等待/恢复/自动修复。可以直接看到 AI 是没看到画面、选错动作，还是动作没有效果。
+- 通用 Lua 解释器修复了“把扁平 world map 当 values 读”的 bug：真实游戏画面变化现在会计入 reward，不再出现画面明显切换却 reward=0。连续成功的同一动作会加权重复，连续无回报才换动作；默认不再发送 Escape。
+- 真实 `th06c.exe` 实测（无任何游戏专用代码）：从标题→难度→STAGE 1→弹幕战斗，40 秒 156 动作、93 个有效动作、reward 70.22、0 错误、0 误接管。真实游戏里聊天发送 `press z`，trace 记录 `directive | 执行你的指令：press z`，决策来源为 `directive`，动作以 z 键执行；下一条 trace 继续观察并回到 heuristic。
+
+![游戏卡上的有效动作与 AI 思维链](assets/games-trace.png)
+
+### 多模型与语音（v0.6.0）
+
+- 本机可同时启动多个 llama-server；AI 大脑的六层可各选 API、指定已下载本机模型或自动回退，运行时真相区会列出当前真正在跑的模型和端口。
+- 语音作为独立层：ASR 系统识别/关闭，TTS 系统/API/本地；API TTS 走 OpenAI 兼容 `/audio/speech`，桌面浏览器回退 Web Speech。灵动岛/设置页显示正在听、正在说、听到/说了什么。
+- 等待画面超过 3 秒会调用 `Source.RequestRecover` 向手机发 `recover_capture`，成功后 trace 记录「已请求手机重建截屏」；不再永久卡在等待。
 
 ## 6. 打包
 

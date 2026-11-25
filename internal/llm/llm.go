@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -100,11 +101,17 @@ type ModelCloner interface {
 // Router is the single decision point for API-vs-local providers. It is
 // mutable at runtime so the model manager can attach a llama.cpp provider after
 // a download finishes; every field is guarded by mu.
+//
+// local is the default local provider. locals holds one provider per running
+// local model, keyed by model id, so several llama-server processes can serve
+// different roles at the same time; RouteConfig.Model picks the one a role
+// must use.
 type Router struct {
 	mu     sync.RWMutex
 	mode   string
 	api    Provider
 	local  Provider
+	locals map[string]Provider
 	routes map[string]RouteConfig
 
 	statMu sync.Mutex
@@ -131,6 +138,7 @@ func NewRouter(mode string, api, local Provider) *Router {
 		mode:   mode,
 		api:    api,
 		local:  local,
+		locals: make(map[string]Provider),
 		routes: make(map[string]RouteConfig),
 		stats:  make(map[string]*roleStat),
 	}
@@ -163,11 +171,42 @@ func (r *Router) SetAPI(p Provider) {
 	r.mu.Unlock()
 }
 
-// SetLocal swaps the on-device provider.
+// SetLocal swaps the default on-device provider. It stays the provider used by
+// roles that do not name a model, and the fallback when a named model is not
+// running.
 func (r *Router) SetLocal(p Provider) {
 	r.mu.Lock()
 	r.local = p
 	r.mu.Unlock()
+}
+
+// SetLocalModels installs one provider per running local model, keyed by model
+// id. A role whose RouteConfig.Model names a registered model is routed to that
+// provider, case-insensitively. The map is copied; a nil entry is ignored.
+func (r *Router) SetLocalModels(models map[string]Provider) {
+	clean := make(map[string]Provider, len(models))
+	for id, p := range models {
+		id = strings.TrimSpace(id)
+		if id == "" || p == nil {
+			continue
+		}
+		clean[id] = p
+	}
+	r.mu.Lock()
+	r.locals = clean
+	r.mu.Unlock()
+}
+
+// LocalModels returns a copy of the running local model providers keyed by
+// model id.
+func (r *Router) LocalModels() map[string]Provider {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make(map[string]Provider, len(r.locals))
+	for id, p := range r.locals {
+		out[id] = p
+	}
+	return out
 }
 
 // SetRoutes replaces the per-role overrides. Empty modes are inherited from
@@ -215,7 +254,10 @@ type routeResolution struct {
 	model string
 	api   Provider
 	local Provider
-	note  string
+	// fallback is the default local provider used by auto mode when the
+	// explicitly requested local model is not usable.
+	fallback Provider
+	note     string
 }
 
 func (rr routeResolution) addNote(note string) routeResolution {
@@ -237,6 +279,7 @@ func (r *Router) resolveRoute(role string) routeResolution {
 	global := r.mode
 	api := r.api
 	local := r.local
+	locals := r.locals
 	rc := r.routes[strings.ToLower(strings.TrimSpace(role))]
 	r.mu.RUnlock()
 
@@ -260,9 +303,16 @@ func (r *Router) resolveRoute(role string) routeResolution {
 	case "api":
 		res.api = apiCandidate(api, rc.Model, &res)
 	case "local":
-		res.local = localCandidate(local, rc.Model, &res)
+		res.local = localCandidateFor(locals, local, rc.Model, &res)
 	case "auto":
-		res.local = localCandidate(local, rc.Model, &res)
+		res.local = autoLocalCandidate(locals, local, rc.Model, &res)
+		if rc.Model != "" {
+			// A role that names a model still degrades through the default
+			// local model before giving up on the API.
+			if named, ok := lookupLocalModel(locals, rc.Model); ok && local != nil && !providersEqual(named, local) {
+				res.fallback = local
+			}
+		}
 		res.api = apiCandidate(api, rc.Model, &res)
 	}
 	return res
@@ -292,6 +342,64 @@ func apiCandidate(api Provider, model string, res *routeResolution) Provider {
 	return cloner.WithModel(model)
 }
 
+// lookupLocalModel returns the provider registered for a running local model.
+// Model ids are matched case-insensitively.
+func lookupLocalModel(locals map[string]Provider, model string) (Provider, bool) {
+	model = strings.TrimSpace(model)
+	if model == "" || len(locals) == 0 {
+		return nil, false
+	}
+	if p, ok := locals[model]; ok && p != nil {
+		return p, true
+	}
+	for id, p := range locals {
+		if p != nil && strings.EqualFold(id, model) {
+			return p, true
+		}
+	}
+	return nil, false
+}
+
+// localCandidateFor resolves a strict local route: the named model first (from
+// the multi-model map), then the legacy single-provider model check.
+func localCandidateFor(locals map[string]Provider, local Provider, model string, res *routeResolution) Provider {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return local
+	}
+	if p, ok := lookupLocalModel(locals, model); ok {
+		return p
+	}
+	return localCandidate(local, model, res)
+}
+
+// autoLocalCandidate resolves the local side of an auto route. A registered
+// model wins; otherwise the default local provider is used even when it serves
+// another model, because auto mode degrades instead of failing.
+func autoLocalCandidate(locals map[string]Provider, local Provider, model string, res *routeResolution) Provider {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return local
+	}
+	if p, ok := lookupLocalModel(locals, model); ok {
+		return p
+	}
+	if local == nil {
+		res.notef("local model %q is not running (no local server)", model)
+		return nil
+	}
+	if mp, ok := local.(ModelProvider); ok {
+		running := strings.TrimSpace(mp.Model())
+		if strings.EqualFold(running, model) {
+			return local
+		}
+		res.notef("local model %q is not running (running %q); auto is using the default local model", model, running)
+		return local
+	}
+	res.notef("default local provider cannot report its model; using it for %q", model)
+	return local
+}
+
 func localCandidate(local Provider, model string, res *routeResolution) Provider {
 	if local == nil {
 		if model != "" {
@@ -313,6 +421,42 @@ func localCandidate(local Provider, model string, res *routeResolution) Provider
 		return nil
 	}
 	return local
+}
+
+// providersEqual compares two providers without panicking on non-comparable
+// dynamic types.
+func providersEqual(a, b Provider) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	ta, tb := reflect.TypeOf(a), reflect.TypeOf(b)
+	if ta != tb || !ta.Comparable() {
+		return false
+	}
+	return a == b
+}
+
+// localChain lists the local providers an auto route may use, best first: the
+// requested model, then the default local model.
+func (rr routeResolution) localChain() []Provider {
+	chain := make([]Provider, 0, 2)
+	if rr.local != nil {
+		chain = append(chain, rr.local)
+	}
+	if rr.fallback != nil && !providersEqual(rr.fallback, rr.local) {
+		chain = append(chain, rr.fallback)
+	}
+	return chain
+}
+
+// availableLocal returns the first available local provider in chain order.
+func (rr routeResolution) availableLocal(ctx context.Context) Provider {
+	for _, p := range rr.localChain() {
+		if p.Available(ctx) {
+			return p
+		}
+	}
+	return nil
 }
 
 func (rr routeResolution) reason() string {
@@ -370,8 +514,8 @@ func (p *routeProvider) Name() string {
 			return "route:" + p.role + "=" + rr.local.Name()
 		}
 	default:
-		if rr.local != nil && rr.local.Available(context.Background()) {
-			return "route:" + p.role + "=" + rr.local.Name()
+		if local := rr.availableLocal(context.Background()); local != nil {
+			return "route:" + p.role + "=" + local.Name()
 		}
 		if rr.api != nil {
 			return "route:" + p.role + "=" + rr.api.Name()
@@ -390,7 +534,7 @@ func (p *routeProvider) Available(ctx context.Context) bool {
 	case "local":
 		return rr.local != nil && rr.local.Available(ctx)
 	default:
-		if rr.local != nil && rr.local.Available(ctx) {
+		if rr.availableLocal(ctx) != nil {
 			return true
 		}
 		return rr.api != nil && rr.api.Available(ctx)
@@ -427,8 +571,11 @@ func (p *routeProvider) Complete(ctx context.Context, req Request) (Response, er
 		resp, err := rr.local.Complete(ctx, req)
 		return finish(resp, err)
 	default:
-		if rr.local != nil && rr.local.Available(ctx) {
-			if resp, err := rr.local.Complete(ctx, req); err == nil {
+		for _, local := range rr.localChain() {
+			if !local.Available(ctx) {
+				continue
+			}
+			if resp, err := local.Complete(ctx, req); err == nil {
 				return finish(resp, nil)
 			}
 		}
@@ -551,8 +698,8 @@ func (r *Router) RoutesStatus(ctx context.Context) map[string]any {
 		case "local":
 			chosen = rr.local
 		case "auto":
-			if rr.local != nil && rr.local.Available(ctx) {
-				chosen = rr.local
+			if local := rr.availableLocal(ctx); local != nil {
+				chosen = local
 			} else {
 				chosen = rr.api
 			}
@@ -602,10 +749,10 @@ func (r *Router) Providers() (Provider, Provider) {
 	return r.api, r.local
 }
 
-func (r *Router) snapshot() (string, Provider, Provider) {
+func (r *Router) snapshot() (string, Provider, Provider, map[string]Provider) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return r.mode, r.api, r.local
+	return r.mode, r.api, r.local, r.locals
 }
 
 func (r *Router) Name() string { return "router:" + r.Mode() }
@@ -613,7 +760,7 @@ func (r *Router) Name() string { return "router:" + r.Mode() }
 // Available implements Provider so a Router can be injected anywhere a single
 // provider is expected (the policy layer uses this).
 func (r *Router) Available(ctx context.Context) bool {
-	mode, api, local := r.snapshot()
+	mode, api, local, _ := r.snapshot()
 	switch mode {
 	case "offline":
 		return false
@@ -630,7 +777,7 @@ func (r *Router) Available(ctx context.Context) bool {
 }
 
 func (r *Router) Status(ctx context.Context) map[string]any {
-	mode, api, local := r.snapshot()
+	mode, api, local, locals := r.snapshot()
 	out := map[string]any{"mode": mode}
 	if api != nil {
 		out["api"] = api.Name()
@@ -640,12 +787,19 @@ func (r *Router) Status(ctx context.Context) map[string]any {
 		out["local"] = local.Name()
 		out["local_available"] = local.Available(ctx)
 	}
+	if len(locals) > 0 {
+		models := make(map[string]string, len(locals))
+		for id, p := range locals {
+			models[id] = p.Name()
+		}
+		out["local_models"] = models
+	}
 	out["routes"] = r.RoutesStatus(ctx)
 	return out
 }
 
 func (r *Router) Complete(ctx context.Context, req Request) (Response, error) {
-	mode, api, local := r.snapshot()
+	mode, api, local, _ := r.snapshot()
 	switch mode {
 	case "offline":
 		return Response{}, ErrNoProvider

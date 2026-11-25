@@ -111,6 +111,9 @@ func (s *Server) routes() {
 	mux.HandleFunc("GET /api/llm", s.getLLM)
 	mux.HandleFunc("POST /api/llm", s.updateLLM)
 	mux.HandleFunc("POST /api/llm/test", s.testLLM)
+	mux.HandleFunc("GET /api/voice", s.getVoice)
+	mux.HandleFunc("POST /api/voice", s.updateVoice)
+	mux.HandleFunc("POST /api/voice/tts", s.speakVoice)
 	// Legacy mobile control surface (android/PROTOCOL.md v1).
 	mux.HandleFunc("POST /api/control/pause", s.legacyControl(s.mgr.Pause))
 	mux.HandleFunc("POST /api/control/resume", s.legacyControl(s.mgr.Resume))
@@ -476,6 +479,7 @@ func (s *Server) localDeleteModel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, status, err.Error())
 		return
 	}
+	s.mgr.SyncLocalProviders()
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "model_id": id, "status": rt.Status()})
 }
 
@@ -492,10 +496,6 @@ func (s *Server) localSelect(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	wasRunning := false
-	if st, ok := s.mgr.LocalStatus(); ok {
-		wasRunning = st.Enabled || st.Server.Running
-	}
 	if err := rt.SelectModel(req.ModelID); err != nil {
 		status := http.StatusConflict
 		if errors.Is(err, localruntime.ErrUnknownModel) {
@@ -504,12 +504,8 @@ func (s *Server) localSelect(w http.ResponseWriter, r *http.Request) {
 		writeError(w, status, err.Error())
 		return
 	}
-	if wasRunning {
-		// SelectModel stopped the old server and restarts asynchronously; drop the
-		// stale provider now so role routes never talk to the old model.
-		s.mgr.Router().SetLocal(nil)
-		go s.ensureLocalProvider()
-	}
+	s.mgr.SyncLocalProviders()
+	s.syncWhenRunning(req.ModelID)
 	writeJSON(w, http.StatusOK, map[string]any{"selected": req.ModelID, "status": rt.Status()})
 }
 
@@ -519,18 +515,38 @@ func (s *Server) localStart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "local runtime is not attached")
 		return
 	}
-	cfg := s.cfg
-	cfg.LLM.Mode = "local"
-	if err := cfg.Save(filepath.Join(cfg.DataDir, "config.json")); err != nil {
-		writeError(w, http.StatusInternalServerError, "save config: "+err.Error())
+	var req struct {
+		ModelID string `json:"model_id"`
+	}
+	if err := readOptionalJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	s.cfg = cfg
-	rt.SetMode("local")
-	s.mgr.Router().SetMode("local")
-	go s.ensureLocalProvider()
+	id := strings.TrimSpace(req.ModelID)
+	if id == "" {
+		cfg := s.cfg
+		cfg.LLM.Mode = "local"
+		if err := cfg.Save(filepath.Join(cfg.DataDir, "config.json")); err != nil {
+			writeError(w, http.StatusInternalServerError, "save config: "+err.Error())
+			return
+		}
+		s.cfg = cfg
+		rt.SetMode("local")
+		s.mgr.Router().SetMode("local")
+		go s.ensureLocalProvider()
+	} else {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+			defer cancel()
+			if err := rt.StartModelID(ctx, id, true); err != nil {
+				return
+			}
+			s.mgr.SyncLocalProviders()
+		}()
+	}
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"accepted": true,
+		"model_id": id,
 		"note":     "downloading if needed, then starting llama-server on loopback",
 		"status":   rt.Status(),
 	})
@@ -542,11 +558,28 @@ func (s *Server) localStop(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "local runtime is not attached")
 		return
 	}
+	var req struct {
+		ModelID string `json:"model_id"`
+	}
+	if err := readOptionalJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if id := strings.TrimSpace(req.ModelID); id != "" {
+		if err := rt.StopModel(r.Context(), id); err != nil {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+		s.mgr.SyncLocalProviders()
+		writeJSON(w, http.StatusOK, map[string]any{"stopped": true, "model_id": id, "status": rt.Status()})
+		return
+	}
 	if err := rt.StopServer(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	s.mgr.Router().SetLocal(nil)
+	s.mgr.Router().SetLocalModels(nil)
 	s.mgr.Router().SetMode("auto")
 	rt.SetMode("auto")
 	cfg := s.cfg
@@ -580,9 +613,38 @@ func (s *Server) ensureLocalProvider() {
 	if err := rt.StartModel(ctx); err != nil {
 		return
 	}
-	if p := rt.Provider(); p != nil {
-		s.mgr.Router().SetLocal(p)
+	s.mgr.SyncLocalProviders()
+}
+
+// syncWhenRunning waits (bounded) for an asynchronously started model and then
+// publishes every running model to the router.
+func (s *Server) syncWhenRunning(id string) {
+	id = strings.ToLower(strings.TrimSpace(id))
+	if id == "" {
+		return
 	}
+	go func() {
+		for i := 0; i < 120; i++ {
+			time.Sleep(500 * time.Millisecond)
+			st, ok := s.mgr.LocalStatus()
+			if !ok {
+				return
+			}
+			if localModelRunning(st, id) {
+				s.mgr.SyncLocalProviders()
+				return
+			}
+		}
+	}()
+}
+
+func localModelRunning(st localruntime.Status, id string) bool {
+	for _, m := range st.Models {
+		if strings.EqualFold(m.ID, id) && m.Running {
+			return true
+		}
+	}
+	return false
 }
 
 // normalizeLLMRoutes validates role names and modes before persisting.
@@ -683,6 +745,7 @@ func (s *Server) getLLM(w http.ResponseWriter, r *http.Request) {
 		"vision":      cfg.LLM.Vision,
 		"routes":      s.mgr.Router().RoutesStatus(r.Context()),
 		"router":      s.mgr.Router().Status(r.Context()),
+		"voice":       s.voiceView(),
 	}
 	if st, ok := s.mgr.LocalStatus(); ok {
 		body["local"] = st

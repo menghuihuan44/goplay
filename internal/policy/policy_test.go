@@ -149,3 +149,28 @@ func TestDemoHintWinsOnlyWhenLegal(t *testing.T) {
 		t.Fatalf("expected legal demo hint, got kind=%q source=%q demo=%v", d.Action.Kind, d.Source, d.Demo)
 	}
 }
+func TestDirectiveWinsWhenLegal(t *testing.T) {
+	p := New(nil, nil, DefaultConfig())
+	directive := domain.Action{Kind: "press_enter", Target: "menu", Risk: 0.05, Input: &domain.InputSpec{Type: "key", Key: "enter"}}
+	legal := append(legalActions(), directive)
+	d := p.Decide(context.Background(), Input{State: mockState(), Actions: legal, Directive: []domain.Action{directive}, DirectiveReason: "执行用户指令：按回车"})
+	if d.Action.Kind != "press_enter" || d.Source != "directive" {
+		t.Fatalf("expected directive enter, got kind=%q source=%q", d.Action.Kind, d.Source)
+	}
+}
+
+func TestRepeatBreaksStuckLoop(t *testing.T) {
+	p := New(fixedLLM{reply: `{"kind":"attack","target":"enemy"}`}, nil, DefaultConfig())
+	st := mockState()
+	attack := legalActions()[0]
+	p.lastActionKey = attack.Key()
+	p.lastActionStreak = p.cfg.RepeatLimit
+	p.lastReward = 0
+	d := p.Decide(context.Background(), Input{State: st, Actions: legalActions(), ForceLLM: true})
+	if d.Action.Kind == "attack" {
+		t.Fatalf("repeated zero-reward attack should be broken, got %+v", d)
+	}
+	if d.Source != "explore" {
+		t.Fatalf("expected explore source, got %q", d.Source)
+	}
+}

@@ -344,6 +344,20 @@ async function clearTeaching(id){
   try{ await api('/api/instances/'+encodeURIComponent(id)+'/teach',{method:'DELETE'}); toast('示范已清空'); await openTeaching(id); }
   catch(e){toast(e.message,true)}
 }
+function tracePanel(v){
+  var tr=(v.trace||[]).slice(-8); if(!tr.length) return '';
+  var label={see:'看画面',think:'选动作',directive:'听指令',act:'按下去',result:'看结果',wait:'等待',resume:'恢复',recover:'自动修复'};
+  var rows=tr.map(function(e){
+    var d=e.data||{}, extra='';
+    if(e.phase==='see'){ if(d.frame_delta!==undefined) extra='变化 '+(num(d.frame_delta,0)*100).toFixed(1)+'%'; }
+    else if(e.phase==='think'){ extra=(d.source?'来源 '+d.source:'')+(d.reason?' · '+d.reason:''); }
+    else if(e.phase==='act'){ var inp=d.input||{}; extra=(inp.type||'')+(inp.key?' '+inp.key:'')+(inp.x!==undefined?' @'+(num(inp.x,0)*100).toFixed(0)+'%,'+(num(inp.y,0)*100).toFixed(0)+'%':''); }
+    else if(e.phase==='result'){ extra='奖励 '+(num(d.reward,0)).toFixed(2)+(d.effective===false?' · 无有效变化':' · 有效')+(d.terminal?' · 终局':''); }
+    else if(e.phase==='wait'||e.phase==='resume'){ extra=(d.waited_ms?Math.round(d.waited_ms)+' ms':''); }
+    return '<div class="trace-row '+e.phase+'"><span class="trace-phase">'+(label[e.phase]||e.phase)+'</span><span class="trace-msg">'+esc(e.message||'')+'</span>'+(extra?'<span class="trace-extra">'+esc(extra)+'</span>':'')+'</div>';
+  }).join('');
+  return '<details class="trace-box" open><summary>AI 思维链 · 画面 → 选择 → 按键 → 结果 <span class="muted small">（事实记录，不是隐藏推理）</span></summary>'+rows+'</details>';
+}
 function fullCard(v){
   var st=statusInfo(v), disp=displayOf(v), stats=v.stats||{}, memory=v.memory||{};
   var progress=pct(disp.progress);
@@ -378,11 +392,12 @@ function fullCard(v){
     +teachPanel(v)
     +'<div class="gc-summary"><span class="dot '+(running?'on':'')+'"></span><span>'+esc(disp.summary||'等待第一帧…')+'</span></div>'
     +(progress!==null?'<div class="progress"><div class="labels"><span>'+esc(disp.progressLabel)+'</span><b>'+fmtPct(progress)+'</b></div><div class="bar"><i style="width:'+fmtPct(progress)+'%"></i></div></div>':'')
-    +'<div class="gc-stats mini-stats"><div><span>动作</span><b>'+Math.round(stat(v,'actions',0))+'</b></div><div><span>决策</span><b>'+Math.round(stat(v,'decisions',0))+'</b></div><div><span>错误</span><b class="'+(stat(v,'errors',0)?'danger-text':'')+'">'+Math.round(stat(v,'errors',0))+'</b></div></div>'
+    +'<div class="gc-stats mini-stats"><div><span>动作</span><b>'+Math.round(stat(v,'actions',0))+'</b></div><div><span>有效动作</span><b class="'+(stat(v,'effective_actions',0)?'lime':'')+'">'+Math.round(stat(v,'effective_actions',0))+'</b></div><div><span>决策</span><b>'+Math.round(stat(v,'decisions',0))+'</b></div><div><span>错误</span><b class="'+(stat(v,'errors',0)?'danger-text':'')+'">'+Math.round(stat(v,'errors',0))+'</b></div></div>'
     +(fields?'<div class="dyn-grid">'+fields+'</div>':'<p class="form-note">AI 还没有从这个画面里识别出可展示的属性；它会继续观察和学习。</p>')
     +(tags?'<div class="gc-tags">'+tags+'</div>':'')
     +screenPanel(v)
     +'<div class="now-line"><div><span class="muted small">AI 正在做什么</span><b>'+esc(action)+'</b></div><div class="now-reason">'+esc(disp.lastReason||dec.reason||'等待决策边界')+'</div><div class="now-meta">'+esc(dec.provider||'')+(dec.model?' · '+esc(dec.model):'')+(dec.latency_ms?' · '+fmtMS(dec.latency_ms)+' ms':'')+(dec.fallback?' · 回退':'' )+'</div></div>'
+    +tracePanel(v)
     +notes
     +(chat?'<div class="chat-lines">'+chat+'</div>':'')
     +'<div class="gc-chat"><textarea rows="2" maxlength="500" data-input="'+esc(v.id)+'" placeholder="说话或输入约束，例如：先别打那个 Boss"></textarea><button class="mic-btn call-btn '+(voice?'active':'')+'" data-call="'+esc(v.id)+'" title="实时语音通话">🎙 '+(voice?'通话中':'通话')+'</button><button class="send-btn" data-send="'+esc(v.id)+'">发送</button></div>'
@@ -444,7 +459,9 @@ function renderGames(){
 function renderAI(){
   var llm=S.llm||{}; var local=llm.local||{}; var router=llm.router||{};
   var apiState=llm.has_api_key?(router.api_available===false?'已保存 Key':'可用'):'未配置';
-  var localState=(local.server&&local.server.running)?'运行中':(local.enabled?'已就绪':(local.download&&local.download.active?'下载中':'未启动'));
+  var runningModels=local.running_models||[];
+  var runningCount=runningModels.length||(local.servers||[]).filter(function(x){return x&&x.running}).length;
+  var localState=runningCount>1?('运行中 ×'+runningCount):(runningCount===1?'运行中':(local.download&&local.download.active?'下载中':(local.enabled?'已就绪':'未启动')));
   $('#brainCard').innerHTML='<div class="brain-main"><div class="blabel">当前 AI 大脑</div><h2><span class="dot '+(llm.mode==='offline'?'err':'on')+'"></span>'+esc(modeLabel(llm.mode))+'</h2><p>'+esc(llm.model||'尚未选择模型')+' · '+(llm.mode==='api'?'请求发往你填写的接口':llm.mode==='local'?'全部在本机推理':'按可用性自动切换')+'</p></div>'
     +'<div class="brain-chips">'
       +'<span class="bchip">API<b>'+esc(apiState)+'</b></span>'
@@ -466,7 +483,10 @@ function renderAI(){
   if(hw.ram_gb) chips.push('<span class="bchip">内存<b>'+esc(Number(hw.ram_gb).toFixed(1))+' GB</b></span>');
   if(hw.cores) chips.push('<span class="bchip">核心<b>'+esc(hw.cores)+'</b></span>');
   if(hw.arch) chips.push('<span class="bchip">架构<b>'+esc(hw.arch)+'</b></span>');
-  if(local.server&&local.server.running) chips.push('<span class="bchip">llama-server<b>127.0.0.1:'+esc(local.server.port||'')+'</b></span>');
+  (local.servers||[]).forEach(function(sv){
+    if(sv&&sv.running) chips.push('<span class="bchip">llama-server<b>'+esc(sv.model||local.model||'')+' · :'+esc(sv.port||'')+'</b></span>');
+  });
+  if(!(local.servers||[]).length&&local.server&&local.server.running) chips.push('<span class="bchip">llama-server<b>127.0.0.1:'+esc(local.server.port||'')+'</b></span>');
   $('#localSummary').innerHTML=chips.join('')||'<span class="muted">正在检测设备…</span>';
   var models=(local.models||[]).slice(0);
   var seen={}; models.forEach(function(m){seen[m.id]=1});
@@ -478,29 +498,63 @@ function renderAI(){
     $('#localModels').innerHTML=models.map(function(m){
       var active=dl.active&&(dl.model_id===m.id||dl.model===m.id||!dl.model_id);
       var selected=!!(m.selected||(local.model===m.id));
+      var running=!!m.running||runningModels.indexOf(m.id)>=0;
       var canDl=!m.present&&!active;var canCancel=active;
-      var row='<div class="model-row'+(active?' dl':'')+(selected?' selected':'')+'"><div class="mr-head"><span class="dot '+(m.present?'on':'')+'"></span><b>'+esc(m.id)+'</b><span class="tag">'+esc(m.extra?'可选':(ROLE_LABEL[m.role]||m.role||''))+'</span><span class="tag '+(m.present?'ok':'')+'">'+(m.present?(selected?'当前使用':'已下载'):'需下载')+'</span></div>'
+      var row='<div class="model-row'+(active?' dl':'')+((selected||running)?' selected':'')+'"><div class="mr-head"><span class="dot '+(running||m.present?'on':'')+'"></span><b>'+esc(m.id)+'</b><span class="tag">'+esc(m.extra?'可选':(ROLE_LABEL[m.role]||m.role||''))+'</span><span class="tag '+(running||m.present?'ok':'')+'">'+(running?'运行中':(m.present?(selected?'当前默认':'已下载'):'需下载'))+'</span></div>'
         +'<div class="mr-meta"><span>'+esc(m.license||'')+'</span><span>'+esc(fmtSize(m.size_bytes))+'</span></div>';
       if(active){
         row+='<div class="bar"><i style="width:'+Math.max(0,Math.min(100,num(dl.percent,0)))+'%"></i></div><div class="mr-meta"><span>'+esc(fmtSize(dl.downloaded))+' / '+esc(fmtSize(dl.total))+'</span><span>'+esc(num(dl.bytes_per_second,0).toFixed(0))+' B/s</span><span><button class="link-btn" data-cancel="1">取消</button></span></div>';
       }
       row+='<div class="model-actions">'
         +(canDl?'<button class="pill-btn model-action" data-dl="'+esc(m.id)+'">下载</button>':'')
-        +((m.present&&!selected&&!active)?'<button class="pill-btn model-action" data-select="'+esc(m.id)+'">用作本机推理</button>':'')
-        +(m.present&&!active?'<button class="link-btn danger-text" data-delmodel="'+esc(m.id)+'">删除</button>':'')
-        +(selected&&local.server&&local.server.running?'<span class="tag ok">运行中</span>':'')
+        +((m.present&&!running&&!active)?'<button class="pill-btn model-action" data-startmodel="'+esc(m.id)+'">启动</button>':'')
+        +((m.present&&!selected&&!active)?'<button class="link-btn" data-select="'+esc(m.id)+'">设为默认</button>':'')
+        +((m.present&&!running&&!active)?'<button class="link-btn danger-text" data-delmodel="'+esc(m.id)+'">删除</button>':'')
+        +(running?'<button class="link-btn" data-stopmodel="'+esc(m.id)+'">停止</button>':'')
+        +(running?'<span class="tag ok">运行中</span>':'')
       +'</div></div>';
       return row;
     }).join('');
   }
-  $('#localNote').textContent=dl.error?('下载失败：'+dl.error):(local.note||'模型不入安装包。可以下载多个、切换使用或删除；感知/校验仍由规则层兜底。');
+  $('#localNote').textContent=dl.error?('下载失败：'+dl.error):(local.note||'模型不入安装包。可以同时运行多个模型，每一层可以指定不同模型；未运行的模型会明确标出并回退规则层。');
   var starting=!!(local.download&&local.download.active);
-  $('#localStart').disabled=!!((local.server&&local.server.running)||starting);
-  $('#localStart').textContent=starting?'正在下载模型…':(local.server&&local.server.running?'本机 AI 运行中':'启用本机 AI');
-  $('#localStop').disabled=!(local.server&&local.server.running);
+  $('#localStart').disabled=!!((runningCount>0)||starting);
+  $('#localStart').textContent=starting?'正在下载模型…':(runningCount>0?'本机已有模型运行中':'启用本机 AI');
+  $('#localStop').disabled=!(runningCount>0);
   $('#localRefresh').disabled=false;
   renderRuntimeTruth();
   renderRoutes();
+  renderVoice(llm.voice||{});
+}
+function voiceModeLabel(m){return m==='api'?'API TTS':m==='local'?'本地/自建 TTS':'系统语音'}
+function renderVoice(v){
+  v=v||{};
+  fillIfIdle('voiceASR',v.asr_mode||'system');
+  fillIfIdle('voiceTTS',v.tts_mode||'system');
+  fillIfIdle('voiceBase',v.base_url||'');
+  fillIfIdle('voiceModel',v.model||'tts-1');
+  fillIfIdle('voiceName',v.voice||'alloy');
+  fillIfIdle('voiceSpeed',v.speed===undefined?'1':v.speed);
+  if(document.activeElement!==$('#voiceEnabled')) $('#voiceEnabled').checked=v.enabled!==false;
+  var t=$('#voiceTag'); if(t){t.textContent=v.enabled===false?'已静音':voiceModeLabel(v.tts_mode);t.className='tag '+(v.enabled===false?'':'ok')}
+  var n=$('#voiceNote'); if(n) n.textContent=v.note||'Key 只保存在本机；本机模式不打包语音模型，失败会自动回退系统语音。';
+  renderVoiceStatus();
+}
+function renderVoiceStatus(){
+  var box=$('#voiceStatus'); if(!box) return;
+  var host=(S.host&&S.host.voice)||{};
+  var rows=[];
+  if(S.voice) rows.push(['通话','进行中：'+instanceName(S.voice.id)+' · 说完自动发送']);
+  if(host.listening) rows.push(['麦克风','正在听你说话']);
+  if(host.speaking) rows.push(['AI','正在说话']);
+  if(host.last_heard) rows.push(['听到',String(host.last_heard)]);
+  if(host.last_spoken) rows.push(['说了',String(host.last_spoken)]);
+  if(host.error) rows.push(['错误',String(host.error)]);
+  if(!rows.length){
+    box.innerHTML='还没有语音状态。点游戏卡或设置页的「通话」后，这里会显示 AI 是否在听、是否在说、听到了什么、说了什么。';
+    return;
+  }
+  box.innerHTML=rows.map(function(r){return '<div class="vr"><span class="vk">'+esc(r[0])+'</span><span class="vv">'+esc(r[1])+'</span></div>'}).join('');
 }
 function routeObj(role){
   var r=(S.aiRoutes&&S.aiRoutes.routes)||{};
@@ -578,7 +632,14 @@ function renderRuntimeTruth(){
     if(x&&x.implemented===false) unwired.push(r.label); else wired.push(r.label);
   });
   var running='当前没有大模型在跑，规则引擎在兜底';
-  if(local.server&&local.server.running){
+  var servers=(local.servers||[]).filter(function(x){return x&&x.running});
+  var runningIDs=(local.running_models||[]).filter(function(x){return !!x});
+  if(servers.length){
+    var names=servers.map(function(x){return x.model||x.base_url||(':'+x.port)});
+    running='本机 '+servers.length+' 个模型在跑：'+names.join('、')+'；不同层可以指定不同模型，未运行的层会回退规则';
+  }else if(runningIDs.length){
+    running='本机模型在跑：'+runningIDs.join('、')+'；不同层可以指定不同模型';
+  }else if(local.server&&local.server.running){
     running='本机 llama-server 正在跑'+(local.model?'（'+local.model+'）':'')+'，多个层可以共用它';
   }else if(llm.has_api_key){
     running='API 已配置，按每一层实际可用性调用；不可用时回退规则';
@@ -710,6 +771,7 @@ function refreshHostStatus(){
   var panel=$('#androidPermPanel'); if(!panel) return;
   var s=hostStatus();
   S.host=s;
+  renderVoiceStatus();
   panel.classList.toggle('hidden',!s);
   var tp=$('#takeoverPanel'); if(tp) tp.classList.toggle('hidden',!s);
   if(!s){renderAndroidBanner();return}
@@ -1090,19 +1152,43 @@ function speakNarration(text){
   try{if(localStorage.getItem('goplay_narration')==='off') return}catch(e){}
   speakReply(text);
 }
-function speakReply(text){
-  if(!text) return;
+function nativeSpeak(text){
   if(window.GoPlayHost&&window.GoPlayHost.speak){
     try{
       var raw=window.GoPlayHost.speak(text);
       var res=null; try{res=typeof raw==='string'?JSON.parse(raw):raw}catch(e){}
-      if(!res||res.ok!==false) return;
+      if(!res||res.ok!==false) return true;
       if(window.console) console.warn('native TTS failed',res.error||res);
     }catch(e){}
   }
   if(window.speechSynthesis){
-    try{var u=new SpeechSynthesisUtterance(text);u.lang='zh-CN';window.speechSynthesis.cancel();window.speechSynthesis.speak(u)}catch(e){}
+    try{var u=new SpeechSynthesisUtterance(text);u.lang='zh-CN';window.speechSynthesis.cancel();window.speechSynthesis.speak(u);return true}catch(e){}
   }
+  return false;
+}
+function stopSpeechAudio(){
+  if(S.ttsAudio){try{S.ttsAudio.pause()}catch(e){};try{URL.revokeObjectURL(S.ttsAudio.src)}catch(e){};S.ttsAudio=null}
+  if(window.speechSynthesis){try{window.speechSynthesis.cancel()}catch(e){}}
+}
+function serverSpeak(text,onFail){
+  stopSpeechAudio();
+  fetch('/api/voice/tts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:text})}).then(function(r){
+    if(!r.ok) return r.text().then(function(t){throw new Error(t||('HTTP '+r.status))});
+    return r.blob();
+  }).then(function(blob){
+    var url=URL.createObjectURL(blob); var au=new Audio(url); S.ttsAudio=au;
+    au.onended=function(){try{URL.revokeObjectURL(url)}catch(e){};if(S.ttsAudio===au)S.ttsAudio=null};
+    au.onerror=function(){if(window.console)console.warn('server TTS audio failed');onFail()};
+    var p=au.play(); if(p&&p.catch)p.catch(function(e){if(window.console)console.warn('server TTS play',e);onFail()});
+  }).catch(function(e){if(window.console)console.warn('server TTS',e&&e.message);onFail()});
+}
+function speakReply(text){
+  if(!text) return;
+  var v=(S.llm&&S.llm.voice)||S.voiceCfg||{};
+  if(v.enabled===false) return;
+  var mode=v.tts_mode||'system';
+  if(mode==='api'||mode==='local'){serverSpeak(text,function(){nativeSpeak(text)});return}
+  nativeSpeak(text);
 }
 function updateCallUI(){
   $$('[data-call]').forEach(function(b){
@@ -1180,24 +1266,38 @@ function stopCall(){
   if(window.GoPlayHost&&window.GoPlayHost.stopConversation){try{window.GoPlayHost.stopConversation()}catch(e){}}
   if(window.GoPlayHost&&window.GoPlayHost.stopSpeaking){try{window.GoPlayHost.stopSpeaking()}catch(e){}}
   if(S.voice&&S.voice.rec){try{S.voice.rec.onend=null;S.voice.rec.stop()}catch(e){}}
+  stopSpeechAudio();
   if(window.speechSynthesis){try{window.speechSynthesis.cancel()}catch(e){}}
+  setHostVoice({speaking:false,listening:false});
   S.voice=null; S.voiceTarget=null; updateCallUI(); toast('已结束通话');
 }
 function toggleCall(id){if(S.voice&&S.voice.id===id) stopCall(); else startCall(id)}
 window.goplayFocus=function(where){
   if(String(where||'')==='permissions'){ go('settings'); setTimeout(refreshHostStatus,80); }
 };
-window.goplayVoice=function(text){if(!S.voiceTarget)return;var ta=$('[data-input="'+S.voiceTarget+'"]');appendText(ta,String(text||'').trim());toast('已识别语音')};
+function setHostVoice(patch){
+  S.host=S.host||{}; var v={};
+  for(var k in (S.host.voice||{})) v[k]=S.host.voice[k];
+  for(var j in (patch||{})) v[j]=patch[j];
+  S.host.voice=v; renderVoiceStatus();
+}
+window.goplayVoice=function(text){var t=String(text||'').trim();if(t)setHostVoice({last_heard:t,listening:true});if(!S.voiceTarget)return;var ta=$('[data-input="'+S.voiceTarget+'"]');appendText(ta,t);toast('已识别语音')};
 window.goplayVoiceFinal=function(text){
   if(!S.voiceTarget) return;
   var t=String(text||'').trim(); if(!t) return;
+  setHostVoice({last_heard:t});
   var ta=$('[data-input="'+S.voiceTarget+'"]'); if(ta){ta.value=t;ta.placeholder='说话或输入约束…'}
   sendChat(S.voiceTarget,t);
 };
-window.goplayVoicePartial=function(text){if(!S.voiceTarget)return;var ta=$('[data-input="'+S.voiceTarget+'"]');if(ta)ta.placeholder='听到：'+String(text||'')};
-window.goplayVoiceError=function(msg){toast('语音错误：'+(msg||'未知'),true)};
-window.goplayVoiceStarted=function(){if(!S.voice)return;S.voice.active=true;updateCallUI();var vs=$('#androidVoiceState');if(vs)vs.textContent='通话中：麦克风已打开，切到游戏后仍可继续说话'};
-window.goplaySpeaking=function(on){var vs=$('#androidVoiceState');if(vs&&S.voice)vs.textContent=on?'AI 正在说话…':'通话中：说完自动发送，AI 回复会自动朗读'};
+window.goplayVoicePartial=function(text){var t=String(text||'').trim();if(t)setHostVoice({last_heard:t,listening:true});if(!S.voiceTarget)return;var ta=$('[data-input="'+S.voiceTarget+'"]');if(ta)ta.placeholder='听到：'+t};
+window.goplayVoiceError=function(msg){setHostVoice({error:String(msg||'未知'),listening:false});toast('语音错误：'+(msg||'未知'),true)};
+window.goplayVoiceState=function(raw){
+  var v=null; try{v=typeof raw==='string'?JSON.parse(raw):raw}catch(e){}
+  if(!v||typeof v!=='object') return;
+  setHostVoice({listening:!!v.listening,speaking:!!v.speaking,last_heard:v.last_heard||'',last_spoken:v.last_spoken||'',error:v.error||''});
+};
+window.goplayVoiceStarted=function(){if(!S.voice)return;S.voice.active=true;setHostVoice({listening:true,error:''});updateCallUI();var vs=$('#androidVoiceState');if(vs)vs.textContent='通话中：麦克风已打开，切到游戏后仍可继续说话'};
+window.goplaySpeaking=function(on){setHostVoice({speaking:!!on});var vs=$('#androidVoiceState');if(vs&&S.voice)vs.textContent=on?'AI 正在说话…':'通话中：说完自动发送，AI 回复会自动朗读'};
 
 async function saveAPI(ev){
   ev.preventDefault();
@@ -1228,6 +1328,23 @@ async function clearAPI(){
     S.llm=res; toast('已清除 API Key'); renderAI();
   }catch(e){toast(e.message,true)}
 }
+async function saveVoice(ev){
+  ev.preventDefault();
+  var body={enabled:$('#voiceEnabled').checked,tts_mode:$('#voiceTTS').value,asr_mode:$('#voiceASR').value,base_url:$('#voiceBase').value.trim(),model:$('#voiceModel').value.trim(),voice:$('#voiceName').value.trim(),speed:Number($('#voiceSpeed').value||'1')};
+  var key=$('#voiceKey').value.trim(); if(key) body.api_key=key;
+  try{
+    var res=await api('/api/voice',{method:'POST',body:body});
+    S.llm=S.llm||{}; S.llm.voice=res; $('#voiceKey').value='';
+    toast('语音设置已保存'); renderVoice(res);
+  }catch(e){toast('保存语音设置失败：'+e.message,true)}
+}
+async function clearVoiceKey(){
+  if(!confirm('清除保存在本机的语音 TTS Key？')) return;
+  try{var res=await api('/api/voice',{method:'POST',body:{clear_key:true}});S.llm=S.llm||{};S.llm.voice=res;toast('已清除语音 Key');renderVoice(res)}catch(e){toast(e.message,true)}
+}
+async function clearVoiceBase(){
+  try{var res=await api('/api/voice',{method:'POST',body:{clear_base:true}});S.llm=S.llm||{};S.llm.voice=res;toast('已清除语音接口地址，将复用 API 地址');renderVoice(res)}catch(e){toast(e.message,true)}
+}
 async function enableLocal(){
   try{
     var res=await api('/api/llm',{method:'POST',body:{mode:'local'}});
@@ -1240,6 +1357,12 @@ async function startLocal(){
 }
 async function stopLocal(){
   try{await api('/api/local/stop',{method:'POST'});toast('本机模型已停止');setTimeout(refresh,300)}catch(e){toast(e.message,true)}
+}
+async function startModel(id){
+  try{await api('/api/local/start',{method:'POST',body:{model_id:id}});toast('正在启动 '+id);setTimeout(refresh,700)}catch(e){toast(e.message,true)}
+}
+async function stopModel(id){
+  try{await api('/api/local/stop',{method:'POST',body:{model_id:id}});toast('已停止 '+id);setTimeout(refresh,400)}catch(e){toast(e.message,true)}
 }
 async function downloadModel(id){
   try{await api('/api/local/download',{method:'POST',body:{model_id:id}});toast('开始下载 '+(id||'推荐模型'));setTimeout(refresh,800)}catch(e){toast(e.message,true)}
@@ -1372,6 +1495,8 @@ function bind(){
     if(ev.target.closest('#saveRoutes')){saveRoutes();return}
     var dl=ev.target.closest('[data-dl]'); if(dl){downloadModel(dl.getAttribute('data-dl'));return}
     var selm=ev.target.closest('[data-select]'); if(selm){selectModel(selm.getAttribute('data-select'));return}
+    var stm=ev.target.closest('[data-startmodel]'); if(stm){startModel(stm.getAttribute('data-startmodel'));return}
+    var spm=ev.target.closest('[data-stopmodel]'); if(spm){stopModel(spm.getAttribute('data-stopmodel'));return}
     var delm=ev.target.closest('[data-delmodel]'); if(delm){deleteModel(delm.getAttribute('data-delmodel'));return}
     if(ev.target.closest('[data-cancel]')){cancelDownload();return}
     if(ev.target.closest('#apiVision')){S.visionDirty=true;return}
@@ -1414,6 +1539,10 @@ function bind(){
   });
   $('#createForm').addEventListener('submit',createGame);
   $('#apiForm').addEventListener('submit',saveAPI);
+  $('#voiceForm').addEventListener('submit',saveVoice);
+  $('#voiceTest').addEventListener('click',function(){speakReply('这是一句语音测试。现在你可以听到 AI 的声音了。')});
+  $('#voiceClear').addEventListener('click',clearVoiceKey);
+  $('#voiceClearBase').addEventListener('click',clearVoiceBase);
   $('#prefForm').addEventListener('submit',addPref);
   var sel=$('#takeoverSens');
   if(sel) sel.addEventListener('change',function(){

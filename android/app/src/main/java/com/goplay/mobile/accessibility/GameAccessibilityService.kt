@@ -10,12 +10,16 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.provider.Settings
 import android.util.DisplayMetrics
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
+import android.view.inputmethod.InputMethodManager
 import com.goplay.mobile.GoPlayApp
 import com.goplay.mobile.data.TakeoverSensitivity
+import com.goplay.mobile.input.InputGate
 import com.goplay.mobile.protocol.GestureCommand
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -68,6 +72,21 @@ class GameAccessibilityService : AccessibilityService() {
      */
     private var suppressHumanUntil = 0L
 
+    /**
+     * Package of the last focused window. Fallback for deciding whether the
+     * foreground app is GoPlay itself when the window list is unavailable.
+     */
+    private var lastForegroundPackage = ""
+
+    /** Packages of installed input methods; refreshed on service connect. */
+    private var cachedImePackages: Set<String> = emptySet()
+
+    /** When [cachedImePackages] was last refreshed (main thread only). */
+    private var lastImeRefreshAt = 0L
+
+    /** Throttles "AI yielded input" logging so a busy user cannot spam the log. */
+    private var lastYieldLogAt = 0L
+
     private val humanIdle = Runnable {
         if (!humanActive) return@Runnable
         releaseHumanSignal()
@@ -90,6 +109,7 @@ class GameAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         instance = this
         config = TakeoverSensitivity.config(graph?.settingsStore?.load()?.takeoverSensitivity)
+        refreshImePackages()
         logs()?.log(
             "无障碍服务已连接（手势能力=" +
                 (((serviceInfo?.capabilities ?: 0) and AccessibilityServiceInfo.CAPABILITY_CAN_PERFORM_GESTURES) != 0) +
@@ -101,6 +121,13 @@ class GameAccessibilityService : AccessibilityService() {
         // We only look at the event type to detect real user input. We never read
         // event text/content or walk the node tree: frames come from MediaProjection.
         val eventType = event?.eventType ?: return
+        if (eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            // Package only — never the window content — to know which app is in
+            // front when the accessibility window list is not available.
+            event.packageName?.toString()?.takeIf { it.isNotBlank() }?.let {
+                lastForegroundPackage = it
+            }
+        }
         val now = SystemClock.elapsedRealtime()
 
         // Our own injected gestures produce accessibility events too. Ignore them
@@ -299,12 +326,30 @@ class GameAccessibilityService : AccessibilityService() {
             mainHandler.post { execute(command, timeoutMs, callback) }
             return
         }
+        // The AI must never inject a gesture while the user is using GoPlay's own
+        // island/keyboard or a window that is not the game it started. Checked
+        // before beginAiAction so a refused command does not look like AI input.
+        val yieldReason = aiYieldReason()
+        if (yieldReason != null) {
+            val now = SystemClock.elapsedRealtime()
+            if (now - lastYieldLogAt > YIELD_LOG_INTERVAL_MS) {
+                lastYieldLogAt = now
+                logs()?.log("AI 动作让出输入（" + yieldReason + "）：" + BUSY_MESSAGE)
+            }
+            callback(ExecutionResult(false, ERROR_USER_BUSY, BUSY_MESSAGE, 0L))
+            return
+        }
         beginAiAction()
+        // Untouchable island for exactly the gesture window: a tap aimed at the
+        // game can no longer land on the floating island or its keyboard.
+        InputGate.currentOverlay?.setAiGesture(true)
         val finish: (ExecutionResult) -> Unit = { result ->
+            InputGate.currentOverlay?.setAiGesture(false)
             endAiAction()
             callback(result)
         }
-        when (command) {
+        try {
+            when (command) {
             is GestureCommand.Tap -> dispatchTouch(
                 path = singlePointPath(command.x, command.y),
                 durationMs = TAP_DURATION_MS,
@@ -354,6 +399,111 @@ class GameAccessibilityService : AccessibilityService() {
                     "wait is handled by ActionRouter",
                 ),
             )
+            }
+        } catch (e: Exception) {
+            // Never leave the caller without an ack, and always drop the
+            // untouchable island flag.
+            finish(
+                ExecutionResult(
+                    false,
+                    "execute_failed",
+                    e.message ?: e.javaClass.simpleName,
+                ),
+            )
+        }
+    }
+
+    /**
+     * Returns why the AI must not touch the screen right now, or null when it
+     * may. Order matters: our own UI is the strongest signal, then any keyboard,
+     * then "the foreground app is not the game the user launched".
+     */
+    private fun aiYieldReason(): String? {
+        if (InputGate.isOverlayExpanded) return "灵动岛已展开"
+        val foreground = foregroundPackageName()
+        if (!foreground.isNullOrBlank()) {
+            if (foreground == packageName || foreground == InputGate.SELF_PACKAGE) {
+                return "前台是 GoPlay 自身"
+            }
+            if (isImePackage(foreground)) return "前台是输入法(" + foreground + ")"
+            val game = InputGate.activeGamePackage
+            if (game.isNotEmpty() && foreground != game) {
+                return "前台不是目标游戏(" + foreground + "≠" + game + ")"
+            }
+        }
+        if (imeWindowVisible()) return "输入法键盘已弹出"
+        return null
+    }
+
+    /** Best-effort foreground package; empty when Android hides it from us. */
+    private fun foregroundPackageName(): String? {
+        val interactive = try {
+            windows
+        } catch (_: Exception) {
+            null
+        }
+        if (interactive != null) {
+            // Input focus is the best indicator, then the active window.
+            interactive.firstOrNull { it.isFocused }
+                ?.root?.packageName?.toString()
+                ?.takeIf { it.isNotBlank() }
+                ?.let { return it }
+            interactive.firstOrNull { it.isActive }
+                ?.root?.packageName?.toString()
+                ?.takeIf { it.isNotBlank() }
+                ?.let { return it }
+        }
+        val rootPackage = try {
+            rootInActiveWindow?.packageName?.toString()
+        } catch (_: Exception) {
+            null
+        }
+        if (!rootPackage.isNullOrBlank()) return rootPackage
+        return lastForegroundPackage.ifBlank { null }
+    }
+
+    /**
+     * A visible IME window means the system keyboard is on screen. Taps aimed at
+     * the game would land on the keys, so the AI yields until it is dismissed.
+     */
+    private fun imeWindowVisible(): Boolean {
+        val interactive = try {
+            windows
+        } catch (_: Exception) {
+            null
+        } ?: return false
+        // The platform exposes no public per-window visibility flag; a window of
+        // type INPUT_METHOD in the interactive list means the keyboard is up.
+        return interactive.any { it.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD }
+    }
+
+    private fun refreshImePackages() {
+        val imm = try {
+            getSystemService(InputMethodManager::class.java)
+        } catch (_: Exception) {
+            null
+        }
+        cachedImePackages = try {
+            imm?.enabledInputMethodList?.mapNotNull { it.packageName }?.toSet() ?: emptySet()
+        } catch (_: Exception) {
+            emptySet()
+        }
+        lastImeRefreshAt = SystemClock.elapsedRealtime()
+    }
+
+    private fun isImePackage(pkg: String): Boolean {
+        if (pkg in IME_PACKAGE_HINTS) return true
+        if (cachedImePackages.isEmpty() &&
+            SystemClock.elapsedRealtime() - lastImeRefreshAt > IME_REFRESH_INTERVAL_MS
+        ) {
+            refreshImePackages()
+        }
+        if (pkg in cachedImePackages) return true
+        return try {
+            val current = Settings.Secure.getString(contentResolver, Settings.Secure.DEFAULT_INPUT_METHOD)
+            current != null && current.substringBefore('/') == pkg
+        } catch (_: Exception) {
+            false
         }
     }
 
@@ -520,6 +670,35 @@ class GameAccessibilityService : AccessibilityService() {
 
         /** Refresh human=true at this cadence while the user keeps interacting. */
         private const val HUMAN_HEARTBEAT_MS = 1_000L
+
+        /** Refusal ack code when the user is using GoPlay itself or a keyboard. */
+        private const val ERROR_USER_BUSY = "user_busy"
+
+        /** User-facing reason sent back to the core for a refused command. */
+        private const val BUSY_MESSAGE = "用户正在使用灵动岛/键盘，AI 已让出输入"
+
+        /** At most one "yielded input" log line per this interval. */
+        private const val YIELD_LOG_INTERVAL_MS = 2_000L
+
+        /** Re-query installed input methods at most this often. */
+        private const val IME_REFRESH_INTERVAL_MS = 10_000L
+
+        /**
+         * Keyboard packages seen in the wild; [InputMethodManager.enabledInputMethodList]
+         * and Settings.Secure are the authoritative sources, this is only a fallback
+         * for devices where both are empty.
+         */
+        private val IME_PACKAGE_HINTS = setOf(
+            "com.google.android.inputmethod.latin",
+            "com.android.inputmethod.latin",
+            "com.baidu.input",
+            "com.iflytek.inputmethod",
+            "com.sohu.inputmethod.sogou",
+            "com.tencent.qqpinyin",
+            "com.touchtype.swiftkey",
+            "com.samsung.android.honeyboard",
+            "com.microsoft.swiftkey",
+        )
 
         /**
          * Echo grace for injected gestures comes from

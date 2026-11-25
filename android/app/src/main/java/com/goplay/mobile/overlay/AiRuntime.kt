@@ -21,4 +21,9 @@ data class AiRuntime(
     val waiting: Boolean = false,
     val waitReason: String = "",
     val human: Boolean = false,
+    // Real voice facts from VoiceBridge; empty/false means "no data", never a guess.
+    val listening: Boolean = false,
+    val speaking: Boolean = false,
+    val lastHeard: String = "",
+    val lastSpoken: String = "",
 )

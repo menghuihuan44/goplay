@@ -103,6 +103,19 @@ class ScreenCaptureService : Service() {
     /** Human-readable reason shown on the pill and in the notification. */
     private var lastStopReason: String? = null
 
+    /**
+     * True when the current pause was caused by expanding the island (the user
+     * may be typing). Only such pauses are auto-resumed on collapse; a manual
+     * user pause must survive an expand/collapse cycle.
+     */
+    private var pausedByOverlay = false
+
+    /**
+     * Degraded mode (no projection) cannot pause locally, so an island expand
+     * only tells the core to stop. This flag makes the collapse resume it.
+     */
+    private var restPausedByOverlay = false
+
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
             // The system (or the user via the system UI) revoked the projection.
@@ -242,6 +255,8 @@ class ScreenCaptureService : Service() {
             return
         }
         paused = false
+        pausedByOverlay = false
+        restPausedByOverlay = false
         publishStatus()
         startForegroundCompat(describeCapture(), paused = false)
         showOverlay()
@@ -606,6 +621,10 @@ class ScreenCaptureService : Service() {
             context = this,
             callbacks = object : OverlayController.Callbacks {
                 override fun onPauseToggle() {
+                    // An explicit pause/resume tap is the user's decision; it
+                    // overrides the automatic island-expanded pause.
+                    pausedByOverlay = false
+                    restPausedByOverlay = false
                     if (paused) resumeCapture() else pauseCapture()
                 }
 
@@ -628,7 +647,7 @@ class ScreenCaptureService : Service() {
                 }
 
                 override fun onExpandedChanged(expanded: Boolean) {
-                    if (expanded) graph.logs.log("悬浮球展开")
+                    handleOverlayExpandedChanged(expanded)
                 }
 
                 override fun onOpenApp() {
@@ -659,6 +678,48 @@ class ScreenCaptureService : Service() {
     }
 
     /**
+     * The island expand/collapse is the user's input intent signal: while it is
+     * open the AI must not receive actions (the core pause), and the
+     * accessibility service additionally refuses gestures through InputGate.
+     */
+    private fun handleOverlayExpandedChanged(expanded: Boolean) {
+        if (expanded) {
+            graph.logs.log("悬浮球展开：用户可能正在输入，AI 暂停")
+            if (paused) {
+                graph.logs.log("AI 已暂停（用户手动暂停或已让出），保持暂停")
+                return
+            }
+            if (projection == null) {
+                // Degraded service without a projection: nothing local to pause,
+                // but the core must still stop dispatching actions.
+                restPausedByOverlay = true
+                serviceScope.launch {
+                    val result = graph.rest.pause("overlay")
+                    graph.logs.log("REST pause（悬浮球展开）: " + result.display())
+                }
+                return
+            }
+            pausedByOverlay = true
+            pauseCapture()
+            return
+        }
+        graph.logs.log("悬浮球收起")
+        if (restPausedByOverlay) {
+            restPausedByOverlay = false
+            serviceScope.launch {
+                val result = graph.rest.resume()
+                graph.logs.log("REST resume（悬浮球收起）: " + result.display())
+            }
+        }
+        if (!pausedByOverlay) return
+        pausedByOverlay = false
+        if (paused) {
+            graph.logs.log("用户输入结束，恢复 AI 控制")
+            resumeCapture()
+        }
+    }
+
+    /**
      * Pill "recover" action. If the projection is still alive we can rebuild
      * the surface in place; only a genuinely revoked projection needs the
      * system consent dialog again.
@@ -670,6 +731,8 @@ class ScreenCaptureService : Service() {
                 degraded = false
                 lastStopReason = null
                 paused = false
+                pausedByOverlay = false
+                restPausedByOverlay = false
                 publishStatus()
                 overlay?.setStatus(null, isError = false)
                 updateOverlayState(connected = graph.client.isConnected)
@@ -735,6 +798,10 @@ class ScreenCaptureService : Service() {
         waiting = session.aiWaiting,
         waitReason = session.aiWaitReason,
         human = session.aiHuman,
+        listening = session.aiListening,
+        speaking = session.aiSpeaking,
+        lastHeard = session.aiLastHeard,
+        lastSpoken = session.aiLastSpoken,
     )
 
     private fun updateNotification(
@@ -789,6 +856,8 @@ class ScreenCaptureService : Service() {
         if (projection == null && degraded) return
         degraded = true
         lastStopReason = reason
+        pausedByOverlay = false
+        restPausedByOverlay = false
         graph.logs.log("截屏中断：" + reason + "（保留悬浮球与前台服务）")
         releaseProjection()
         graph.metrics.updateFps(0.0)
@@ -854,6 +923,8 @@ class ScreenCaptureService : Service() {
         releaseProjection()
         degraded = false
         lastStopReason = null
+        pausedByOverlay = false
+        restPausedByOverlay = false
         STATE.value = CaptureStatus()
         try {
             graph.client.disconnect()
@@ -914,5 +985,18 @@ class ScreenCaptureService : Service() {
 
         fun commandIntent(context: Context, action: String): Intent =
             Intent(context, ScreenCaptureService::class.java).apply { this.action = action }
+
+        /**
+         * Asks the running capture service to recover the projection after the
+         * core sent "recover_capture". Silently ignored when the service is not
+         * running, because Android forbids background startService() then and
+         * the pill's own recover button still works.
+         */
+        fun requestRecover(context: Context) {
+            try {
+                context.startService(commandIntent(context, ACTION_RECOVER))
+            } catch (_: Exception) {
+            }
+        }
     }
 }

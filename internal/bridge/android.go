@@ -135,6 +135,21 @@ func (s *Session) Attach(tr Transport) func() {
 	}
 }
 
+// RequestRecover asks the phone client to rebuild its screen capture when the
+// frame stream stalls (rotation, permission dialog, surface loss). It is a
+// control message, not a game action, so it bypasses the ack waiter.
+func (s *Session) RequestRecover(reason string) error {
+	s.mu.Lock()
+	tr := s.tr
+	s.mu.Unlock()
+	if tr == nil {
+		return fmt.Errorf("bridge: no Android client connected")
+	}
+	return tr.SendJSON(map[string]any{
+		"type": "recover_capture", "reason": reason, "at": time.Now().UnixMilli(),
+	})
+}
+
 // SetClient records hello metadata for status display.
 func (s *Session) SetClient(client, device string) {
 	s.mu.Lock()

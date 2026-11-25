@@ -149,6 +149,34 @@
           </section>
         </div>
 
+        <section class="panel voice-panel">
+          <div class="panel-head"><div><h3>实时语音（ASR / TTS 层）</h3><p>听你说话用手机/浏览器的系统识别；AI 怎么说话可以选择系统语音、API TTS 或本地/自建 TTS 接口。</p></div><span class="tag" id="voiceTag">系统语音</span></div>
+          <div id="voiceStatus" class="voice-status">还没有语音状态。开始实时通话后这里会显示 AI 是否在听、是否在说、听到了什么、说了什么。</div>
+          <form id="voiceForm" class="form compact-form">
+            <div class="form-row">
+              <label>语音识别<select id="voiceASR"><option value="system">系统识别（推荐）</option><option value="off">关闭识别</option></select></label>
+              <label>语音合成<select id="voiceTTS"><option value="system">系统语音（免费、离线）</option><option value="api">API TTS</option><option value="local">本地/自建 TTS 接口</option></select></label>
+            </div>
+            <label>TTS 接口地址<input id="voiceBase" placeholder="留空则复用上面 API 地址，例如 http://127.0.0.1:8080/v1" autocomplete="off"></label>
+            <div class="form-row">
+              <label>模型<input id="voiceModel" placeholder="tts-1" autocomplete="off"></label>
+              <label>音色<input id="voiceName" placeholder="alloy" autocomplete="off"></label>
+            </div>
+            <div class="form-row">
+              <label>API Key<input id="voiceKey" type="password" placeholder="留空则不修改" autocomplete="new-password"></label>
+              <label>语速<input id="voiceSpeed" type="number" step="0.1" min="0.5" max="2" placeholder="1.0"></label>
+            </div>
+            <label class="check"><input id="voiceEnabled" type="checkbox"> 允许 AI 朗读（开场白、每 10 次动作、回复和语音通话）</label>
+            <div class="form-actions wrap">
+              <button type="submit" class="primary-btn">保存语音设置</button>
+              <button type="button" class="pill-btn" id="voiceTest">试听一句</button>
+              <button type="button" class="link-btn" id="voiceClearBase">清除接口地址</button>
+              <button type="button" class="link-btn danger-text" id="voiceClear">清除 TTS Key</button>
+            </div>
+            <p class="form-note" id="voiceNote">Key 只保存在本机；本机模式不打包语音模型，需要你提供一个本地 OpenAI 兼容语音服务，失败会自动回退系统语音。</p>
+          </form>
+        </section>
+
         <section class="panel info-panel">
           <h3>为什么不是一个很大的模型？</h3>
           <p>手机 RAM 和算力有限。GoPlay 把任务拆开：轻量模型或规则做状态过滤，推理级小模型只做策略选择，规则引擎做输出校验和动作序列化。下载的是与设备档位匹配的一个或几个小模型，不是把所有模型塞进安装包。</p>

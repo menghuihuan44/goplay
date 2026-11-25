@@ -29,6 +29,20 @@ type LLMConfig struct {
 	Routes      map[string]RouteConfig `json:"routes,omitempty"`
 }
 
+// VoiceConfig controls speech output. ASR stays on the platform recognizer;
+// TTS can be the system voice or an OpenAI-compatible speech endpoint.
+type VoiceConfig struct {
+	Enabled  bool    `json:"enabled"`
+	TTSMode  string  `json:"tts_mode"` // system, api, local
+	ASRMode  string  `json:"asr_mode"` // system, off
+	BaseURL  string  `json:"base_url,omitempty"`
+	APIKey   string  `json:"api_key,omitempty"`
+	Model    string  `json:"model,omitempty"`
+	Voice    string  `json:"voice,omitempty"`
+	Language string  `json:"language,omitempty"`
+	Speed    float64 `json:"speed,omitempty"`
+}
+
 type LocalConfig struct {
 	ModelsDir     string  `json:"models_dir"`
 	RuntimePath   string  `json:"runtime_path"`
@@ -52,6 +66,7 @@ type Config struct {
 	AutoStart      bool        `json:"auto_start"`
 	OverlayURL     string      `json:"overlay_url"`
 	LLM            LLMConfig   `json:"llm"`
+	Voice          VoiceConfig `json:"voice"`
 	Local          LocalConfig `json:"local"`
 	Version        string      `json:"version,omitempty"`
 }
@@ -89,6 +104,10 @@ func Default() Config {
 			MaxTokens:   512,
 			TimeoutMS:   45000,
 			Vision:      false,
+		},
+		Voice: VoiceConfig{
+			Enabled: true, TTSMode: "system", ASRMode: "system",
+			Model: "tts-1", Voice: "alloy", Language: "zh-CN", Speed: 1.0,
 		},
 		Local: LocalConfig{
 			ModelsDir:     filepath.Join(data, "models"),

@@ -37,12 +37,12 @@ type VisionAnalyzer struct {
 
 func NewVisionAnalyzer(p llm.Provider, fallback Analyzer) *VisionAnalyzer {
 	if fallback == nil {
-		fallback = GenericAnalyzer{}
+		fallback = NewGenericAnalyzer()
 	}
 	return &VisionAnalyzer{Provider: p, Fallback: fallback, MinInterval: time.Second, MaxWidth: 1280, Timeout: 12 * time.Second}
 }
 
-func (v *VisionAnalyzer) Name() string { return "vision+generic-v1" }
+func (v *VisionAnalyzer) Name() string { return "vision+visual-v2" }
 
 func (v *VisionAnalyzer) Stats() map[string]any {
 	v.mu.Lock()

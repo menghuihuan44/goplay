@@ -41,6 +41,9 @@ class OverlayPanel(
     private val chevron: TextView
     private val body: LinearLayout
     private val aiLine: TextView
+
+    /** What the AI actually heard or said; hidden until there is real data. */
+    private val voiceLine: TextView
     private val input: EditText
     private val pauseButton: Button
     private val panelButton: Button
@@ -157,6 +160,21 @@ class OverlayPanel(
         }
         body.addView(
             aiLine,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply { topMargin = dp(2) },
+        )
+        voiceLine = TextView(context).apply {
+            visibility = GONE
+            setTextColor(ContextCompat.getColor(context, R.color.text_secondary))
+            textSize = 10f
+            maxLines = 2
+            ellipsize = TextUtils.TruncateAt.END
+            setPadding(dp(2), 0, dp(2), 0)
+        }
+        body.addView(
+            voiceLine,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -491,6 +509,7 @@ class OverlayPanel(
         }
         aiLine.text = aiDetail(ai)
         aiLine.visibility = VISIBLE
+        renderVoice(ai)
         pauseButton.text = if (lastPaused) "继续" else "暂停"
         pauseButton.isEnabled = lastRunning
         // Stop stays enabled even after the projection died: it is the only way to
@@ -533,6 +552,24 @@ class OverlayPanel(
         if (ai.model.isNotBlank()) bits += "模型 " + ai.model.trim()
         if (ai.errors > 0) bits += "错误 " + ai.errors
         return "AI：" + bits.joinToString(" · ")
+    }
+
+    /**
+     * Shows the real microphone/speaker state. Blank values collapse the line
+     * instead of inventing a "listening" claim the app cannot back up.
+     */
+    private fun renderVoice(ai: AiRuntime) {
+        val bits = mutableListOf<String>()
+        if (ai.speaking) bits += "🔊 正在说"
+        if (ai.listening) bits += "🎙 正在听"
+        if (ai.lastHeard.isNotBlank()) bits += "上次听到：" + ai.lastHeard.trim()
+        if (ai.lastSpoken.isNotBlank()) bits += "上次说：" + ai.lastSpoken.trim()
+        if (bits.isEmpty()) {
+            voiceLine.visibility = GONE
+            return
+        }
+        voiceLine.text = bits.joinToString(" · ")
+        voiceLine.visibility = VISIBLE
     }
 
     fun focusInput() {

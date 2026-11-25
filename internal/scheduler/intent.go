@@ -18,6 +18,7 @@ const (
 	IntentPreference IntentKind = "preference"
 	IntentQuestion   IntentKind = "question"
 	IntentCommand    IntentKind = "command"
+	IntentDirective  IntentKind = "directive"
 	IntentChat       IntentKind = "chat"
 )
 
@@ -29,8 +30,19 @@ type Intent struct {
 	Constraint *domain.Constraint `json:"constraint,omitempty"`
 	Preference *domain.Preference `json:"preference,omitempty"`
 	Command    string             `json:"command,omitempty"`
+	Directive  *Directive         `json:"directive,omitempty"`
 	Confidence float64            `json:"confidence"`
 	Reply      string             `json:"reply,omitempty"`
+}
+
+// Directive is a short-lived, one-shot instruction ("press Z", "walk right",
+// "click Start"). It is intentionally not persisted: it applies to the next
+// event boundary and then gets out of the way.
+type Directive struct {
+	Text    string        `json:"text"`
+	Action  domain.Action `json:"action"`
+	At      time.Time     `json:"at"`
+	Expires time.Time     `json:"expires"`
 }
 
 type ClassifyContext struct {
@@ -95,6 +107,17 @@ func (RuleClassifier) Classify(msg Message, cc ClassifyContext) Intent {
 	// Constraint language with a concrete action/target.
 	if c, ok := parseConstraint(text, low, msg, cc, now); ok {
 		return c
+	}
+
+	// A direct, positive instruction ("press Z", "walk right", "click start")
+	// must reach the next decision instead of being acknowledged as chat.
+	if act, ok := parseDirective(text); ok {
+		base.Kind = IntentDirective
+		base.Scope = "instance"
+		base.Directive = &Directive{Text: text, Action: act, At: now, Expires: now.Add(20 * time.Second)}
+		base.Confidence = 0.88
+		base.Reply = fmt.Sprintf("指令已排队：下一个决策周期执行「%s」。", act.Reason)
+		return base
 	}
 
 	if reQuestion.MatchString(low) || strings.HasSuffix(text, "。") == false && strings.HasSuffix(text, "?") {
@@ -219,6 +242,119 @@ func parseTTL(low string) time.Duration {
 		}
 	}
 	return 0
+}
+
+var (
+	reDirectiveKey = regexp.MustCompile(`(?i)(?:按下?|敲|点击|press|hit)\s*([a-z0-9]+|回车|空格|方向键[上下左右]|上|下|左|右|enter|esc|space)`)
+	reInputText    = regexp.MustCompile(`(?i)(?:输入|type)\s*[:：]?\s*(.{1,40})$`)
+)
+
+// parseDirective turns a positive imperative into one concrete action. It is
+// deliberately conservative: if the sentence does not name a key, direction,
+// click target or text, it stays chat instead of guessing.
+func parseDirective(text string) (domain.Action, bool) {
+	low := strings.ToLower(strings.TrimSpace(text))
+	if low == "" {
+		return domain.Action{}, false
+	}
+	if m := reInputText.FindStringSubmatch(strings.TrimSpace(text)); m != nil {
+		body := strings.TrimSpace(m[1])
+		if body != "" && !strings.ContainsAny(body, "?？") {
+			return domain.Action{
+				Kind: "directive_text", Target: "focused", Tags: []string{"directive", "text"},
+				Risk: 0.15, Reason: "输入文字 " + body,
+				Input: &domain.InputSpec{Type: "text", Text: body},
+			}, true
+		}
+	}
+	if m := reDirectiveKey.FindStringSubmatch(low); m != nil {
+		if act, ok := keyDirective(m[1]); ok {
+			return act, true
+		}
+	}
+	switch {
+	case strings.Contains(low, "点开始") || strings.Contains(low, "点击开始") ||
+		strings.Contains(low, "开始游戏") || strings.Contains(low, "进入游戏") ||
+		strings.Contains(low, "点确定") || strings.Contains(low, "点击确定") ||
+		strings.Contains(low, "点确认") || strings.Contains(low, "点击确认") ||
+		strings.Contains(low, "click start") || strings.Contains(low, "enter the game"):
+		return keyDirective("enter")
+	case strings.Contains(low, "点中间") || strings.Contains(low, "屏幕中间") || strings.Contains(low, "点中央"):
+		return clickDirective(0.5, 0.5, "点击屏幕中间"), true
+	case strings.Contains(low, "点左上") || strings.Contains(low, "左上角"):
+		return clickDirective(0.2, 0.2, "点击左上角"), true
+	case strings.Contains(low, "点右上") || strings.Contains(low, "右上角"):
+		return clickDirective(0.8, 0.2, "点击右上角"), true
+	case strings.Contains(low, "点左下") || strings.Contains(low, "左下角"):
+		return clickDirective(0.2, 0.8, "点击左下角"), true
+	case strings.Contains(low, "点右下") || strings.Contains(low, "右下角"):
+		return clickDirective(0.8, 0.8, "点击右下角"), true
+	}
+	for _, d := range []struct {
+		words []string
+		key   string
+	}{
+		{[]string{"往右", "向右", "朝右", "右走", "右边走"}, "right"},
+		{[]string{"往左", "向左", "朝左", "左走", "左边走"}, "left"},
+		{[]string{"往上", "向上", "朝上", "上走", "往上走"}, "up"},
+		{[]string{"往下", "向下", "朝下", "下走", "往下走"}, "down"},
+	} {
+		for _, w := range d.words {
+			if strings.Contains(low, w) {
+				act, _ := keyDirective(d.key)
+				act.Reason = "向" + map[string]string{"right": "右", "left": "左", "up": "上", "down": "下"}[d.key] + "移动"
+				if act.Input != nil {
+					act.Input.DurationMS = 320
+				}
+				return act, true
+			}
+		}
+	}
+	switch {
+	case strings.Contains(low, "攻击") || strings.Contains(low, "射击") || strings.Contains(low, "开火") || strings.Contains(low, "打它"):
+		return keyDirective("z")
+	case strings.Contains(low, "跳一下") || strings.Contains(low, "跳"):
+		return keyDirective("space")
+	case strings.Contains(low, "确认") || strings.Contains(low, "确定") || strings.Contains(low, "选它") || strings.Contains(low, "选这个"):
+		return keyDirective("enter")
+	}
+	return domain.Action{}, false
+}
+
+func keyDirective(name string) (domain.Action, bool) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	switch name {
+	case "回车", "enter", "return":
+		name = "enter"
+	case "空格", "space", "空格键":
+		name = "space"
+	case "上", "方向键上", "up":
+		name = "up"
+	case "下", "方向键下", "down":
+		name = "down"
+	case "左", "方向键左", "left":
+		name = "left"
+	case "右", "方向键右", "right":
+		name = "right"
+	case "esc", "escape", "退出键":
+		name = "esc"
+	}
+	if name == "" {
+		return domain.Action{}, false
+	}
+	return domain.Action{
+		Kind: "directive_key_" + name, Target: "game", Tags: []string{"directive", "key", "manual"},
+		Risk: 0.08, Reason: "按 " + strings.ToUpper(name) + " 键",
+		Input: &domain.InputSpec{Type: "key", Key: name, DurationMS: 120},
+	}, true
+}
+
+func clickDirective(x, y float64, reason string) domain.Action {
+	return domain.Action{
+		Kind: "directive_click", Target: "screen", Tags: []string{"directive", "click", "manual"},
+		Risk: 0.10, Reason: reason,
+		Input: &domain.InputSpec{Type: "click", X: x, Y: y},
+	}
 }
 
 func parsePreference(text, low string, msg Message, now time.Time) (Intent, bool) {

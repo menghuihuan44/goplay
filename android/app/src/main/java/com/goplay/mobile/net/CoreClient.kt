@@ -341,6 +341,12 @@ class CoreClient(
                 onServerMessage?.invoke(message)
             }
 
+            // The core detected a dead/blank capture and asks the app to recover.
+            "recover_capture" -> {
+                logs.log("核心请求恢复截屏")
+                onServerMessage?.invoke(message)
+            }
+
             else -> onServerMessage?.invoke(message)
         }
     }

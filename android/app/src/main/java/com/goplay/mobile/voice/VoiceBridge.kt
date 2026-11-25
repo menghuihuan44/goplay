@@ -16,6 +16,18 @@ import org.json.JSONObject
 import java.util.Locale
 
 /**
+ * One immutable snapshot of the voice pipeline, published to the UI.
+ * [error] is the last recognition/TTS error, kept until the next success.
+ */
+data class VoiceState(
+    val listening: Boolean = false,
+    val speaking: Boolean = false,
+    val lastHeard: String = "",
+    val lastSpoken: String = "",
+    val error: String? = null,
+)
+
+/**
  * Continuous speech input plus spoken replies for the WebView console.
  *
  * All methods and callbacks run on the main thread: SpeechRecognizer requires a
@@ -32,11 +44,23 @@ class VoiceBridge(
     private val context: Context,
     private val log: (String) -> Unit,
     private val evaluate: (String) -> Unit,
+    /** Called with a fresh snapshot on every voice state change. */
+    private val onState: ((VoiceState) -> Unit)? = null,
 ) {
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private var recognizer: SpeechRecognizer? = null
     private var listening = false
+
+    /** Latest snapshot surface (capture status, overlay, JS bridge all read it). */
+    @Volatile
+    private var current = VoiceState()
+
+    /** Last snapshot handed to [onState], used to drop duplicate callbacks. */
+    private var lastPublished: VoiceState? = null
+
+    /** Current voice state; safe to read from any thread. */
+    val state: VoiceState get() = current
 
     /** True between start() and stop(): the user wants an ongoing conversation. */
     private var conversation = false
@@ -67,7 +91,8 @@ class VoiceBridge(
         if (listening) return null
         conversation = true
         pausedForSpeech = false
-        listening = true
+        setListening(true)
+        clearError()
         restartDelayMs = BASE_RESTART_MS
         startRecognizer()
         log("连续语音识别已启动")
@@ -83,7 +108,7 @@ class VoiceBridge(
     }
 
     private fun stopListeningInternal() {
-        listening = false
+        setListening(false)
         cancelPendingRestart()
         releaseRecognizer()
     }
@@ -107,6 +132,10 @@ class VoiceBridge(
             stopListeningInternal()
             log("AI 开始说话，暂停听音")
         }
+        // Record what the AI is about to say before the engine plays it, so the
+        // island shows the same text the user hears.
+        current = current.copy(lastSpoken = clean)
+        publishState()
         if (tts == null || !ttsReady) {
             // Queue instead of failing: the engine may still be initialising on
             // the first call. It will speak as soon as it is ready.
@@ -130,6 +159,7 @@ class VoiceBridge(
         }
         val result = engine.speak(clipped, TextToSpeech.QUEUE_FLUSH, null, UTTERANCE_ID)
         if (result != TextToSpeech.SUCCESS) {
+            recordError("TTS 播放失败（" + result + "）")
             resumeAfterSpeech()
             return "TTS 播放失败（" + result + "）"
         }
@@ -151,7 +181,7 @@ class VoiceBridge(
         if (!pausedForSpeech) return
         pausedForSpeech = false
         if (!conversation || destroyed || listening) return
-        listening = true
+        setListening(true)
         restartDelayMs = BASE_RESTART_MS
         startRecognizer()
         log("AI 说完，继续听音")
@@ -164,13 +194,13 @@ class VoiceBridge(
 
     fun release() {
         destroyed = true
-        listening = false
+        setListening(false)
         cancelPendingRestart()
         releaseRecognizer()
         val engine = tts
         tts = null
         ttsReady = false
-        speaking = false
+        markSpeaking(false)
         try {
             engine?.stop()
             engine?.shutdown()
@@ -190,7 +220,7 @@ class VoiceBridge(
             } catch (e: Exception) {
                 log("创建语音识别失败: " + e.message)
                 emitError("创建语音识别失败")
-                listening = false
+                setListening(false)
                 return
             }
             current.setRecognitionListener(listener)
@@ -234,6 +264,9 @@ class VoiceBridge(
         override fun onResults(results: Bundle?) {
             val text = firstResult(results)
             if (!text.isNullOrBlank()) {
+                // Real heard text: the island may show it, the console receives it.
+                current = current.copy(lastHeard = text, error = null)
+                publishState()
                 emit("window.goplayVoiceFinal(" + JSONObject.quote(text) + ")")
             }
             // Continuous conversation: speak again after every final utterance.
@@ -248,7 +281,7 @@ class VoiceBridge(
             log("语音识别错误 " + error + "：" + message)
             emitError(message)
             if (permanent) {
-                listening = false
+                setListening(false)
                 releaseRecognizer()
                 return
             }
@@ -409,12 +442,48 @@ class VoiceBridge(
     private fun markSpeaking(value: Boolean) {
         if (speaking == value) return
         speaking = value
+        current = current.copy(speaking = value)
+        publishState()
         emit("window.goplaySpeaking(" + value + ")")
+    }
+
+    private fun setListening(value: Boolean) {
+        if (listening == value) return
+        listening = value
+        current = current.copy(listening = value)
+        publishState()
+    }
+
+    /** Keeps the last error visible until the next successful utterance. */
+    private fun recordError(message: String) {
+        if (current.error == message) return
+        current = current.copy(error = message)
+        publishState()
+    }
+
+    private fun clearError() {
+        if (current.error == null) return
+        current = current.copy(error = null)
+        publishState()
+    }
+
+    /** Hands a changed snapshot to [onState]; duplicates are dropped. */
+    private fun publishState() {
+        val snapshot = current
+        if (snapshot == lastPublished) return
+        lastPublished = snapshot
+        val listener = onState ?: return
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            listener(snapshot)
+        } else {
+            mainHandler.post { listener(snapshot) }
+        }
     }
 
     // ---- JS ----------------------------------------------------------------
 
     private fun emitError(message: String) {
+        recordError(message)
         emit("window.goplayVoiceError(" + JSONObject.quote(message) + ")")
     }
 

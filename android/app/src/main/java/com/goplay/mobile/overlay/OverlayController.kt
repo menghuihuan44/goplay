@@ -8,6 +8,7 @@ import android.provider.Settings
 import android.util.DisplayMetrics
 import android.view.Gravity
 import android.view.WindowManager
+import com.goplay.mobile.input.InputGate
 import kotlin.math.max
 
 /**
@@ -17,7 +18,7 @@ import kotlin.math.max
 class OverlayController(
     private val context: Context,
     private val callbacks: Callbacks,
-) {
+) : InputGate.Overlay {
     interface Callbacks {
         fun onPauseToggle()
         fun onStop()
@@ -36,6 +37,12 @@ class OverlayController(
     private val panel = OverlayPanel(context, callbacks)
     private var params: WindowManager.LayoutParams? = null
     private var shown = false
+
+    /** Mirrors [OverlayPanel.isExpanded]; read by [InputGate] from the AI side. */
+    private var expanded = false
+
+    /** True while an AI gesture is being dispatched; the window is not touchable. */
+    private var aiGesture = false
 
     init {
         panel.onDrag = { dx, dy -> moveBy(dx, dy) }
@@ -65,6 +72,7 @@ class OverlayController(
             windowManager.addView(panel, layoutParams)
             params = layoutParams
             shown = true
+            InputGate.attach(this)
             true
         } catch (e: Exception) {
             false
@@ -92,6 +100,24 @@ class OverlayController(
 
     val isShown: Boolean get() = shown
 
+    /** True while the island is expanded (the user may be typing there). */
+    override val isExpanded: Boolean get() = expanded
+
+    /**
+     * Marks the short window in which the AI dispatches a gesture.
+     *
+     * While active the island window gets FLAG_NOT_TOUCHABLE so a tap/swipe that
+     * the AI aimed at the game cannot land on the island (or its keyboard).
+     * Ending the window restores exactly the flags that collapsible/expanded
+     * state requires: expanded stays touchable and focusable, collapsed stays
+     * NOT_FOCUSABLE.
+     */
+    override fun setAiGesture(active: Boolean) {
+        if (aiGesture == active) return
+        aiGesture = active
+        applyWindowFlags()
+    }
+
     /** Expand the pill into the compact console, e.g. after tapping 灵动岛. */
     fun expand() {
         if (!shown) return
@@ -101,6 +127,9 @@ class OverlayController(
     fun destroy() {
         if (!shown) return
         shown = false
+        InputGate.detach(this)
+        aiGesture = false
+        expanded = false
         savePosition()
         try {
             windowManager.removeView(panel)
@@ -123,8 +152,9 @@ class OverlayController(
     }
 
     private fun onExpanded(expanded: Boolean) {
+        this.expanded = expanded
         val p = params ?: return
-        p.flags = if (expanded) expandedFlags() else collapsedFlags()
+        p.flags = flagsFor(expanded, aiGesture)
         p.softInputMode = if (expanded) {
             WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
         } else {
@@ -142,6 +172,30 @@ class OverlayController(
             panel.hideKeyboard()
         }
         callbacks.onExpandedChanged(expanded)
+    }
+
+    /**
+     * Re-applies the current [expanded] + [aiGesture] flags to the window.
+     * Called from the AI gesture window (main thread) and from expansion
+     * changes, always deriving the flags from scratch so a missed end cannot
+     * leave the island permanently untouchable.
+     */
+    private fun applyWindowFlags() {
+        val p = params ?: return
+        p.flags = flagsFor(expanded, aiGesture)
+        try {
+            windowManager.updateViewLayout(panel, p)
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun flagsFor(expanded: Boolean, aiGesture: Boolean): Int {
+        val base = if (expanded) expandedFlags() else collapsedFlags()
+        return if (aiGesture) {
+            base or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        } else {
+            base
+        }
     }
 
     private fun collapsedFlags(): Int =

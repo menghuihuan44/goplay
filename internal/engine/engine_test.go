@@ -104,6 +104,31 @@ func TestRunnerLearnsAndWins(t *testing.T) {
 	}
 }
 
+func TestDirectiveKeyRunsRealProfileAction(t *testing.T) {
+	h := newHarnessN(t, "directive-1", 11, 10)
+	h.runner.Start()
+	defer h.runner.Stop()
+	h.sched.Submit(scheduler.Message{ID: "m1", Text: "按 A 键", Source: "user_text", At: time.Now()})
+	waitFor(t, 8*time.Second, "directive decision", func() bool {
+		snap := h.runner.Snapshot()
+		for _, ev := range snap.Trace {
+			if ev.Phase == "think" {
+				if src, _ := ev.Data["source"].(string); src == "directive" {
+					return true
+				}
+			}
+		}
+		return false
+	})
+	snap := h.runner.Snapshot()
+	if snap.Stats.Errors != 0 {
+		t.Fatalf("directive produced an execution error: %s", snap.Stats.LastError)
+	}
+	if snap.Stats.Actions == 0 {
+		t.Fatal("no action executed")
+	}
+}
+
 func TestRunnerCanRestartAfterStop(t *testing.T) {
 	h := newHarnessN(t, "restart", 7, 100)
 	h.runner.Start()

@@ -70,7 +70,7 @@ func TestMockRoundTripWithNoise(t *testing.T) {
 func TestGenericAnalyzer(t *testing.T) {
 	g := mockgame.New(7)
 	f := mockgame.Render(g)
-	st, world, err := GenericAnalyzer{}.Analyze(f)
+	st, world, err := NewGenericAnalyzer().Analyze(f)
 	if err != nil {
 		t.Fatal(err)
 	}

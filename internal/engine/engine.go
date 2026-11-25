@@ -10,6 +10,7 @@ import (
 	"image"
 	"image/jpeg"
 	"log/slog"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -100,8 +101,11 @@ type Runner struct {
 	waitKind     string
 	waitReason   string
 	waitSince    time.Time
+	lastRecover  time.Time
 	lastActions  []domain.Action
 	episodesList []EpisodeResult
+	traceSeq     int64
+	trace        []TraceEvent
 	epStart      time.Time
 	epActions    int64
 	epReward     float64
@@ -256,6 +260,20 @@ func (r *Runner) Resume() {
 	}
 }
 
+// trace appends one visible thought-chain event. It is called from the single
+// decision loop, but also from event handlers, so it takes the lock.
+func (r *Runner) traceEvent(phase, msg string, data map[string]any) {
+	r.mu.Lock()
+	r.traceSeq++
+	ev := TraceEvent{Seq: r.traceSeq, At: time.Now(), Phase: phase, Message: msg, Data: data}
+	r.trace = append(r.trace, ev)
+	if len(r.trace) > 60 {
+		r.trace = r.trace[len(r.trace)-60:]
+	}
+	r.mu.Unlock()
+	r.emit("instance.trace", map[string]any{"seq": ev.Seq, "phase": phase, "message": msg, "data": data})
+}
+
 func (r *Runner) Status() domain.InstanceStatus {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -292,6 +310,17 @@ type Snapshot struct {
 	Teaching  teach.Status            `json:"teaching"`
 	Episodes  []EpisodeResult         `json:"episodes,omitempty"`
 	Chat      []scheduler.ChatMessage `json:"chat,omitempty"`
+	// Trace is the agent's visible thought chain: what it saw, what it chose,
+	// what it pressed, and what changed. It is capped and safe to show in the UI.
+	Trace []TraceEvent `json:"trace,omitempty"`
+}
+
+type TraceEvent struct {
+	Seq     int64          `json:"seq"`
+	At      time.Time      `json:"at"`
+	Phase   string         `json:"phase"`
+	Message string         `json:"message"`
+	Data    map[string]any `json:"data,omitempty"`
 }
 
 type DecisionView struct {
@@ -324,6 +353,7 @@ func (r *Runner) Snapshot() Snapshot {
 		Waiting: r.waiting, WaitReason: r.waitReason, WaitSince: r.waitSince,
 		Control:  r.opts.Sched.Control(),
 		Episodes: append([]EpisodeResult(nil), r.episodesList...),
+		Trace:    append([]TraceEvent(nil), r.trace...),
 	}
 	r.mu.Unlock()
 	s.Display = domain.BuildDisplay(s.State, s.Stats, s.Stats.LastAction, s.Decision.Reason)
@@ -541,6 +571,7 @@ func (r *Runner) tick(ctx context.Context) {
 		r.drain(scheduler.BoundaryIdle, now)
 		return
 	}
+	r.maybeRecover()
 	if err := r.step(ctx); err != nil {
 		// A deliberate stop cancels the runner context. That is not a game or
 		// action failure, so it must not turn the instance card into an error.
@@ -645,6 +676,7 @@ func (r *Runner) noteWaiting(err error) bool {
 	if first {
 		r.log.Info("instance waiting for screen", "instance", r.opts.ID, "reason", reason)
 		r.emit("instance.waiting", map[string]any{"reason": reason})
+		r.traceEvent("wait", "画面/窗口暂不可用："+reason, map[string]any{"kind": kind})
 	}
 	return true
 }
@@ -659,7 +691,9 @@ func (r *Runner) clearWaiting() {
 	r.waitSince = time.Time{}
 	r.mu.Unlock()
 	if was {
-		r.emit("instance.waiting_end", map[string]any{"waited_ms": time.Since(since).Milliseconds()})
+		waited := time.Since(since).Milliseconds()
+		r.emit("instance.waiting_end", map[string]any{"waited_ms": waited})
+		r.traceEvent("resume", "画面恢复，继续决策", map[string]any{"waited_ms": waited})
 	}
 }
 
@@ -676,6 +710,52 @@ func (r *Runner) clearCaptureWaiting() {
 	}
 }
 
+// maybeRecover asks the perception source to rebuild a stalled capture. It is
+// throttled and only runs for capture waits: a background game window cannot be
+// recovered by the agent and must be brought forward by the user.
+func sameInput(a, b *domain.InputSpec) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	if a.Type != b.Type {
+		return false
+	}
+	switch a.Type {
+	case "key":
+		return a.Key != "" && strings.EqualFold(a.Key, b.Key)
+	case "click":
+		return math.Abs(a.X-b.X) < 0.001 && math.Abs(a.Y-b.Y) < 0.001
+	case "text":
+		return a.Text == b.Text
+	}
+	return false
+}
+
+func (r *Runner) maybeRecover() {
+	now := time.Now()
+	r.mu.Lock()
+	waiting, kind := r.waiting, r.waitKind
+	since, last := r.waitSince, r.lastRecover
+	r.mu.Unlock()
+	if !waiting || kind != "capture" || since.IsZero() {
+		return
+	}
+	if now.Sub(since) < 3*time.Second || (!last.IsZero() && now.Sub(last) < 3*time.Second) {
+		return
+	}
+	r.mu.Lock()
+	r.lastRecover = now
+	r.mu.Unlock()
+	if rec, ok := r.opts.Source.(interface{ RequestRecover(string) error }); ok {
+		if err := rec.RequestRecover("frame stream stalled"); err != nil {
+			r.traceEvent("recover", "请求手机重建截屏失败："+err.Error(), nil)
+			return
+		}
+		r.traceEvent("recover", "已请求手机重建截屏（旋转/权限/断流自动恢复）", nil)
+		return
+	}
+	r.traceEvent("recover", "等待画面恢复，当前采集源不支持主动重建", nil)
+}
 func (r *Runner) step(ctx context.Context) error {
 	start := time.Now()
 	// A desktop executor can require its game window to be foreground. Check
@@ -703,6 +783,11 @@ func (r *Runner) step(ctx context.Context) error {
 		return fmt.Errorf("analyze: %w", err)
 	}
 	r.opts.Metrics.Observe(metrics.PerceptionLatencyMS, float64(time.Since(start).Milliseconds()))
+	r.traceEvent("see", st.Summary, map[string]any{
+		"tags": st.Tags, "scene_change": st.Value("scene_change"),
+		"frame_delta": st.Value("frame_delta"), "edge_ratio": st.Value("edge_ratio"),
+		"hash": shortHash(st.Hash),
+	})
 
 	// Lua profile turns raw perception into semantic state and legal actions.
 	pst, err := r.opts.Profile.Observe(world, st)
@@ -757,10 +842,58 @@ func (r *Runner) step(ctx context.Context) error {
 		return nil
 	}
 
+	// One-shot directives are collected only when they can actually be applied.
+	// Taking them before a terminal/paused return would silently lose the user's
+	// instruction. They join the legal set so policy can pick an action the
+	// profile itself does not offer (for example a key unique to this game),
+	// while hard constraints still filter them.
+	var directiveActs []domain.Action
+	directiveReason := ""
+	for _, d := range r.opts.Sched.TakeDirectives() {
+		act := d.Action
+		// If the profile already exposes this exact input, run the profile
+		// action instead of the synthetic directive action. Executors such as
+		// the mock game validate the action kind, and the UI reads better when
+		// the real "attack" action is shown rather than "directive_key_a".
+		for _, legal := range acts {
+			if sameInput(legal.Input, act.Input) {
+				act = legal
+				break
+			}
+		}
+		directiveActs = append(directiveActs, act)
+		if directiveReason == "" {
+			directiveReason = "执行你的指令：" + d.Text
+		}
+	}
+	if len(directiveActs) > 0 {
+		r.traceEvent("directive", directiveReason, map[string]any{"count": len(directiveActs)})
+		merged := append([]domain.Action(nil), directiveActs...)
+		for _, a := range acts {
+			dup := false
+			for _, d := range directiveActs {
+				if d.Key() == a.Key() {
+					dup = true
+					break
+				}
+			}
+			if !dup {
+				merged = append(merged, a)
+			}
+		}
+		acts = merged
+	}
+
 	ctl := res.Control
 	dec := r.opts.Policy.Decide(ctx, policy.Input{
 		State: pst, Actions: acts, Control: ctl, Rules: r.opts.Profile.Rules, Hints: ctl.Hints,
 		Demo: demoActs, DemoReason: demoReason,
+		Directive: directiveActs, DirectiveReason: directiveReason,
+	})
+	r.traceEvent("think", fmt.Sprintf("有 %d 个合法动作，选择 %s", len(acts), dec.Action.Key()), map[string]any{
+		"source": dec.Source, "reason": dec.Reason, "state_key": dec.StateKey,
+		"demo": dec.Demo, "directive": len(directiveActs) > 0,
+		"llm_used": dec.LLMUsed, "candidates": candidateKeys(dec.Candidates, 6),
 	})
 	r.opts.Metrics.Observe(metrics.DecisionLatencyMS, dec.LatencyMS)
 	if dec.Source == "demo" && r.opts.Teacher != nil {
@@ -821,6 +954,10 @@ func (r *Runner) step(ctx context.Context) error {
 	r.stats.LastAction = dec.Action.Key()
 	r.mu.Unlock()
 	r.emit("instance.action", map[string]any{"action": dec.Action, "source": dec.Source, "latency_ms": lat})
+	r.traceEvent("act", "执行 "+dec.Action.Key(), map[string]any{
+		"input": inputView(dec.Action.Input), "source": dec.Source, "latency_ms": lat,
+		"reason": dec.Action.Reason,
+	})
 	if n := actionCount; n > 0 && n%10 == 0 {
 		reason := strings.TrimSpace(dec.Reason)
 		if len([]rune(reason)) > 60 {
@@ -851,9 +988,17 @@ func (r *Runner) step(ctx context.Context) error {
 		return fmt.Errorf("profile interpret: %w", err)
 	}
 	r.opts.Policy.Update(dec, interp.Reward)
+	effective := interp.Reward >= 0.05
+	r.traceEvent("result", interp.Note, map[string]any{
+		"reward": interp.Reward, "delta": interp.Delta, "terminal": interp.Terminal, "effective": effective,
+		"scene_change": st2.Value("scene_change"), "frame_delta": st2.Value("frame_delta"),
+	})
 
 	r.mu.Lock()
 	r.stats.Reward += interp.Reward
+	if effective {
+		r.stats.EffectiveActions++
+	}
 	if p := progressOf(st2, world2); p > r.stats.Progress {
 		r.stats.Progress = p
 	}
@@ -1039,6 +1184,49 @@ func (r *Runner) emit(kind string, data map[string]any) {
 		return
 	}
 	r.opts.Bus.Publish(bus.Event{Type: kind, InstanceID: r.opts.ID, Message: kind, Data: data})
+}
+
+func shortHash(h string) string {
+	if len(h) <= 8 {
+		return h
+	}
+	return h[:8]
+}
+
+// candidateKeys keeps the visible trace short while still showing what the
+// policy considered. It never exposes hidden model reasoning.
+func candidateKeys(cands []policy.Candidate, n int) []string {
+	if n <= 0 || len(cands) == 0 {
+		return nil
+	}
+	if len(cands) < n {
+		n = len(cands)
+	}
+	out := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		out = append(out, fmt.Sprintf("%s(%.2f)", cands[i].Action.Key(), cands[i].Score))
+	}
+	return out
+}
+
+func inputView(in *domain.InputSpec) map[string]any {
+	if in == nil {
+		return nil
+	}
+	m := map[string]any{"type": in.Type}
+	if in.Key != "" {
+		m["key"] = in.Key
+	}
+	if in.Text != "" {
+		m["text"] = in.Text
+	}
+	if in.Type == "click" || in.Type == "tap" {
+		m["x"], m["y"] = in.X, in.Y
+	}
+	if in.DurationMS > 0 {
+		m["duration_ms"] = in.DurationMS
+	}
+	return m
 }
 
 func classifyContext(id, name string, acts []domain.Action) scheduler.ClassifyContext {

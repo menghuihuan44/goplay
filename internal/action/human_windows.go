@@ -62,6 +62,8 @@ type SystemHuman struct {
 	ignoreThrough uint32
 	targetTitles  []string
 	events        []recordedEvent
+	lastHumanAt   time.Time
+	lastHumanTick uint32
 
 	prevKeys    map[int]bool
 	lastKeyAt   map[int]time.Time
@@ -161,34 +163,30 @@ func (s *SystemHuman) State(ctx context.Context) HumanState {
 		return HumanState{}
 	}
 
-	li := lastInputInfo{cbSize: uint32(unsafe.Sizeof(lastInputInfo{}))}
-	r, _, _ := procGetLastInputInfo.Call(uintptr(unsafe.Pointer(&li)))
-	if r == 0 {
+	// Do not use GetLastInputInfo alone here. Some DirectDraw/DirectInput games
+	// warp or clip the cursor every frame (or otherwise synthesize queue input)
+	// while the user is not touching anything. That keeps the system idle timer
+	// near zero and would pause the agent forever. We instead trust the polled
+	// keyboard/mouse buttons, which are the inputs a human actually plays with.
+	s.mu.Lock()
+	lastHumanAt := s.lastHumanAt
+	lastHumanTick := s.lastHumanTick
+	s.mu.Unlock()
+	if lastHumanTick <= ignoreThrough {
 		return HumanState{}
 	}
-	// Everything up to ignoreThrough was injected by us. A real key press after
-	// the action produces a newer dwTime and is detected normally.
-	if li.dwTime <= ignoreThrough {
-		return HumanState{}
-	}
-	tick, _, _ := procGetTickCount64.Call()
-	if tick == 0 {
-		return HumanState{}
-	}
-	now := uint64(tick)
-	last := uint64(li.dwTime)
-	idle := now - last
 	limit := s.IdleAfter
 	if limit <= 0 {
 		limit = 1200 * time.Millisecond
 	}
-	if time.Duration(idle)*time.Millisecond > limit {
+	idle := time.Since(lastHumanAt)
+	if idle > limit {
 		return HumanState{}
 	}
 	return HumanState{
 		Active: true,
-		Since:  time.Now().Add(-time.Duration(idle) * time.Millisecond),
-		Reason: "windows last-input idle time in target window",
+		Since:  lastHumanAt,
+		Reason: "windows keyboard/mouse input in target window",
 	}
 }
 
@@ -264,6 +262,10 @@ func (s *SystemHuman) scanKeys() {
 		// resetPressed() clears the edge map underneath us. Duplicate edges
 		// used to flood the teaching recorder and exhaust its step budget.
 		repeated := now.Sub(s.lastKeyAt[vk]) < 180*time.Millisecond
+		if down && tick > s.ignoreThrough {
+			s.lastHumanAt = now
+			s.lastHumanTick = tick
+		}
 		if down && !prev && tick > s.ignoreThrough && !repeated {
 			s.pushLocked(InputEvent{Type: "key", Key: name, At: now}, tick)
 			s.lastKeyAt[vk] = now
@@ -304,6 +306,10 @@ func (s *SystemHuman) scanMouse() {
 	for vk, name := range map[int]string{0x01: "left", 0x02: "right", 0x04: "middle"} {
 		down := keyDown(vk)
 		prev := s.prevButtons[vk]
+		if down && tick > s.ignoreThrough {
+			s.lastHumanAt = now
+			s.lastHumanTick = tick
+		}
 		if down && !prev && tick > s.ignoreThrough {
 			s.pushLocked(InputEvent{Type: "mouse_down", Button: name, X: x, Y: y, At: now}, tick)
 		}

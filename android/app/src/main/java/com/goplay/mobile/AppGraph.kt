@@ -78,6 +78,13 @@ class AppGraph(context: Context) {
                     _session.update { it.copy(lastError = message.error) }
                 }
 
+                // The core asks the app to recover a revoked/blank projection
+                // (see ScreenCaptureService.ACTION_RECOVER).
+                "recover_capture" -> {
+                    logs.log("核心请求恢复截屏（recover_capture）")
+                    ScreenCaptureService.requestRecover(appContext)
+                }
+
                 else -> {
                     message.status?.let { status ->
                         _session.update { it.copy(instanceStatus = status) }
