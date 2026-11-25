@@ -389,9 +389,9 @@ class ScreenCaptureService : Service() {
      * Resizes the running display without touching the MediaProjection token.
      *
      * Rotation must never call createVirtualDisplay() again: the consent token
-     * is single-use. We resize the surface and, only if that works, swap in a
-     * new ImageReader. Any failure keeps the previous reader and dimensions, so
-     * the AI keeps receiving frames instead of stopping the capture entirely.
+     * is single-use. We attach a new ImageReader surface first, then resize the
+     * display. Any failure restores the previous surface/reader, so the AI
+     * keeps receiving frames instead of stopping the capture entirely.
      */
     private fun reconfigureDisplay(reason: String): Boolean {
         val display = virtualDisplay ?: return false
@@ -419,14 +419,17 @@ class ScreenCaptureService : Service() {
         }
         reader.setOnImageAvailableListener({ r -> onImageAvailable(r) }, handler)
 
-        val resized = try {
-            display.resize(target.width, target.height, density)
+        // Attach the new surface *before* resizing. On Android 14/16 resizing
+        // first leaves the compositor writing into the abandoned old buffer,
+        // which shows up as a mostly black frame with a thin strip of content.
+        val surfaceSet = try {
+            display.setSurface(reader.surface)
             true
         } catch (e: Exception) {
-            graph.logs.error(reason + "：调整虚拟显示尺寸失败，保持旧画面", e)
+            graph.logs.error(reason + "：切换画面 Surface 失败，保持旧画面", e)
             false
         }
-        if (!resized) {
+        if (!surfaceSet) {
             try {
                 reader.close()
             } catch (_: Exception) {
@@ -435,16 +438,16 @@ class ScreenCaptureService : Service() {
             return false
         }
 
-        val surfaceSet = try {
-            display.setSurface(reader.surface)
+        val resized = try {
+            display.resize(target.width, target.height, density)
             true
         } catch (e: Exception) {
-            graph.logs.error(reason + "：切换画面 Surface 失败，回退旧尺寸", e)
+            graph.logs.error(reason + "：调整虚拟显示尺寸失败，回退旧 Surface", e)
             false
         }
-        if (!surfaceSet) {
+        if (!resized) {
             try {
-                display.resize(oldWidth, oldHeight, density)
+                oldReader?.surface?.let { display.setSurface(it) }
             } catch (_: Exception) {
             }
             try {

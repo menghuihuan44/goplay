@@ -540,8 +540,63 @@ func textTapAdjust(a domain.Action, st domain.State) float64 {
 	if st.Value("text_count") <= 0 {
 		return 0
 	}
-	if a.Kind == "tap_text" || a.HasTag("ocr") {
-		return 1.2
+	if a.Kind != "tap_text" && !a.HasTag("ocr") {
+		return 0
+	}
+	// OCR turned the screen into readable labels. Prefer labels that usually
+	// move a game forward (start/continue/confirm/attack) and avoid labels that
+	// open legal/rating/shop pages. A neutral label is usually HUD text (quests,
+	// HP, tips), not a button: tapping it just burns a decision, so it must rank
+	// below an exploratory grid tap regardless of past scene changes.
+	semantic := textLabelAdjust(a.Target)
+	if semantic == 0 {
+		return -3.0
+	}
+	return 1.2 + semantic
+}
+
+// textLabelAdjust scores a single OCR label by its wording. It is deliberately
+// language-level and game-agnostic: no button coordinates, no per-game tables.
+func textLabelAdjust(target string) float64 {
+	label := strings.TrimSpace(strings.TrimPrefix(target, "text:"))
+	if label == "" {
+		return 0
+	}
+	lower := strings.ToLower(label)
+	// Negative labels are checked first so "退出游戏" does not match "游戏".
+	negative := []string{
+		"适龄", "cadpa", "隐私", "协议", "儿童", "未成年", "实名", "防沉迷",
+		"商城", "商店", "充值", "购买", "礼包", "广告", "评分", "分享",
+		"退出", "注销", "删除账号", "shop", "store", "purchase", "buy now",
+		"健康游戏忠告", "抵制不良游戏", "沉迷", "忠告",
+	}
+	for _, n := range negative {
+		if strings.Contains(lower, n) {
+			return -2.0
+		}
+	}
+	positive := []string{
+		"开始游戏", "继续游戏", "新的游戏", "新游戏", "进入游戏", "重新开始",
+		"攻击", "射击", "开火", "跳跃", "拾取", "采集", "制作", "使用", "装备",
+		"对话", "返回", "下一", "挑战", "确认", "确定",
+		"开始", "继续", "start game", "new game", "continue", "start", "play",
+	}
+	for _, p := range positive {
+		if strings.Contains(lower, p) {
+			return 2.4
+		}
+	}
+	confirm := []string{"确定", "确认", "好的", "知道了", "同意", "进入", "ok", "yes", "confirm", "accept"}
+	for _, p := range confirm {
+		if strings.Contains(lower, p) {
+			return 0.8
+		}
+	}
+	if strings.Contains(lower, "关闭") || label == "×" || label == "x" {
+		return 0.6
+	}
+	if len([]rune(label)) > 20 {
+		return -0.6
 	}
 	return 0
 }

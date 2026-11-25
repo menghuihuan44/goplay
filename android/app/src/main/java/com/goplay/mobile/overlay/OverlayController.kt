@@ -3,6 +3,7 @@ package com.goplay.mobile.overlay
 import android.content.Context
 import android.content.SharedPreferences
 import android.graphics.PixelFormat
+import android.graphics.RectF
 import android.os.Build
 import android.provider.Settings
 import android.util.DisplayMetrics
@@ -50,6 +51,28 @@ class OverlayController(
     init {
         panel.onDrag = { dx, dy -> moveBy(dx, dy) }
         panel.onExpandedChanged = { expanded -> onExpanded(expanded) }
+        panel.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> publishBounds() }
+    }
+
+    private fun publishBounds() {
+        if (!shown || panel.width <= 0 || panel.height <= 0) {
+            screenRect = null
+            return
+        }
+        val metrics = displayMetrics()
+        val w = metrics.widthPixels.toFloat().coerceAtLeast(1f)
+        val h = metrics.heightPixels.toFloat().coerceAtLeast(1f)
+        val loc = IntArray(2)
+        try {
+            panel.getLocationOnScreen(loc)
+        } catch (_: Exception) {
+            return
+        }
+        val left = (loc[0] / w).coerceIn(0f, 1f)
+        val top = (loc[1] / h).coerceIn(0f, 1f)
+        val right = ((loc[0] + panel.width) / w).coerceIn(0f, 1f)
+        val bottom = ((loc[1] + panel.height) / h).coerceIn(0f, 1f)
+        screenRect = RectF(left, top, right, bottom)
     }
 
     fun show(): Boolean {
@@ -76,6 +99,7 @@ class OverlayController(
             params = layoutParams
             shown = true
             InputGate.attach(this)
+            panel.post { publishBounds() }
             true
         } catch (e: Exception) {
             false
@@ -133,6 +157,7 @@ class OverlayController(
         InputGate.detach(this)
         aiGesture = false
         expanded = false
+        screenRect = null
         savePosition()
         try {
             windowManager.removeView(panel)
@@ -152,6 +177,7 @@ class OverlayController(
             windowManager.updateViewLayout(panel, p)
         } catch (_: Exception) {
         }
+        panel.post { publishBounds() }
     }
 
     private fun onExpanded(expanded: Boolean) {
@@ -167,6 +193,7 @@ class OverlayController(
             windowManager.updateViewLayout(panel, p)
         } catch (_: Exception) {
         }
+        panel.post { publishBounds() }
         if (expanded) {
             // The flag change is applied asynchronously by WindowManager; focus
             // after it lands so the EditText can actually receive key events.
@@ -190,6 +217,7 @@ class OverlayController(
             windowManager.updateViewLayout(panel, p)
         } catch (_: Exception) {
         }
+        panel.post { publishBounds() }
     }
 
     private fun flagsFor(expanded: Boolean, aiGesture: Boolean): Int {
@@ -229,5 +257,15 @@ class OverlayController(
         private const val PREFS = "goplay_overlay"
         private const val KEY_X = "overlay_x"
         private const val KEY_Y = "overlay_y"
+
+        /**
+         * Bounds of GoPlay's own overlay in normalized screen coordinates
+         * (0..1), refreshed whenever the pill moves or expands. The projection
+         * captures the overlay too, so OCR must ignore labels drawn by us
+         * instead of tapping them as if they were game buttons.
+         */
+        @Volatile
+        var screenRect: RectF? = null
+            private set
     }
 }

@@ -2,8 +2,8 @@
 
 - **Schema**: eval-v1
 - **Mode**: quick
-- **Generated**: 2026-11-23T23:56:50+08:00
-- **Duration**: 12932 ms
+- **Generated**: 2026-11-26T00:09:37+08:00
+- **Duration**: 13872 ms
 - **Environment**: windows/amd64, Go go1.27.4, 16 CPUs
 
 ## Verdict: PASS
@@ -37,14 +37,14 @@ suites: 6 passed / 0 failed; threshold checks: 47 passed / 0 failed
 | 21 | memory | must-remember event Recall@1 after compression | 1.0000 | >= 0.9000 | PASS |
 | 22 | memory | must-remember event Recall@3 after compression | 1.0000 | >= 0.9500 | PASS |
 | 23 | memory | must-remember event Recall@5 after compression | 1.0000 | >= 0.9500 | PASS |
-| 24 | control | human takeover applied within 1s | 9.00 ms | <= 1000.00 ms | PASS |
+| 24 | control | human takeover applied within 1s | 7.00 ms | <= 1000.00 ms | PASS |
 | 25 | control | no actions execute while the human is in control | 1 | == 1 | PASS |
-| 26 | control | recovery within 2s of release | 131.00 ms | <= 2000.00 ms | PASS |
-| 27 | control | engine recorded a handover latency below 1s | 8.00 ms | <= 1000.00 ms | PASS |
-| 28 | control | constraint applied within 1s | 10.00 ms | <= 1000.00 ms | PASS |
+| 26 | control | recovery within 2s of release | 122.00 ms | <= 2000.00 ms | PASS |
+| 27 | control | engine recorded a handover latency below 1s | 7.00 ms | <= 1000.00 ms | PASS |
+| 28 | control | constraint applied within 1s | 9.00 ms | <= 1000.00 ms | PASS |
 | 29 | control | no attack after the constraint boundary | 0 | == 0 | PASS |
 | 30 | control | play continues after constraint | 5 | >= 3 | PASS |
-| 31 | control | preference applied within 1s | 11.00 ms | <= 1000.00 ms | PASS |
+| 31 | control | preference applied within 1s | 9.00 ms | <= 1000.00 ms | PASS |
 | 32 | control | risk_aversion weight is at least 0.2 | 0.2500 | >= 0.2000 | PASS |
 | 33 | control | play continues after preference | 1 | == 1 | PASS |
 | 34 | concurrency | 2 instances all running before takeover | 2 | == 2 | PASS |
@@ -55,14 +55,14 @@ suites: 6 passed / 0 failed; threshold checks: 47 passed / 0 failed
 | 39 | concurrency | 4 instances: no cross-talk on human takeover | 0 | == 0 | PASS |
 | 40 | concurrency | 4 instances: no shared game/memory/ID | 0 | == 0 | PASS |
 | 41 | concurrency | 4 instances: every instance keeps acting | 6 | >= 5 | PASS |
-| 42 | localmodel | first token under 500ms | 1.00 ms | <= 500.00 ms | PASS |
-| 43 | localmodel | decode speed at least 20 tokens/sec | 95.1 | >= 20.0 | PASS |
+| 42 | localmodel | first token under 500ms | 10.00 ms | <= 500.00 ms | PASS |
+| 43 | localmodel | decode speed at least 20 tokens/sec | 108.2 | >= 20.0 | PASS |
 | 44 | localmodel | all 8 stream deltas parsed | 8 | == 8 | PASS |
 | 45 | localmodel | streamed text matches the mock | 1 | == 1 | PASS |
 | 46 | localmodel | TTFT histogram and TPS gauge are wired | 1 | == 1 | PASS |
 | 47 | localmodel | llm.Mock completes offline | 1 | == 1 | PASS |
 
-## Perception accuracy under renderer noise (pass, 1110 ms)
+## Perception accuracy under renderer noise (pass, 993 ms)
 
 | Metric | Value | Threshold |
 |--------|-------|-----------|
@@ -184,12 +184,12 @@ suites: 6 passed / 0 failed; threshold checks: 47 passed / 0 failed
 
 </details>
 
-## Learning convergence across episodes (pass, 8963 ms)
+## Learning convergence across episodes (pass, 9016 ms)
 
 | Metric | Value | Threshold |
 |--------|-------|-----------|
 | episodes completed across seeds | 24 | - |
-| actions executed across seeds | 1782 | - |
+| actions executed across seeds | 1796 | - |
 | win rate over all episodes | 1.0000 | >= 0.5000 |
 | fraction of seeds reaching 90% progress | 1.0000 | == 1.0000 |
 | average attempts to reach 90% progress | 1 | <= 4 |
@@ -213,7 +213,7 @@ suites: 6 passed / 0 failed; threshold checks: 47 passed / 0 failed
       "reached_90": true,
       "attempts_to_90": 1,
       "best_progress": 0.999,
-      "actions": 589,
+      "actions": 591,
       "errors": 0,
       "episodes_detail": [
         {
@@ -221,56 +221,56 @@ suites: 6 passed / 0 failed; threshold checks: 47 passed / 0 failed
           "won": true,
           "progress": 0.999,
           "actions": 76,
-          "reward": 164.46666666666667
+          "reward": 164.41666666666669
         },
         {
           "index": 2,
           "won": true,
           "progress": 0.999,
-          "actions": 76,
-          "reward": 164.89999999999972
+          "actions": 77,
+          "reward": 164.31666666666644
         },
         {
           "index": 3,
           "won": true,
           "progress": 0.999,
-          "actions": 83,
-          "reward": 164.59999999999974
+          "actions": 81,
+          "reward": 164.29999999999978
         },
         {
           "index": 4,
           "won": true,
           "progress": 0.999,
-          "actions": 73,
-          "reward": 164.516666666667
+          "actions": 78,
+          "reward": 164.1666666666669
         },
         {
           "index": 5,
           "won": true,
           "progress": 0.999,
           "actions": 71,
-          "reward": 164.16666666666708
+          "reward": 164.25000000000034
         },
         {
           "index": 6,
           "won": true,
           "progress": 0.999,
-          "actions": 73,
-          "reward": 164.2000000000004
+          "actions": 72,
+          "reward": 164.53333333333387
         },
         {
           "index": 7,
           "won": true,
           "progress": 0.999,
-          "actions": 71,
-          "reward": 164.6166666666668
+          "actions": 70,
+          "reward": 164.48333333333403
         },
         {
           "index": 8,
           "won": true,
           "progress": 0.999,
           "actions": 66,
-          "reward": 175.08333333333417
+          "reward": 174.61666666666656
         }
       ]
     },
@@ -283,64 +283,64 @@ suites: 6 passed / 0 failed; threshold checks: 47 passed / 0 failed
       "reached_90": true,
       "attempts_to_90": 1,
       "best_progress": 0.999,
-      "actions": 596,
+      "actions": 613,
       "errors": 0,
       "episodes_detail": [
         {
           "index": 1,
           "won": true,
           "progress": 0.999,
-          "actions": 79,
-          "reward": 164.60000000000005
+          "actions": 89,
+          "reward": 170.55
         },
         {
           "index": 2,
           "won": true,
           "progress": 0.999,
-          "actions": 78,
-          "reward": 164.24999999999986
+          "actions": 82,
+          "reward": 167.46666666666636
         },
         {
           "index": 3,
           "won": true,
           "progress": 0.999,
-          "actions": 74,
-          "reward": 164.16666666666652
+          "actions": 72,
+          "reward": 174.8333333333331
         },
         {
           "index": 4,
           "won": true,
           "progress": 0.999,
-          "actions": 75,
-          "reward": 164.41666666666697
+          "actions": 79,
+          "reward": 164.88333333333446
         },
         {
           "index": 5,
           "won": true,
           "progress": 0.999,
-          "actions": 74,
-          "reward": 164.3166666666673
+          "actions": 77,
+          "reward": 164.2333333333338
         },
         {
           "index": 6,
           "won": true,
           "progress": 0.999,
           "actions": 70,
-          "reward": 164.39999999999986
+          "reward": 164.13333333333367
         },
         {
           "index": 7,
           "won": true,
           "progress": 0.999,
-          "actions": 71,
-          "reward": 164.3166666666666
+          "actions": 74,
+          "reward": 164.39999999999975
         },
         {
           "index": 8,
           "won": true,
           "progress": 0.999,
-          "actions": 75,
-          "reward": 164.73333333333244
+          "actions": 70,
+          "reward": 164.01666666666665
         }
       ]
     },
@@ -353,64 +353,64 @@ suites: 6 passed / 0 failed; threshold checks: 47 passed / 0 failed
       "reached_90": true,
       "attempts_to_90": 1,
       "best_progress": 0.999,
-      "actions": 597,
+      "actions": 592,
       "errors": 0,
       "episodes_detail": [
         {
           "index": 1,
           "won": true,
           "progress": 0.999,
-          "actions": 78,
-          "reward": 164.2666666666667
+          "actions": 74,
+          "reward": 164.5333333333334
         },
         {
           "index": 2,
           "won": true,
           "progress": 0.999,
-          "actions": 75,
-          "reward": 164.54999999999978
+          "actions": 81,
+          "reward": 164.54999999999998
         },
         {
           "index": 3,
           "won": true,
           "progress": 0.999,
-          "actions": 81,
-          "reward": 164.56249999999983
+          "actions": 78,
+          "reward": 164.14999999999986
         },
         {
           "index": 4,
           "won": true,
           "progress": 0.999,
           "actions": 73,
-          "reward": 163.9833333333333
+          "reward": 164.48333333333358
         },
         {
           "index": 5,
           "won": true,
           "progress": 0.999,
-          "actions": 74,
-          "reward": 164.13333333333355
+          "actions": 71,
+          "reward": 163.80000000000018
         },
         {
           "index": 6,
           "won": true,
           "progress": 0.999,
-          "actions": 77,
-          "reward": 164.55000000000052
+          "actions": 70,
+          "reward": 164.13333333333344
         },
         {
           "index": 7,
           "won": true,
           "progress": 0.999,
-          "actions": 71,
-          "reward": 164.08333333333314
+          "actions": 73,
+          "reward": 164.43333333333374
         },
         {
           "index": 8,
           "won": true,
           "progress": 0.999,
-          "actions": 68,
-          "reward": 164.44999999999982
+          "actions": 72,
+          "reward": 164.04999999999995
         }
       ]
     }
@@ -420,7 +420,7 @@ suites: 6 passed / 0 failed; threshold checks: 47 passed / 0 failed
 
 </details>
 
-## Memory recall under a 256KB budget (pass, 717 ms)
+## Memory recall under a 256KB budget (pass, 335 ms)
 
 | Metric | Value | Threshold |
 |--------|-------|-----------|
@@ -527,29 +527,29 @@ suites: 6 passed / 0 failed; threshold checks: 47 passed / 0 failed
 
 </details>
 
-## Human takeover and intervention boundaries (pass, 441 ms)
+## Human takeover and intervention boundaries (pass, 421 ms)
 
 | Metric | Value | Threshold |
 |--------|-------|-----------|
-| Touch -> human_control latency | 9.00 ms | - |
+| Touch -> human_control latency | 7.00 ms | - |
 | Actions frozen during human control (1 = yes) | 1 | - |
-| Release -> running and acting | 131.00 ms | - |
-| engine handover_latency_ms average | 8.00 ms | - |
+| Release -> running and acting | 122.00 ms | - |
+| engine handover_latency_ms average | 7.00 ms | - |
 | HumanTakeovers counter | 1 | - |
-| Submit constraint -> applied to Control | 10.00 ms | - |
+| Submit constraint -> applied to Control | 9.00 ms | - |
 | attack actions after constraint (grace: first action) | 0 | - |
 | actions executed after constraint | 5 | - |
-| Submit preference -> risk_aversion weight | 11.00 ms | - |
+| Submit preference -> risk_aversion weight | 9.00 ms | - |
 | risk_aversion weight after preference | 0.2500 | - |
 | actions still advance after preference (1 = yes) | 1 | - |
-| human takeover applied within 1s | 9.00 ms | <= 1000.00 ms |
+| human takeover applied within 1s | 7.00 ms | <= 1000.00 ms |
 | no actions execute while the human is in control | 1 | == 1 |
-| recovery within 2s of release | 131.00 ms | <= 2000.00 ms |
-| engine recorded a handover latency below 1s | 8.00 ms | <= 1000.00 ms |
-| constraint applied within 1s | 10.00 ms | <= 1000.00 ms |
+| recovery within 2s of release | 122.00 ms | <= 2000.00 ms |
+| engine recorded a handover latency below 1s | 7.00 ms | <= 1000.00 ms |
+| constraint applied within 1s | 9.00 ms | <= 1000.00 ms |
 | no attack after the constraint boundary | 0 | == 0 |
 | play continues after constraint | 5 | >= 3 |
-| preference applied within 1s | 11.00 ms | <= 1000.00 ms |
+| preference applied within 1s | 9.00 ms | <= 1000.00 ms |
 | risk_aversion weight is at least 0.2 | 0.2500 | >= 0.2000 |
 | play continues after preference | 1 | == 1 |
 
@@ -568,34 +568,34 @@ suites: 6 passed / 0 failed; threshold checks: 47 passed / 0 failed
         "preference": "你太激进了 | hint: play less aggressively",
         "outcome": "applied",
         "reason": "converted to soft weights",
-        "at": "2026-11-23T23:57:01.3219061+08:00"
+        "at": "2026-11-26T00:09:48.1059+08:00"
       }
     ],
     "constraints": 1,
     "hints": [
       "你太激进了 | hint: play less aggressively"
     ],
-    "intervention_latency_ms": 10,
+    "intervention_latency_ms": 9,
     "play_continues": true,
     "post_constraint_actions": 5,
     "post_constraint_attacks": 0,
-    "preference_latency_ms": 11,
+    "preference_latency_ms": 9,
     "preference_weight": 0.25
   },
   "takeover": {
     "actions_after_freeze": 5,
     "actions_before_freeze": 5,
-    "handover_avg_ms": 8,
+    "handover_avg_ms": 7,
     "human_takeovers": 1,
-    "recovery_latency_ms": 131,
-    "takeover_latency_ms": 9
+    "recovery_latency_ms": 122,
+    "takeover_latency_ms": 7
   }
 }
 ```
 
 </details>
 
-## Concurrent instance isolation (pass, 716 ms)
+## Concurrent instance isolation (pass, 681 ms)
 
 | Metric | Value | Threshold |
 |--------|-------|-----------|
@@ -639,15 +639,15 @@ suites: 6 passed / 0 failed; threshold checks: 47 passed / 0 failed
       "min_actions": 6,
       "action_counts": [
         6,
-        34,
-        34,
-        34
+        33,
+        33,
+        33
       ],
       "progress": [
         0.15000000000000002,
-        0.5441666666666667,
-        0.5333333333333333,
-        0.6266666666666666
+        0.515,
+        0.5191666666666667,
+        0.6341666666666667
       ],
       "crosstalk_violations": 0,
       "isolation_violations": 0
@@ -658,20 +658,20 @@ suites: 6 passed / 0 failed; threshold checks: 47 passed / 0 failed
 
 </details>
 
-## Local model TTFT/TPS metric chain (pass, 982 ms)
+## Local model TTFT/TPS metric chain (pass, 2422 ms)
 
 | Metric | Value | Threshold |
 |--------|-------|-----------|
-| SSE first-token latency | 1.00 ms | - |
-| SSE full stream latency | 85.00 ms | - |
+| SSE first-token latency | 10.00 ms | - |
+| SSE full stream latency | 84.00 ms | - |
 | streamed completion tokens | 8 | - |
-| decode tokens per second after first token | 95.1 | - |
+| decode tokens per second after first token | 108.2 | - |
 | LocalTTFTMS histogram samples | 1 | - |
-| LocalTPS gauge value | 95.1 | - |
-| llm.Mock latency | 15.00 ms | - |
-| preflight request including first loopback connect | 855.00 ms | - |
-| first token under 500ms | 1.00 ms | <= 500.00 ms |
-| decode speed at least 20 tokens/sec | 95.1 | >= 20.0 |
+| LocalTPS gauge value | 108.2 | - |
+| llm.Mock latency | 16.00 ms | - |
+| preflight request including first loopback connect | 2300.00 ms | - |
+| first token under 500ms | 10.00 ms | <= 500.00 ms |
+| decode speed at least 20 tokens/sec | 108.2 | >= 20.0 |
 | all 8 stream deltas parsed | 8 | == 8 |
 | streamed text matches the mock | 1 | == 1 |
 | TTFT histogram and TPS gauge are wired | 1 | == 1 |
@@ -688,13 +688,13 @@ suites: 6 passed / 0 failed; threshold checks: 47 passed / 0 failed
   "auth_header_seen": true,
   "completion_tokens": 8,
   "got_text": "alpha beta gamma delta alpha beta gamma delta ",
-  "mock_latency_ms": 15,
+  "mock_latency_ms": 16,
   "mock_text": "{\"kind\":\"attack\",\"reason\":\"mock\"}",
-  "stream_latency_ms": 85,
-  "tps": 95.08200228434511,
-  "ttft_ms": 1,
+  "stream_latency_ms": 84,
+  "tps": 108.22291214328713,
+  "ttft_ms": 10,
   "want_text": "alpha beta gamma delta alpha beta gamma delta ",
-  "warmup_ms": 855
+  "warmup_ms": 2300
 }
 ```
 

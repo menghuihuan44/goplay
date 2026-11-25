@@ -174,3 +174,35 @@ func TestRepeatBreaksStuckLoop(t *testing.T) {
 		t.Fatalf("expected explore source, got %q", d.Source)
 	}
 }
+func TestOCRLabelPrefersStartOverRating(t *testing.T) {
+	p := New(nil, nil, DefaultConfig())
+	st := mockState()
+	st.Values["text_count"] = 2
+	start := domain.Action{Kind: "tap_text", Target: "text:开始游戏", Tags: []string{"ui", "text", "ocr"}, Risk: 0.1, Input: &domain.InputSpec{Type: "tap", X: 0.5, Y: 0.7}}
+	rating := domain.Action{Kind: "tap_text", Target: "text:12+适龄提示", Tags: []string{"ui", "text", "ocr"}, Risk: 0.1, Input: &domain.InputSpec{Type: "tap", X: 0.1, Y: 0.85}}
+	d := p.Decide(context.Background(), Input{State: st, Actions: []domain.Action{rating, start}})
+	if d.Action.Target != "text:开始游戏" {
+		t.Fatalf("expected start label, got %+v", d.Action)
+	}
+	if textLabelAdjust("text:开始游戏") <= textLabelAdjust("text:12+适龄提示") {
+		t.Fatal("start label should outrank rating label")
+	}
+}
+
+func TestHUDTextIsNotAButton(t *testing.T) {
+	// Quest text, HP numbers and legal notices are labels the OCR can read,
+	// but they are not buttons. They must not outrank a legal grid tap.
+	for _, label := range []string{
+		"text:主线前往码头", "text:215/215", "text:40/200 +",
+		"text:健康游戏忠告", "text:当前追踪",
+	} {
+		if got := textLabelAdjust(label); got > 0 {
+			t.Fatalf("%s should be neutral or negative, got score %v", label, got)
+		}
+	}
+	for _, label := range []string{"text:继续游戏", "text:攻击", "text:确认"} {
+		if got := textLabelAdjust(label); got <= 0 {
+			t.Fatalf("%s should be actionable, got score %v", label, got)
+		}
+	}
+}
