@@ -113,6 +113,7 @@ func Start(ctx context.Context, opts Options) (*Service, error) {
 		Temperature: cfg.LLM.Temperature,
 		MaxTokens:   cfg.LLM.MaxTokens,
 		Provider:    "openai-compatible",
+		Vision:      cfg.LLM.Vision,
 	})
 	router := llm.NewRouter(cfg.LLM.Mode, apiProvider, local.Provider())
 

@@ -253,6 +253,21 @@ func TestPreferenceIsSoftAndDoesNotStopPlay(t *testing.T) {
 	})
 }
 
+func TestDampRiskyReward(t *testing.T) {
+	back := policy.Decision{Action: domain.Action{Kind: "back", Input: &domain.InputSpec{Type: "back"}}}
+	got := dampRiskyReward(back, luabridge.Interpretation{Reward: 4.9, Note: "scene changed 98%"})
+	if got.Reward >= 1 {
+		t.Fatalf("back reward not damped: %v", got.Reward)
+	}
+	if !strings.Contains(got.Note, "damped") {
+		t.Fatalf("note missing damping hint: %q", got.Note)
+	}
+	tap := policy.Decision{Action: domain.Action{Kind: "tap", Input: &domain.InputSpec{Type: "tap", X: 0.5, Y: 0.5}}}
+	if unchanged := dampRiskyReward(tap, luabridge.Interpretation{Reward: 1}); unchanged.Reward != 1 {
+		t.Fatalf("unrelated action changed: %v", unchanged.Reward)
+	}
+}
+
 func TestTwoInstancesAreIsolated(t *testing.T) {
 	a := newHarness(t, "iso-a", 21)
 	b := newHarness(t, "iso-b", 22)

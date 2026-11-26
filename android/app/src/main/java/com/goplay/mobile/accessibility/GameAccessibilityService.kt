@@ -1,6 +1,8 @@
 package com.goplay.mobile.accessibility
 
 import android.accessibilityservice.AccessibilityService
+import android.content.Intent
+import android.hardware.display.DisplayManager
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.accessibilityservice.GestureDescription
 import android.graphics.Path
@@ -12,7 +14,9 @@ import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
 import android.util.DisplayMetrics
+import android.view.Display
 import android.view.KeyEvent
+import android.view.Surface
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -173,8 +177,15 @@ class GameAccessibilityService : AccessibilityService() {
         if (eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
             // Package only — never the window content — to know which app is in
             // front when the accessibility window list is not available.
+            // Vendor overlays (com.vivo.gamecube, com.vivo.systemuiplugin, …)
+            // also emit window-state events while the game is still visible;
+            // letting them overwrite the last real app would make the AI think
+            // the user left the game. Keep the last user-navigable package.
             event.packageName?.toString()?.takeIf { it.isNotBlank() }?.let {
-                lastForegroundPackage = it
+                if (it == InputGate.activeGamePackage || !isOverlayOnlyPackage(it)) {
+                    lastForegroundPackage = it
+                    InputGate.setForegroundPackage(it)
+                }
             }
         }
         val now = SystemClock.elapsedRealtime()
@@ -370,6 +381,9 @@ class GameAccessibilityService : AccessibilityService() {
      * Execute a validated command. Must be called on the main thread; calls from
      * other threads are re-posted. [callback] is always invoked exactly once.
      */
+    private var lastCanvasWidth = 0
+    private var lastCanvasHeight = 0
+
     fun execute(command: GestureCommand, timeoutMs: Long, callback: (ExecutionResult) -> Unit) {
         if (Looper.myLooper() != Looper.getMainLooper()) {
             mainHandler.post { execute(command, timeoutMs, callback) }
@@ -389,6 +403,12 @@ class GameAccessibilityService : AccessibilityService() {
             // must not inject a gesture while the user is on the island/keyboard.
             callback(ExecutionResult(true, null, BUSY_MESSAGE + "（本次未注入）", 0L))
             return
+        }
+        val canvas = gestureCanvas()
+        if (canvas.first != lastCanvasWidth || canvas.second != lastCanvasHeight) {
+            lastCanvasWidth = canvas.first
+            lastCanvasHeight = canvas.second
+            logs()?.log("手势画布更新为 ${canvas.first}x${canvas.second}")
         }
         beginAiAction()
         // Untouchable island for exactly the gesture window: a tap aimed at the
@@ -486,15 +506,71 @@ class GameAccessibilityService : AccessibilityService() {
         return null
     }
 
-    /** Best-effort foreground package; empty when Android hides it from us. */
+    /**
+     * Best-effort foreground package, published into [InputGate] so the capture
+     * service can stamp every frame with it.
+     */
     private fun foregroundPackageName(): String? {
+        // Window-state events are the most reliable source on vendor ROMs: the
+        // accessibility window list often reports system overlays instead of
+        // the real app. Overlay events are filtered in onAccessibilityEvent.
+        val last = lastForegroundPackage.trim()
+        if (last.isNotEmpty()) {
+            InputGate.setForegroundPackage(last)
+            return last
+        }
+        val pkg = resolveForegroundPackageName()
+        InputGate.setForegroundPackage(pkg)
+        return pkg
+    }
+
+    /** True for system overlays that are not user-navigable apps. */
+    private fun isOverlayOnlyPackage(pkg: String): Boolean {
+        if (isImePackage(pkg)) return false
+        if (pkg.startsWith("com.android.systemui")) return false
+        if (pkg.contains("permissioncontroller")) return false
+        val home = try {
+            packageManager.resolveActivity(
+                Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME),
+                0,
+            )?.activityInfo?.packageName
+        } catch (_: Exception) {
+            null
+        }
+        if (pkg == home) return false
+        return try {
+            packageManager.getLaunchIntentForPackage(pkg) == null
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /** Best-effort foreground package; empty when Android hides it from us. */
+    private fun resolveForegroundPackageName(): String? {
         val interactive = try {
             windows
         } catch (_: Exception) {
             null
         }
+        // rootInActiveWindow follows the real active application. The focused
+        // window can belong to a vendor game assistant (com.vivo.gamecube) that
+        // floats above the game, which would make the AI think the user left.
+        // When the selected game still has a visible window, it is the game we
+        // care about even if a system overlay currently owns focus.
+        val target = InputGate.activeGamePackage
+        if (target.isNotBlank() && interactive != null) {
+            interactive.firstOrNull {
+                val node = it.root
+                node != null && node.isVisibleToUser && node.packageName?.toString() == target
+            }?.let { return target }
+        }
+        val rootPackage = try {
+            rootInActiveWindow?.packageName?.toString()
+        } catch (_: Exception) {
+            null
+        }
+        if (!rootPackage.isNullOrBlank()) return rootPackage
         if (interactive != null) {
-            // Input focus is the best indicator, then the active window.
             interactive.firstOrNull { it.isFocused }
                 ?.root?.packageName?.toString()
                 ?.takeIf { it.isNotBlank() }
@@ -504,12 +580,6 @@ class GameAccessibilityService : AccessibilityService() {
                 ?.takeIf { it.isNotBlank() }
                 ?.let { return it }
         }
-        val rootPackage = try {
-            rootInActiveWindow?.packageName?.toString()
-        } catch (_: Exception) {
-            null
-        }
-        if (!rootPackage.isNullOrBlank()) return rootPackage
         return lastForegroundPackage.ifBlank { null }
     }
 
@@ -699,17 +769,42 @@ class GameAccessibilityService : AccessibilityService() {
         return (normalized * size).coerceIn(1f, size - 2f)
     }
 
-    private fun screenSize(): Pair<Int, Int> {
-        val wm = getSystemService(WindowManager::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            val bounds = wm.currentWindowMetrics.bounds
-            return Pair(bounds.width(), bounds.height())
+    /**
+     * Pixel canvas used by dispatchGesture.
+     *
+     * Do not use WindowManager.currentWindowMetrics here: an AccessibilityService
+     * has no window of its own, and on some OEM builds that call keeps the last
+     * activity configuration (for example 1260x2800 portrait) while a game is in
+     * landscape. Taps were then scaled into a portrait rectangle, landing in the
+     * top-left corner or completely off-screen, which looked like the AI acting
+     * on invisible UI. Resolve the default physical display instead and normalize
+     * the metrics to its current rotation.
+     */
+    fun gestureCanvas(): Pair<Int, Int> {
+        val dm = getSystemService(DisplayManager::class.java)
+        val display = dm?.getDisplay(Display.DEFAULT_DISPLAY)
+        if (display != null) {
+            val metrics = DisplayMetrics()
+            @Suppress("DEPRECATION")
+            display.getRealMetrics(metrics)
+            var w = metrics.widthPixels
+            var h = metrics.heightPixels
+            if (w > 2 && h > 2) {
+                val rotation = display.rotation
+                val landscape = rotation == Surface.ROTATION_90 || rotation == Surface.ROTATION_270
+                if (landscape && w < h) { val t = w; w = h; h = t }
+                if (!landscape && w > h) { val t = w; w = h; h = t }
+                return Pair(w, h)
+            }
         }
+        val wm = getSystemService(WindowManager::class.java)
         val metrics = DisplayMetrics()
         @Suppress("DEPRECATION")
         wm.defaultDisplay.getRealMetrics(metrics)
         return Pair(metrics.widthPixels, metrics.heightPixels)
     }
+
+    private fun screenSize(): Pair<Int, Int> = gestureCanvas()
 
     private fun logs() = (application as? GoPlayApp)?.graph?.logs
 

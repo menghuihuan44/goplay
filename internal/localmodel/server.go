@@ -283,6 +283,14 @@ func (s *Server) PID() int {
 	return s.cmd.Process.Pid
 }
 
+// LogTail returns the last bytes the child process wrote to stdout/stderr.
+func (s *Server) LogTail() string {
+	if s.tail == nil {
+		return ""
+	}
+	return s.tail.String()
+}
+
 // Args returns a copy of the argument vector.
 func (s *Server) Args() []string { return append([]string(nil), s.args...) }
 

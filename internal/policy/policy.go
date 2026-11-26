@@ -59,6 +59,10 @@ type Decision struct {
 	LatencyMS  float64
 	LLMUsed    bool
 	Demo       bool
+	// Blocked lists risky actions (purchase/recharge controls, or anything that
+	// is not a safe escape while a payment screen is open) that the hard filter
+	// removed before scoring. It makes the safety veto visible in the trace.
+	Blocked []string
 }
 
 type Input struct {
@@ -98,7 +102,7 @@ type Validator struct {
 func NewValidator(maxRisk float64) Validator {
 	return Validator{
 		AllowedInput: map[string]bool{
-			"key": true, "click": true, "tap": true, "swipe": true,
+			"key": true, "click": true, "tap": true, "swipe": true, "back": true,
 			"text": true, "wait": true, "gamepad": true, "touch": true,
 		},
 		MaxRisk: maxRisk,
@@ -265,13 +269,14 @@ func StateKey(s domain.State) string {
 func (p *Policy) Decide(ctx context.Context, in Input) Decision {
 	start := time.Now()
 	key := StateKey(in.State)
-	legal := p.filter(in)
+	legal, blocked := p.filter(in)
 	cands := p.score(key, in.State, legal, in.Control)
-	d := Decision{StateKey: key, Candidates: cands}
+	d := Decision{StateKey: key, Candidates: cands, Blocked: blocked}
+	modal := isMenuScreen(in.State)
 
 	useLLM := p.llm != nil && (in.ForceLLM || p.shouldLLM() || len(cands) == 0)
 	if useLLM {
-		if a, resp, err := p.askLLM(ctx, in, legal); err == nil {
+		if a, resp, err := p.askLLM(ctx, in, legal, cands); err == nil {
 			d.Action = a
 			d.Source = "llm"
 			d.Provider = resp.Provider
@@ -360,7 +365,7 @@ func (p *Policy) Decide(ctx context.Context, in Input) Decision {
 	p.mu.Lock()
 	idle := p.idleStreak
 	p.mu.Unlock()
-	if idle >= 2 && isPassive(d.Action) && d.Source != "directive" && d.Source != "demo" {
+	if idle >= 2 && isPassive(d.Action) && !modal && d.Source != "directive" && d.Source != "demo" {
 		if alt, ok := bestActive(cands); ok {
 			d.Action = alt.Action
 			d.Score = alt.Score
@@ -448,15 +453,20 @@ func bestActive(cands []Candidate) (Candidate, bool) {
 	return Candidate{}, false
 }
 
-// filter applies only hard vetoes: instance constraints, forbidden tags, and
-// malformed actions. Soft preferences never remove a candidate.
-func (p *Policy) filter(in Input) []domain.Action {
+// filter applies hard vetoes: instance constraints, forbidden tags, malformed
+// actions, and financial-safety guards. Soft preferences never remove a
+// candidate. The purchase guard is deliberately hard: a model must not be able
+// to spend the user's money because it misread a menu label.
+func (p *Policy) filter(in Input) ([]domain.Action, []string) {
 	now := time.Now()
 	forbidden := map[string]bool{}
 	for _, t := range in.Rules.ForbiddenTags {
 		forbidden[strings.ToLower(t)] = true
 	}
+	purchaseScreen := isPurchaseScreen(in.State)
+	quitConfirm := isQuitConfirmScreen(in.State)
 	var out []domain.Action
+	var blocked []string
 	for _, a := range in.Actions {
 		if a.Kind == "" {
 			continue
@@ -474,12 +484,37 @@ func (p *Policy) filter(in Input) []domain.Action {
 		if bad {
 			continue
 		}
+		if isDestructiveAction(a) {
+			blocked = append(blocked, "破坏性按钮: "+a.Key())
+			continue
+		}
+		// A quit-confirmation dialog offers "play a bit longer" next to "exit
+		// game". Back can also quit on some titles, so only the explicit stay
+		// option (or waiting) is safe here.
+		if quitConfirm && !isStayOnQuit(a) {
+			blocked = append(blocked, "退出确认界面只允许继续: "+a.Key())
+			continue
+		}
+		if isRiskyPurchaseAction(a) {
+			blocked = append(blocked, "危险按钮: "+a.Key())
+			continue
+		}
+		// On a payment/recharge screen only a safe escape is legal. Blind grid
+		// taps and swipes could land on the purchase button, so they are blocked
+		// even if OCR did not label them.
+		if purchaseScreen && !isSafePurchaseEscape(a) {
+			blocked = append(blocked, "支付界面仅允许关闭: "+a.Key())
+			continue
+		}
 		out = append(out, a)
 		if len(out) >= p.cfg.MaxCands {
 			break
 		}
 	}
-	return out
+	if len(blocked) > 8 {
+		blocked = blocked[:8]
+	}
+	return out, blocked
 }
 
 func (p *Policy) score(key string, st domain.State, legal []domain.Action, ctl domain.Control) []Candidate {
@@ -502,7 +537,7 @@ func (p *Policy) score(key string, st domain.State, legal []domain.Action, ctl d
 			mean, visits = ar.mean, ar.visits
 		}
 		bonus := c * math.Sqrt(math.Log(float64(total)+1)/float64(visits+1))
-		adj := softAdjust(a, ctl) + survivalAdjust(a, st) + textTapAdjust(a, st)
+		adj := softAdjust(a, ctl) + survivalAdjust(a, st) + textTapAdjust(a, st) + navigationAdjust(a, st)
 		// If the previous action produced a real scene transition, try the same
 		// input again before moving on. This is game-agnostic: on a menu it
 		// confirms the next step, in gameplay it keeps firing. It is only a
@@ -552,6 +587,12 @@ func textTapAdjust(a domain.Action, st domain.State) float64 {
 	if semantic == 0 {
 		return -3.0
 	}
+	// When both "continue" and "new game" are visible, continuing the existing
+	// save is almost always what the player wants. Starting a new game can erase
+	// progress, so make it a clearly worse choice without hiding it completely.
+	if isNewGameLabel(a.Target) && resumeLabelPresent(st) {
+		semantic -= 3.0
+	}
 	return 1.2 + semantic
 }
 
@@ -599,6 +640,203 @@ func textLabelAdjust(target string) float64 {
 		return -0.6
 	}
 	return 0
+}
+
+// purchaseWords are strong signals that a payment or checkout UI is open. A
+// generic "shop" button on the HUD is not enough: many games keep one visible at
+// all times, and blocking every tap there would freeze normal play.
+var purchaseWords = []string{
+	"充值", "首充", "支付", "付款", "购买", "内购", "礼包", "确认支付", "立即购买",
+	"支付宝", "微信支付", "花呗", "银行卡", "点券", "钻石", "余额不足",
+	"purchase", "buy now", "checkout", "top up", "recharge", "payment",
+}
+
+// shopWords are risky to press on their own: they open a store, not a game
+// action. They are blocked as actions but do not by themselves prove that a
+// payment modal is currently open.
+var shopWords = []string{"商城", "商店", "店铺", "商场", "shop", "store", "mall"}
+
+// destructiveWords end the session instead of helping play. They are always
+// blocked when they are an explicit button label; the system back key remains
+// available so the agent can still escape a menu.
+var stayWords = []string{"再玩一会", "继续游戏", "继续冒险", "继续旅程", "继续", "取消", "暂不", "稍后", "not now", "later", "continue"}
+
+var destructiveWords = []string{
+	"退出游戏", "退出登录", "结束游戏", "关闭游戏", "退出账号",
+	"quit game", "exit game", "exit to desktop", "quit to desktop",
+}
+
+var closeWords = []string{
+	"关闭", "返回", "取消", "暂不", "以后再说", "稍后", "close", "cancel", "back", "not now", "later",
+}
+
+var menuWords = []string{
+	"制作台", "工作台", "背包", "任务", "地图", "设置", "合成", "升级", "装备", "技能",
+	"inventory", "crafting", "menu", "settings", "quest", "map", "upgrade",
+}
+
+func containsAny(s string, words []string) bool {
+	for _, w := range words {
+		if strings.Contains(s, w) {
+			return true
+		}
+	}
+	return false
+}
+
+func screenText(st domain.State) string {
+	var b strings.Builder
+	for _, v := range st.Text {
+		b.WriteString(strings.ToLower(v))
+		b.WriteString(" ")
+	}
+	b.WriteString(strings.ToLower(st.Summary))
+	return b.String()
+}
+
+func isPurchaseScreen(st domain.State) bool {
+	return containsAny(screenText(st), purchaseWords)
+}
+
+func isCloseLabel(s string) bool {
+	label := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(s, "text:")))
+	if label == "x" || label == "×" || label == "✕" || label == "✖" {
+		return true
+	}
+	return containsAny(label, closeWords)
+}
+
+func isMenuScreen(st domain.State) bool {
+	text := screenText(st)
+	if containsAny(text, purchaseWords) {
+		return true
+	}
+	// A menu word alone can be a permanent HUD button. It becomes a modal only
+	// when the screen also exposes a close/back/cancel affordance.
+	return containsAny(text, closeWords) && containsAny(text, menuWords)
+}
+
+func isQuitConfirmScreen(st domain.State) bool {
+	text := screenText(st)
+	return containsAny(text, destructiveWords) && containsAny(text, stayWords)
+}
+
+func isStayOnQuit(a domain.Action) bool {
+	if a.Kind == "wait" {
+		return true
+	}
+	if a.Kind != "tap_text" && a.Kind != "tap" {
+		return false
+	}
+	label := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(a.Target, "text:")))
+	return containsAny(label, stayWords) && !containsAny(label, destructiveWords)
+}
+
+func isDestructiveAction(a domain.Action) bool {
+	if a.Kind == "back" || a.Kind == "wait" {
+		return false
+	}
+	label := strings.ToLower(a.Target + " " + strings.Join(a.Tags, " "))
+	return containsAny(label, destructiveWords)
+}
+
+func isRiskyPurchaseAction(a domain.Action) bool {
+	if a.Kind == "back" || a.Kind == "wait" {
+		return false
+	}
+	label := strings.ToLower(a.Target + " " + strings.Join(a.Tags, " "))
+	return containsAny(label, purchaseWords) || containsAny(label, shopWords)
+}
+
+func isSafePurchaseEscape(a domain.Action) bool {
+	if a.Kind == "back" || a.Kind == "wait" {
+		return true
+	}
+	return isCloseLabel(a.Target)
+}
+
+func isNewGameLabel(s string) bool {
+	label := strings.ToLower(strings.TrimPrefix(s, "text:"))
+	return containsAny(label, []string{"新的游戏", "新游戏", "重新开始", "新档", "new game", "start new"})
+}
+
+func resumeLabelPresent(st domain.State) bool {
+	return containsAny(screenText(st), []string{"继续游戏", "继续冒险", "继续旅程", "continue", "resume"})
+}
+
+// navigationAdjust makes modal escape a first-class choice instead of hoping a
+// blind swipe eventually hits the close button. It is wording-based, so it
+// works for any game that renders readable UI text.
+func navigationAdjust(a domain.Action, st domain.State) float64 {
+	if isPurchaseScreen(st) {
+		switch {
+		case isCloseLabel(a.Target):
+			return 5.0
+		case a.Kind == "back":
+			return 4.0
+		case a.Kind == "wait":
+			return 0.5
+		}
+		return -4.0
+	}
+	if isMenuScreen(st) {
+		switch {
+		case isCloseLabel(a.Target):
+			return 4.0
+		case a.Kind == "back":
+			return 2.5
+		case a.Kind == "swipe":
+			return -1.5
+		case a.Kind == "tap":
+			return -0.8
+		case a.Kind == "tap_text":
+			return -0.3
+		}
+	}
+	return 0
+}
+
+// topCandidateActions keeps the highest-scored distinct actions for the
+// on-device model. The heuristic still explores the full legal set; the model is
+// only asked to choose among the actions that already look plausible.
+func topCandidateActions(cands []Candidate, n int) []domain.Action {
+	if n <= 0 {
+		return nil
+	}
+	out := make([]domain.Action, 0, n)
+	seen := map[string]bool{}
+	for _, c := range cands {
+		if seen[c.Action.Key()] {
+			continue
+		}
+		seen[c.Action.Key()] = true
+		out = append(out, c.Action)
+		if len(out) >= n {
+			break
+		}
+	}
+	return out
+}
+
+// orderLocalActions puts close/back first for a small model choosing by index.
+// A 0.5B model cannot reliably infer "this is a modal, escape it", so the
+// ordering carries that prior while the hard filter still owns safety.
+func orderLocalActions(legal []domain.Action, st domain.State) []domain.Action {
+	if !isMenuScreen(st) {
+		return legal
+	}
+	out := make([]domain.Action, 0, len(legal))
+	for _, a := range legal {
+		if a.Kind == "back" || isCloseLabel(a.Target) {
+			out = append(out, a)
+		}
+	}
+	for _, a := range legal {
+		if a.Kind != "back" && !isCloseLabel(a.Target) {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 func survivalAdjust(a domain.Action, st domain.State) float64 {
@@ -706,18 +944,57 @@ func (p *Policy) QSize() int {
 	return n
 }
 
-func (p *Policy) askLLM(ctx context.Context, in Input, legal []domain.Action) (domain.Action, llm.Response, error) {
+func (p *Policy) askLLM(ctx context.Context, in Input, legal []domain.Action, cands []Candidate) (domain.Action, llm.Response, error) {
 	p.mu.Lock()
 	recent := append([]string(nil), p.recent...)
 	p.mu.Unlock()
+	local := false
+	if lp, ok := p.llm.(interface{ Local() bool }); ok {
+		local = lp.Local()
+	}
 	prompt := buildPrompt(in, legal, recent)
-	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	system := "You are the policy head of an external game-playing agent. You see only a game state summary. Choose exactly one of the listed legal actions. Never invent actions. Respect hard constraints absolutely. Preferences are soft hints. Reply with JSON only."
+	timeout := 20 * time.Second
+	maxTokens := 160
+	localLegal := legal
+	if local {
+		// A 0.5B model on a phone processes a long prompt at roughly 50 tokens/s.
+		// The API-sized prompt alone costs 15s and then times out, so give the
+		// on-device model only the fields it actually needs. Picking an index is
+		// also more reliable than asking a tiny model to reproduce kind/target:
+		// it used to echo OCR text such as "外部感知,本机小模型" as an action.
+		// Drop the passive wait action: a tiny model kept selecting it, which
+		// looked like the AI had frozen. wait stays available through directives
+		// and through the heuristic path.
+		// A phone-sized model does not need every legal tap: the top scored
+		// candidates already encode the meaningful OCR labels, the modal escape,
+		// and a little exploration. Sending all 27 actions doubled prompt
+		// processing time and pushed one choice to ~19s on the test device.
+		base := legal
+		if top := topCandidateActions(cands, 8); len(top) > 0 {
+			base = top
+		}
+		withoutWait := make([]domain.Action, 0, len(base))
+		for _, a := range base {
+			if a.Kind != "wait" {
+				withoutWait = append(withoutWait, a)
+			}
+		}
+		if len(withoutWait) > 0 {
+			localLegal = orderLocalActions(withoutWait, in.State)
+		}
+		prompt = buildLocalPrompt(in, localLegal, recent)
+		system = "You are the action selector of a game-playing agent. Pick exactly one numbered action from the list. Reply only JSON: {\"index\": N}. Never copy screen text. Never invent an action."
+		timeout = 30 * time.Second
+		maxTokens = 24
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	resp, err := p.llm.Complete(ctx, llm.Request{
-		System:      "You are the policy head of an external game-playing agent. You see only a game state summary. Choose exactly one of the listed legal actions. Never invent actions. Respect hard constraints absolutely. Preferences are soft hints. Reply with JSON only.",
+		System:      system,
 		Prompt:      prompt,
 		Temperature: 0.2,
-		MaxTokens:   160,
+		MaxTokens:   maxTokens,
 		JSON:        true,
 	})
 	if err != nil {
@@ -728,6 +1005,7 @@ func (p *Policy) askLLM(ctx context.Context, in Input, legal []domain.Action) (d
 		return domain.Action{}, resp, fmt.Errorf("no JSON in response: %q", short(resp.Text, 120))
 	}
 	var pick struct {
+		Index      int     `json:"index"`
 		Kind       string  `json:"kind"`
 		Action     string  `json:"action"`
 		Target     string  `json:"target"`
@@ -736,6 +1014,12 @@ func (p *Policy) askLLM(ctx context.Context, in Input, legal []domain.Action) (d
 	}
 	if err := json.Unmarshal([]byte(js), &pick); err != nil {
 		return domain.Action{}, resp, fmt.Errorf("bad JSON: %w", err)
+	}
+	if local {
+		if pick.Index < 1 || pick.Index > len(localLegal) {
+			return domain.Action{}, resp, fmt.Errorf("LLM picked illegal action index=%d (1..%d)", pick.Index, len(localLegal))
+		}
+		return localLegal[pick.Index-1], resp, nil
 	}
 	kind := pick.Kind
 	if kind == "" {
@@ -804,6 +1088,11 @@ func buildPrompt(in Input, legal []domain.Action, recent []string) string {
 	b.WriteString("STATE: ")
 	b.WriteString(in.State.Summary)
 	b.WriteString("\n")
+	if isPurchaseScreen(in.State) {
+		b.WriteString("SCREEN: payment/recharge dialog. Only close/back is legal; never buy, recharge, or confirm payment.\n")
+	} else if isMenuScreen(in.State) {
+		b.WriteString("SCREEN: menu/modal. Prefer close/back over scrolling or blind taps.\n")
+	}
 	if len(in.State.Values) > 0 {
 		b.WriteString("VALUES:")
 		for _, k := range domain.SortedKeys(in.State.Values) {
@@ -841,6 +1130,70 @@ func buildPrompt(in Input, legal []domain.Action, recent []string) string {
 		fmt.Fprintf(&b, "%d. kind=%s target=%s risk=%.2f tags=%s\n", i+1, a.Kind, a.Target, a.Risk, strings.Join(a.Tags, ","))
 	}
 	b.WriteString("Reply JSON: {\"kind\":\"...\",\"target\":\"...\",\"reason\":\"...\",\"confidence\":0.0}")
+	return b.String()
+}
+
+// buildLocalPrompt is the small-model variant: no prose sections, no long
+// memory lines, and a compact action list. Every action is still named exactly
+// as the validator expects, so the reply grounds against the same legal set.
+func buildLocalPrompt(in Input, legal []domain.Action, recent []string) string {
+	var b strings.Builder
+	if in.GameName != "" {
+		b.WriteString("GAME: " + short(in.GameName, 60) + "\n")
+	}
+	b.WriteString("STATE: " + short(in.State.Summary, 200) + "\n")
+	if isPurchaseScreen(in.State) {
+		b.WriteString("SCREEN: payment. Only close/back.\n")
+	} else if isMenuScreen(in.State) {
+		b.WriteString("SCREEN: menu. Close/back first.\n")
+	}
+	if len(in.State.Values) > 0 {
+		b.WriteString("VALUES:")
+		n := 0
+		for _, k := range domain.SortedKeys(in.State.Values) {
+			if n >= 6 {
+				break
+			}
+			fmt.Fprintf(&b, " %s=%.1f", k, in.State.Values[k])
+			n++
+		}
+		b.WriteString("\n")
+	}
+	if len(recent) > 0 {
+		b.WriteString("RECENT:")
+		start := len(recent) - 3
+		if start < 0 {
+			start = 0
+		}
+		for _, line := range recent[start:] {
+			b.WriteString(" " + short(line, 70) + ";")
+		}
+		b.WriteString("\n")
+	}
+	if len(in.Control.Hard) > 0 {
+		b.WriteString("HARD:")
+		for _, c := range in.Control.Hard {
+			if c.IsActive(time.Now()) {
+				b.WriteString(" " + short(c.Text, 80) + ";")
+			}
+		}
+		b.WriteString("\n")
+	}
+	if hints := append(append([]string{}, in.Control.Hints...), in.Hints...); len(hints) > 0 {
+		b.WriteString("PREF:")
+		for i, h := range hints {
+			if i >= 3 {
+				break
+			}
+			b.WriteString(" " + short(h, 70) + ";")
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString("ACTIONS:")
+	for i, a := range legal {
+		fmt.Fprintf(&b, "\n%d. %s·%s", i+1, a.Kind, a.Target)
+	}
+	b.WriteString("\nReply JSON: {\"index\":1}")
 	return b.String()
 }
 

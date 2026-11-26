@@ -821,7 +821,7 @@ func (s *Server) updateLLM(w http.ResponseWriter, r *http.Request) {
 			BaseURL: cfg.LLM.BaseURL, APIKey: cfg.LLM.APIKey, Model: cfg.LLM.Model,
 			Timeout:     time.Duration(cfg.LLM.TimeoutMS) * time.Millisecond,
 			Temperature: cfg.LLM.Temperature, MaxTokens: cfg.LLM.MaxTokens,
-			Provider: "openai-compatible",
+			Provider: "openai-compatible", Vision: cfg.LLM.Vision,
 		})
 	}
 	s.mgr.Router().SetAPI(api)

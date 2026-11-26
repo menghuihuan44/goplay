@@ -43,6 +43,15 @@ object InputGate {
     var activeGamePackage: String = ""
         private set
 
+    /**
+     * Package that currently owns the screen, published by the accessibility
+     * service. The capture service puts it into every frame so the Go core can
+     * stop acting when the user leaves the game.
+     */
+    @Volatile
+    var foregroundPackage: String = ""
+        private set
+
     /** True while the island is expanded and the user may be typing. */
     val isOverlayExpanded: Boolean
         get() = currentOverlay?.isExpanded == true
@@ -57,5 +66,9 @@ object InputGate {
 
     fun setActiveGamePackage(pkg: String?) {
         activeGamePackage = pkg?.trim().orEmpty()
+    }
+
+    fun setForegroundPackage(pkg: String?) {
+        foregroundPackage = pkg?.trim().orEmpty()
     }
 }

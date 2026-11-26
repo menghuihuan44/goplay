@@ -1079,6 +1079,7 @@ class MainActivity : AppCompatActivity() {
         val core = graph.localCore.state.value
         val snapshot = permissionSnapshot()
         val voiceState = graph.voice.state
+        val canvas = GameAccessibilityService.instance?.gestureCanvas() ?: Pair(0, 0)
         val voiceJson = JSONObject()
             .put("listening", voiceState.listening)
             .put("speaking", voiceState.speaking)
@@ -1103,6 +1104,8 @@ class MainActivity : AppCompatActivity() {
             .put("capturePaused", capture.paused)
             .put("captureWidth", capture.width)
             .put("captureHeight", capture.height)
+            .put("gestureWidth", canvas.first)
+            .put("gestureHeight", canvas.second)
             .put("captureError", capture.error ?: JSONObject.NULL)
             .put("overlayVisible", capture.overlayVisible)
             .put("permissions", permissions)
@@ -1115,6 +1118,8 @@ class MainActivity : AppCompatActivity() {
             .put("voiceSpeaking", voiceState.speaking)
             .put("takeoverSensitivity", settings.takeoverSensitivity)
             .put("activeInstance", settings.instanceId)
+            .put("foregroundPackage", InputGate.foregroundPackage)
+            .put("activeGamePackage", InputGate.activeGamePackage)
             .put("device", graph.device.summary)
             .put("version", core.version)
             .toString()

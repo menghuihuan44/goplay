@@ -142,6 +142,8 @@ data class FrameHeader(
     val sequence: Long,
     val source: String = "media_projection",
     val instanceId: String? = null,
+    /** Package that owned the screen at capture time. */
+    val foreground: String? = null,
     val bytes: Int? = null,
     /** On-device OCR of this frame. The core taps these boxes instead of
      *  guessing a 3x3 grid, which is what made touch play look random. */

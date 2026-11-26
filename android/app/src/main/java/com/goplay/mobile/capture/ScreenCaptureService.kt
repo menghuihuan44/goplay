@@ -28,6 +28,7 @@ import com.goplay.mobile.data.AppSettings
 import com.goplay.mobile.data.BatteryMonitor
 import com.goplay.mobile.data.NetworkMonitor
 import com.goplay.mobile.data.SessionState
+import com.goplay.mobile.input.InputGate
 import com.goplay.mobile.net.CoreClient
 import com.goplay.mobile.notifications.Notifications
 import com.goplay.mobile.overlay.AiRuntime
@@ -527,6 +528,7 @@ class ScreenCaptureService : Service() {
                 rotation = rotationDegrees(rotation),
                 sequence = 0L,
                 source = "media_projection",
+                foreground = InputGate.foregroundPackage.takeIf { it.isNotBlank() },
                 textRegions = textRegions,
             )
             graph.client.sendFrame(jpeg, header)

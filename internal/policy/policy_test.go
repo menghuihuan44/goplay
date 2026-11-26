@@ -26,6 +26,110 @@ func legalActions() []domain.Action {
 	}
 }
 
+func touchState(text string) domain.State {
+	return domain.State{
+		Summary: "touch screen",
+		Text:    map[string]string{"ui_text": text},
+		Values:  map[string]float64{"text_count": 4, "brightness": 100},
+		Tags:    []string{"frame", "ui_text"},
+	}
+}
+
+func tapText(label string) domain.Action {
+	return domain.Action{Kind: "tap_text", Target: "text:" + label, Tags: []string{"ui", "text", "ocr", label}, Risk: 0.1, Input: &domain.InputSpec{Type: "tap", X: 0.5, Y: 0.5}}
+}
+
+func TestPurchaseScreenOnlyAllowsEscape(t *testing.T) {
+	p := New(nil, nil, DefaultConfig())
+	actions := []domain.Action{
+		tapText("充值 60"),
+		tapText("关闭"),
+		{Kind: "back", Target: "screen", Tags: []string{"ui", "back"}, Input: &domain.InputSpec{Type: "back"}},
+		{Kind: "swipe", Target: "screen_up", Tags: []string{"ui", "scroll"}, Input: &domain.InputSpec{Type: "swipe", Y: 0.7, Y2: 0.3}},
+		{Kind: "tap", Target: "screen_2_2", Tags: []string{"ui", "select"}, Input: &domain.InputSpec{Type: "tap", X: 0.5, Y: 0.5}},
+	}
+	d := p.Decide(context.Background(), Input{State: touchState("商城 充值 首充 礼包 关闭"), Actions: actions})
+	if d.Action.Target == "text:充值 60" || d.Action.Kind == "swipe" || d.Action.Kind == "tap" {
+		t.Fatalf("payment screen chose a dangerous action: %+v", d.Action)
+	}
+	if d.Action.Kind != "tap_text" || !strings.Contains(d.Action.Target, "关闭") {
+		t.Fatalf("payment screen should close, got %+v", d.Action)
+	}
+	if len(d.Blocked) == 0 {
+		t.Fatalf("dangerous actions should be reported as blocked")
+	}
+}
+
+func TestDestructiveExitIsBlocked(t *testing.T) {
+	p := New(nil, nil, DefaultConfig())
+	actions := []domain.Action{
+		tapText("再玩一会"),
+		tapText("退出游戏"),
+		{Kind: "back", Target: "screen", Tags: []string{"ui", "back"}, Input: &domain.InputSpec{Type: "back"}},
+	}
+	d := p.Decide(context.Background(), Input{State: touchState("健康游戏忠告 再玩一会 退出游戏"), Actions: actions})
+	if strings.Contains(d.Action.Target, "退出游戏") {
+		t.Fatalf("chose to quit the game: %+v", d.Action)
+	}
+	if d.Action.Target != "text:再玩一会" {
+		t.Fatalf("should keep playing, got %+v", d.Action)
+	}
+	if len(d.Blocked) == 0 {
+		t.Fatalf("quit button should be reported as blocked")
+	}
+}
+
+func TestContinueBeatsNewGame(t *testing.T) {
+	p := New(nil, nil, DefaultConfig())
+	actions := []domain.Action{tapText("继续游戏"), tapText("新的游戏")}
+	d := p.Decide(context.Background(), Input{State: touchState("继续游戏 新的游戏"), Actions: actions})
+	if d.Action.Target != "text:继续游戏" {
+		t.Fatalf("existing save should win over new game, got %+v", d.Action)
+	}
+}
+
+func TestMenuPrefersCloseOverScrolling(t *testing.T) {
+	p := New(nil, nil, DefaultConfig())
+	actions := []domain.Action{
+		{Kind: "swipe", Target: "screen_up", Tags: []string{"ui", "scroll"}, Input: &domain.InputSpec{Type: "swipe", Y: 0.7, Y2: 0.3}},
+		{Kind: "back", Target: "screen", Tags: []string{"ui", "back"}, Input: &domain.InputSpec{Type: "back"}},
+		tapText("关闭"),
+		tapText("制作"),
+	}
+	d := p.Decide(context.Background(), Input{State: touchState("制作台 背包 关闭 返回"), Actions: actions})
+	if d.Action.Kind == "swipe" {
+		t.Fatalf("menu should not scroll forever, got %+v", d.Action)
+	}
+	if d.Action.Kind != "tap_text" && d.Action.Kind != "back" {
+		t.Fatalf("menu should escape, got %+v", d.Action)
+	}
+}
+
+func TestHudShopButtonDoesNotFreezePlay(t *testing.T) {
+	p := New(nil, nil, DefaultConfig())
+	actions := []domain.Action{tapText("继续游戏"), tapText("商城"), {Kind: "tap", Target: "screen_2_2", Tags: []string{"ui", "select"}, Input: &domain.InputSpec{Type: "tap", X: 0.5, Y: 0.5}}}
+	d := p.Decide(context.Background(), Input{State: touchState("任务 地图 商城 继续游戏"), Actions: actions})
+	if d.Action.Target != "text:继续游戏" {
+		t.Fatalf("a HUD shop button must not block normal play, got %+v", d.Action)
+	}
+}
+
+func TestLocalPromptStaysSmall(t *testing.T) {
+	in := Input{State: mockState(), Actions: legalActions(), GameName: "A Very Long Game Name", GamePrior: strings.Repeat("prior ", 200)}
+	prompt := buildLocalPrompt(in, legalActions(), []string{"one", "two", "three", "four"})
+	if len(prompt) > 1200 {
+		t.Fatalf("local prompt too large for a phone model: %d chars", len(prompt))
+	}
+	for _, want := range []string{"ACTIONS:", "attack·enemy", "Reply JSON"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("local prompt missing %q: %s", want, prompt)
+		}
+	}
+	if strings.Contains(prompt, "RECENT: one") {
+		t.Fatalf("local prompt should keep only the newest recent lines: %s", prompt)
+	}
+}
+
 func TestConstraintDeniesHard(t *testing.T) {
 	p := New(nil, nil, DefaultConfig())
 	ctl := domain.Control{Hard: []domain.Constraint{{
@@ -70,6 +174,28 @@ func (f fixedLLM) Name() string                   { return "fixed" }
 func (f fixedLLM) Available(context.Context) bool { return true }
 func (f fixedLLM) Complete(context.Context, llm.Request) (llm.Response, error) {
 	return llm.Response{Text: f.reply, Provider: "fixed", Model: "mock"}, nil
+}
+
+type localLLM struct{ fixedLLM }
+
+func (localLLM) Local() bool { return true }
+
+func TestLocalLLMPicksByIndex(t *testing.T) {
+	p := New(localLLM{fixedLLM{reply: `{"index":2}`}}, nil, DefaultConfig())
+	d := p.Decide(context.Background(), Input{State: mockState(), Actions: legalActions(), ForceLLM: true})
+	// Index is 1-based into the same compact candidate list the prompt showed.
+	// With the fixed mock state the stable order starts advance, attack, defend.
+	if d.Action.Kind != "attack" || d.Source != "llm" {
+		t.Fatalf("expected index 2 to select the second listed action (attack), got %+v", d)
+	}
+}
+
+func TestLocalLLMBadIndexFallsBack(t *testing.T) {
+	p := New(localLLM{fixedLLM{reply: `{"index":99}`}}, nil, DefaultConfig())
+	d := p.Decide(context.Background(), Input{State: mockState(), Actions: legalActions(), ForceLLM: true})
+	if !d.Fallback {
+		t.Fatalf("out-of-range index must fall back, got %+v", d)
+	}
 }
 
 func TestLLMChoiceValidated(t *testing.T) {
@@ -131,6 +257,14 @@ func TestValidatorRejectsBadCoords(t *testing.T) {
 		t.Fatal("expected coordinate rejection")
 	}
 }
+func TestValidatorAllowsBack(t *testing.T) {
+	v := NewValidator(0.9)
+	legal := []domain.Action{{Kind: "back", Target: "screen", Risk: 0.05, Input: &domain.InputSpec{Type: "back"}}}
+	if err := v.Validate(legal[0], legal); err != nil {
+		t.Fatalf("back must be allowlisted: %v", err)
+	}
+}
+
 func TestDemoHintWinsOnlyWhenLegal(t *testing.T) {
 	p := New(nil, nil, DefaultConfig())
 	legal := []domain.Action{

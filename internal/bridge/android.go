@@ -55,6 +55,10 @@ type FrameHeader struct {
 	InstanceID   string       `json:"instanceId"`
 	Bytes        int          `json:"bytes"`
 	TextRegions  []TextRegion `json:"textRegions,omitempty"`
+	// Foreground is the Android package that owned the screen when this frame
+	// was captured. The engine uses it to stop acting when the user leaves the
+	// game (launcher, another app) instead of tapping whatever is on screen.
+	Foreground string `json:"foreground,omitempty"`
 }
 
 // Transport is the write side of one client connection. SendJSON must be safe
@@ -129,6 +133,18 @@ func NewSession(id string) *Session {
 
 // ID returns the instance id.
 func (s *Session) ID() string { return s.id }
+
+// Latest returns the most recently pushed frame, if any. The engine uses it to
+// notice that the screen changed while a slow model was still deciding, so it
+// can discard coordinates that belonged to the previous screen.
+func (s *Session) Latest() (domain.Frame, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.latest == nil {
+		return domain.Frame{}, false
+	}
+	return *s.latest, true
+}
 
 // Attach binds a connection transport and returns a detach function. Attaching a
 // new transport replaces the old one; pending actions are released with an
@@ -270,6 +286,9 @@ func (s *Session) PushFrame(h FrameHeader, jpg []byte) error {
 		Source: "android-mediaprojection",
 		Meta:   map[string]string{"rotation": fmt.Sprint(h.Rotation), "quality": fmt.Sprint(h.Quality), "sequence": fmt.Sprint(h.Sequence)},
 	}
+	if h.Foreground != "" {
+		f.Meta["foreground"] = h.Foreground
+	}
 	if len(h.TextRegions) > 0 {
 		if raw, err := json.Marshal(h.TextRegions); err == nil {
 			f.Meta["ocr"] = string(raw)
@@ -296,6 +315,19 @@ func (s *Session) PushFrame(h FrameHeader, jpg []byte) error {
 const frameWait = 4 * time.Second
 
 func (s *Session) Grab(ctx context.Context) (domain.Frame, error) {
+	return s.grab(ctx, time.Time{})
+}
+
+// GrabSince waits for a frame captured after the given instant. After an action
+// the engine must not reason about the frame it already used: that produced
+// repeated taps on the previous screen (for example tapping where "开始游戏"
+// used to be after the game had already opened a health warning). A zero time
+// behaves like Grab.
+func (s *Session) GrabSince(ctx context.Context, since time.Time) (domain.Frame, error) {
+	return s.grab(ctx, since)
+}
+
+func (s *Session) grab(ctx context.Context, since time.Time) (domain.Frame, error) {
 	// The loop must never block forever on a phone that rotated into a
 	// permission dialog, lost Wi-Fi, or is simply showing a static screen.
 	// Wait a bounded time, report a transient condition, and let the engine
@@ -306,7 +338,7 @@ func (s *Session) Grab(ctx context.Context) (domain.Frame, error) {
 		// reconnect or an instance switch the last frame predates the socket, so
 		// acting on it would race the transport and fail with "no Android client
 		// connected". Wait for a frame from the new connection instead.
-		if s.tr != nil && s.latest != nil && time.Since(s.latest.At) < 1500*time.Millisecond {
+		if s.tr != nil && s.latest != nil && s.latest.At.After(since) && time.Since(s.latest.At) < 1500*time.Millisecond {
 			f := *s.latest
 			s.mu.Unlock()
 			return f, nil

@@ -98,6 +98,20 @@ type ModelCloner interface {
 	WithModel(model string) Provider
 }
 
+// VisionProvider reports whether a provider can accept images. Text-only local
+// models must not be handed screenshots: llama.cpp answers HTTP 500 and the
+// perception stage looks permanently broken instead of falling back to rules.
+type VisionProvider interface {
+	Provider
+	SupportsVision() bool
+}
+
+// SupportsVision reports whether p can accept image input.
+func SupportsVision(p Provider) bool {
+	v, ok := p.(VisionProvider)
+	return ok && v.SupportsVision()
+}
+
 // Router is the single decision point for API-vs-local providers. It is
 // mutable at runtime so the model manager can attach a llama.cpp provider after
 // a download finishes; every field is guarded by mu.
@@ -500,6 +514,21 @@ func (r *Router) For(role string) Provider {
 type routeProvider struct {
 	router *Router
 	role   string
+}
+
+// Local reports whether this role currently resolves to an on-device model.
+// Callers use it to pick a compact prompt: small models spend seconds just
+// processing a long prompt, so a phone cannot afford the API-sized one.
+func (p *routeProvider) Local() bool {
+	rr := p.router.resolveRoute(p.role)
+	switch rr.mode {
+	case "local":
+		return true
+	case "api", "offline":
+		return false
+	default:
+		return rr.availableLocal(context.Background()) != nil
+	}
 }
 
 func (p *routeProvider) Name() string {

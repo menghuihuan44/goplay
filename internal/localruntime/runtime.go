@@ -49,6 +49,10 @@ type ServerStatus struct {
 	ContextTokens int    `json:"context_tokens,omitempty"`
 	Threads       int    `json:"threads,omitempty"`
 	Error         string `json:"error,omitempty"`
+	// LogTail is the tail of llama-server stdout/stderr. It makes a hung or
+	// misconfigured local runtime diagnosable from the UI instead of a bare
+	// "context deadline exceeded".
+	LogTail string `json:"log_tail,omitempty"`
 }
 
 // DownloadStatus is the live state of the on-device model download. It is
@@ -965,6 +969,12 @@ func (r *Runtime) serverStatusesLocked() []ServerStatus {
 				ss.BaseURL = fmt.Sprintf("http://127.0.0.1:%d/v1", rm.port)
 			}
 			ss.PID = rm.srv.PID()
+			if tail := rm.srv.LogTail(); tail != "" {
+				if len(tail) > 4000 {
+					tail = tail[len(tail)-4000:]
+				}
+				ss.LogTail = tail
+			}
 		}
 		out = append(out, ss)
 	}

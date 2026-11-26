@@ -19,6 +19,8 @@ type OpenAIConfig struct {
 	Temperature float64
 	MaxTokens   int
 	Provider    string
+	// Vision marks the endpoint/model as accepting image_url content.
+	Vision bool
 }
 
 type OpenAI struct {
@@ -52,6 +54,9 @@ func (o *OpenAI) Name() string {
 
 // Model returns the model name this client sends to the API.
 func (o *OpenAI) Model() string { return o.cfg.Model }
+
+// SupportsVision reports the configured multimodal capability.
+func (o *OpenAI) SupportsVision() bool { return o.cfg.Vision }
 
 // WithModel returns a copy of the client pinned to another model name while
 // keeping the same endpoint, credentials, timeout and HTTP transport.

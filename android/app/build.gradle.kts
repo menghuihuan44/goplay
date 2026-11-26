@@ -66,8 +66,8 @@ android {
         applicationId = "com.goplay.mobile"
         minSdk = 26
         targetSdk = 35
-        versionCode = 14
-        versionName = "0.6.3"
+        versionCode = 15
+        versionName = "0.6.4"
         ndk {
             // The Go core and llama-server ship as prebuilt arm64 libraries.
             // Go's android/amd64 target needs cgo + the NDK, so x86_64

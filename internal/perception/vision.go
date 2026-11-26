@@ -52,7 +52,7 @@ func (v *VisionAnalyzer) Stats() map[string]any {
 
 func (v *VisionAnalyzer) Analyze(f domain.Frame) (domain.State, map[string]any, error) {
 	base, world, baseErr := v.Fallback.Analyze(f)
-	if v.Provider == nil || !v.Provider.Available(context.Background()) {
+	if v.Provider == nil || !llm.SupportsVision(v.Provider) || !v.Provider.Available(context.Background()) {
 		return base, world, baseErr
 	}
 	v.mu.Lock()

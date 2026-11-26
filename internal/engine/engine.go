@@ -11,6 +11,7 @@ import (
 	"image/jpeg"
 	"log/slog"
 	"math"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -108,6 +109,7 @@ type Runner struct {
 	waitSince    time.Time
 	lastRecover  time.Time
 	lastActions  []domain.Action
+	lastActAt    time.Time
 	episodesList []EpisodeResult
 	traceSeq     int64
 	trace        []TraceEvent
@@ -789,6 +791,104 @@ func (r *Runner) maybeRecover() {
 	}
 	r.traceEvent("recover", "等待画面恢复，当前采集源不支持主动重建", nil)
 }
+
+type frameSinceSource interface {
+	GrabSince(context.Context, time.Time) (domain.Frame, error)
+}
+
+type latestFrameSource interface {
+	Latest() (domain.Frame, bool)
+}
+
+// grabFrame waits for a frame captured after since when the source supports it.
+// Generic sources keep their old behaviour.
+func (r *Runner) grabFrame(ctx context.Context, since time.Time) (domain.Frame, error) {
+	if since.IsZero() {
+		return r.opts.Source.Grab(ctx)
+	}
+	if s, ok := r.opts.Source.(frameSinceSource); ok {
+		return s.GrabSince(ctx, since)
+	}
+	return r.opts.Source.Grab(ctx)
+}
+
+var ocrTextPattern = regexp.MustCompile("\"text\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"")
+
+// ocrTexts returns the recognized labels in reading order, lower-cased and
+// de-duplicated. OCR boxes jitter between frames, so raw JSON is useless for
+// detecting a real screen transition.
+func ocrTexts(meta string) []string {
+	if meta == "" {
+		return nil
+	}
+	matches := ocrTextPattern.FindAllStringSubmatch(meta, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(matches))
+	out := make([]string, 0, len(matches))
+	for _, m := range matches {
+		v := strings.ToLower(strings.TrimSpace(m[1]))
+		if v == "" || seen[v] {
+			continue
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	return out
+}
+
+func containsLabel(texts []string, label string) bool {
+	label = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(label, "text:")))
+	if label == "" {
+		return false
+	}
+	for _, t := range texts {
+		if strings.Contains(t, label) || strings.Contains(label, t) {
+			return true
+		}
+	}
+	return false
+}
+
+// screenChangedSince reports whether the screen moved on while a slow decision
+// was being made. For a tap on an OCR label, the decisive test is whether that
+// label still exists: OCR of the same static screen drops or adds a box now and
+// then, but the button text stays. Also abort when a quit confirmation appears,
+// because the old coordinates could land on "exit game".
+func (r *Runner) screenChangedSince(frame domain.Frame, action domain.Action) bool {
+	ls, ok := r.opts.Source.(latestFrameSource)
+	if !ok {
+		return false
+	}
+	latest, ok := ls.Latest()
+	if !ok || !latest.At.After(frame.At.Add(120*time.Millisecond)) {
+		return false
+	}
+	before := ocrTexts(frame.Meta["ocr"])
+	now := ocrTexts(latest.Meta["ocr"])
+	if action.Kind == "tap_text" {
+		if !containsLabel(now, action.Target) {
+			return true
+		}
+	}
+	if !containsAnyLabel(before, destructiveScreenWords) && containsAnyLabel(now, destructiveScreenWords) {
+		return true
+	}
+	return false
+}
+
+var destructiveScreenWords = []string{"退出游戏", "结束游戏", "退出登录", "健康游戏忠告", "quit game", "exit game"}
+
+func containsAnyLabel(texts []string, words []string) bool {
+	for _, w := range words {
+		if containsLabel(texts, w) {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *Runner) step(ctx context.Context) error {
 	start := time.Now()
 	// A desktop executor can require its game window to be foreground. Check
@@ -802,7 +902,7 @@ func (r *Runner) step(ctx context.Context) error {
 			return nil
 		}
 	}
-	frame, err := r.opts.Source.Grab(ctx)
+	frame, err := r.grabFrame(ctx, r.lastActAt)
 	if err != nil {
 		if r.noteWaiting(err) {
 			return nil
@@ -816,6 +916,22 @@ func (r *Runner) step(ctx context.Context) error {
 		return fmt.Errorf("analyze: %w", err)
 	}
 	r.opts.Metrics.Observe(metrics.PerceptionLatencyMS, float64(time.Since(start).Milliseconds()))
+	// The Android client reports which package owns the screen. If the user
+	// leaves the game (launcher, another app, a system dialog), stop deciding
+	// instead of tapping whatever is now visible.
+	if pkg := r.opts.GamePackage; pkg != "" {
+		if fg := strings.TrimSpace(frame.Meta["foreground"]); fg != "" {
+			if fg == pkg {
+				// The user came back to the game (or a vendor overlay stopped
+				// masking it). Leaving the target wait set here would freeze the
+				// instance forever because decisions are skipped while waiting.
+				r.clearWaiting()
+			} else if fg != "com.goplay.mobile" {
+				r.noteWaiting(fmt.Errorf("%w: 前台是 %s，目标游戏是 %s", action.ErrTargetNotFocused, fg, pkg))
+				return nil
+			}
+		}
+	}
 	r.traceEvent("see", st.Summary, map[string]any{
 		"tags": st.Tags, "scene_change": st.Value("scene_change"),
 		"frame_delta": st.Value("frame_delta"), "edge_ratio": st.Value("edge_ratio"),
@@ -940,10 +1056,15 @@ func (r *Runner) step(ctx context.Context) error {
 		Demo: demoActs, DemoReason: demoReason,
 		Directive: directiveActs, DirectiveReason: directiveReason,
 	})
-	r.traceEvent("think", fmt.Sprintf("有 %d 个合法动作，选择 %s", len(acts), dec.Action.Key()), map[string]any{
+	thinkMsg := fmt.Sprintf("有 %d 个合法动作，选择 %s", len(acts), dec.Action.Key())
+	if len(dec.Blocked) > 0 {
+		thinkMsg += fmt.Sprintf("（安全过滤拦截 %d 个危险/无效动作）", len(dec.Blocked))
+	}
+	r.traceEvent("think", thinkMsg, map[string]any{
 		"source": dec.Source, "reason": dec.Reason, "state_key": dec.StateKey,
 		"demo": dec.Demo, "directive": len(directiveActs) > 0,
 		"llm_used": dec.LLMUsed, "candidates": candidateKeys(dec.Candidates, 6),
+		"blocked": dec.Blocked,
 	})
 	r.opts.Metrics.Observe(metrics.DecisionLatencyMS, dec.LatencyMS)
 	if dec.Source == "demo" && r.opts.Teacher != nil {
@@ -958,6 +1079,15 @@ func (r *Runner) step(ctx context.Context) error {
 	r.lastState = pst
 	r.lastDec = dec
 	r.mu.Unlock()
+
+	// A slow local model can spend many seconds deciding. If the screen moved on
+	// in the meantime, the coordinates in this decision describe the previous
+	// screen (for example a "开始游戏" box that is now "退出游戏" on a health
+	// warning). Drop the stale action and decide again from the new frame.
+	if r.screenChangedSince(frame, dec.Action) {
+		r.traceEvent("stale", "画面在决策期间已变化，放弃过期动作", nil)
+		return nil
+	}
 
 	// Re-check human control immediately before acting. A user touching the
 	// keyboard must never race an injected action.
@@ -995,6 +1125,9 @@ func (r *Runner) step(ctx context.Context) error {
 		marker.MarkInjected()
 	}
 	r.clearWaiting()
+	r.mu.Lock()
+	r.lastActAt = actStart
+	r.mu.Unlock()
 	lat := float64(time.Since(actStart).Milliseconds())
 	r.opts.Metrics.Observe(metrics.ActionLatencyMS, lat)
 	r.opts.Metrics.Inc(metrics.ActionsTotal, 1)
@@ -1020,8 +1153,10 @@ func (r *Runner) step(ctx context.Context) error {
 		r.narrate(line)
 	}
 
-	// Observe the aftermath through the same pixel pipeline.
-	after, err := r.opts.Source.Grab(ctx)
+	// Observe the aftermath through the same pixel pipeline. Wait for a frame
+	// captured after the tap; reusing the pre-action frame made the loop think
+	// nothing changed and repeat the same stale coordinates.
+	after, err := r.grabFrame(ctx, actStart)
 	if err != nil {
 		if r.noteWaiting(err) {
 			return nil
@@ -1037,6 +1172,7 @@ func (r *Runner) step(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("profile interpret: %w", err)
 	}
+	interp = dampRiskyReward(dec, interp)
 	r.opts.Policy.Update(dec, interp.Reward)
 	effective := interp.Reward >= 0.05
 	r.traceEvent("result", interp.Note, map[string]any{
@@ -1071,6 +1207,31 @@ func (r *Runner) step(ctx context.Context) error {
 		r.terminal(interp.Won)
 	}
 	return nil
+}
+
+// dampRiskyReward keeps navigation keys that leave the current screen from
+// looking like progress. A back press often produces a 98% scene change (the
+// game closes and the launcher appears), which would otherwise teach the
+// policy that quitting is the most rewarding move. Closing a popup still earns
+// a small positive reward, enough to keep the action useful.
+func dampRiskyReward(dec policy.Decision, interp luabridge.Interpretation) luabridge.Interpretation {
+	if dec.Action.Input == nil {
+		return interp
+	}
+	risky := dec.Action.Input.Type == "back"
+	if key := strings.ToLower(dec.Action.Input.Key); key == "escape" || key == "esc" {
+		risky = true
+	}
+	if !risky || interp.Reward <= 0 {
+		return interp
+	}
+	interp.Reward *= 0.1
+	if interp.Note != "" {
+		interp.Note += ", back is risky (reward damped)"
+	} else {
+		interp.Note = "back is risky (reward damped)"
+	}
+	return interp
 }
 
 func (r *Runner) remember(st domain.State, dec policy.Decision, interp luabridge.Interpretation, latencyMS float64) {
