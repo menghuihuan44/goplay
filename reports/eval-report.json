@@ -1,8 +1,8 @@
 {
   "version": "eval-v1",
   "mode": "quick",
-  "generated_at": "2026-11-26T00:09:37.3504127+08:00",
-  "duration_ms": 13872,
+  "generated_at": "2026-11-26T20:21:11.5864555+08:00",
+  "duration_ms": 19302,
   "environment": {
     "go_version": "go1.27.4",
     "os": "windows",
@@ -18,7 +18,7 @@
     "checks_passed": 47,
     "checks_failed": 0,
     "verdict": "PASS",
-    "duration_ms": 13872
+    "duration_ms": 19302
   },
   "checks": [
     {
@@ -264,7 +264,7 @@
       "id": "control.takeover_latency",
       "suite": "control",
       "label": "human takeover applied within 1s",
-      "value": 7,
+      "value": 9,
       "unit": "ms",
       "op": "\u003c=",
       "threshold": 1000,
@@ -284,7 +284,7 @@
       "id": "control.recovery_latency",
       "suite": "control",
       "label": "recovery within 2s of release",
-      "value": 122,
+      "value": 130,
       "unit": "ms",
       "op": "\u003c=",
       "threshold": 2000,
@@ -294,7 +294,7 @@
       "id": "control.handover_metric",
       "suite": "control",
       "label": "engine recorded a handover latency below 1s",
-      "value": 7,
+      "value": 8,
       "unit": "ms",
       "op": "\u003c=",
       "threshold": 1000,
@@ -335,7 +335,7 @@
       "id": "control.preference_latency",
       "suite": "control",
       "label": "preference applied within 1s",
-      "value": 9,
+      "value": 10,
       "unit": "ms",
       "op": "\u003c=",
       "threshold": 1000,
@@ -455,7 +455,7 @@
       "id": "localmodel.tps",
       "suite": "localmodel",
       "label": "decode speed at least 20 tokens/sec",
-      "value": 108.22291214328713,
+      "value": 107.62539367351029,
       "unit": "tps",
       "op": "\u003e=",
       "threshold": 20,
@@ -509,7 +509,7 @@
       "id": "perception",
       "title": "Perception accuracy under renderer noise",
       "status": "pass",
-      "duration_ms": 993,
+      "duration_ms": 676,
       "metrics": [
         {
           "id": "perception.noise_0.000.hp_accuracy",
@@ -774,7 +774,7 @@
       "id": "learning",
       "title": "Learning convergence across episodes",
       "status": "pass",
-      "duration_ms": 9016,
+      "duration_ms": 9005,
       "metrics": [
         {
           "id": "learning.episodes_completed",
@@ -1053,7 +1053,7 @@
       "id": "memory",
       "title": "Memory recall under a 256KB budget",
       "status": "pass",
-      "duration_ms": 335,
+      "duration_ms": 286,
       "metrics": [
         {
           "id": "memory.eviction.budget_bytes",
@@ -1313,12 +1313,12 @@
       "id": "control",
       "title": "Human takeover and intervention boundaries",
       "status": "pass",
-      "duration_ms": 421,
+      "duration_ms": 429,
       "metrics": [
         {
           "id": "control.takeover_latency_ms",
           "label": "Touch -\u003e human_control latency",
-          "value": 7,
+          "value": 9,
           "unit": "ms"
         },
         {
@@ -1330,13 +1330,13 @@
         {
           "id": "control.recovery_latency_ms",
           "label": "Release -\u003e running and acting",
-          "value": 122,
+          "value": 130,
           "unit": "ms"
         },
         {
           "id": "control.handover_metric_avg_ms",
           "label": "engine handover_latency_ms average",
-          "value": 7,
+          "value": 8,
           "unit": "ms",
           "note": "recorded by engine on the first human tick"
         },
@@ -1368,7 +1368,7 @@
         {
           "id": "control.preference_latency_ms",
           "label": "Submit preference -\u003e risk_aversion weight",
-          "value": 9,
+          "value": 10,
           "unit": "ms"
         },
         {
@@ -1386,7 +1386,7 @@
         {
           "id": "control.takeover_latency",
           "label": "human takeover applied within 1s",
-          "value": 7,
+          "value": 9,
           "unit": "ms",
           "threshold": 1000,
           "op": "\u003c=",
@@ -1404,7 +1404,7 @@
         {
           "id": "control.recovery_latency",
           "label": "recovery within 2s of release",
-          "value": 122,
+          "value": 130,
           "unit": "ms",
           "threshold": 2000,
           "op": "\u003c=",
@@ -1413,7 +1413,7 @@
         {
           "id": "control.handover_metric",
           "label": "engine recorded a handover latency below 1s",
-          "value": 7,
+          "value": 8,
           "unit": "ms",
           "threshold": 1000,
           "op": "\u003c=",
@@ -1450,7 +1450,7 @@
         {
           "id": "control.preference_latency",
           "label": "preference applied within 1s",
-          "value": 9,
+          "value": 10,
           "unit": "ms",
           "threshold": 1000,
           "op": "\u003c=",
@@ -1483,7 +1483,7 @@
               "preference": "你太激进了 | hint: play less aggressively",
               "outcome": "applied",
               "reason": "converted to soft weights",
-              "at": "2026-11-26T00:09:48.1059+08:00"
+              "at": "2026-11-26T20:21:21.9750694+08:00"
             }
           ],
           "constraints": 1,
@@ -1494,16 +1494,16 @@
           "play_continues": true,
           "post_constraint_actions": 5,
           "post_constraint_attacks": 0,
-          "preference_latency_ms": 9,
+          "preference_latency_ms": 10,
           "preference_weight": 0.25
         },
         "takeover": {
           "actions_after_freeze": 5,
           "actions_before_freeze": 5,
-          "handover_avg_ms": 7,
+          "handover_avg_ms": 8,
           "human_takeovers": 1,
-          "recovery_latency_ms": 122,
-          "takeover_latency_ms": 7
+          "recovery_latency_ms": 130,
+          "takeover_latency_ms": 9
         }
       },
       "notes": [
@@ -1516,7 +1516,7 @@
       "id": "concurrency",
       "title": "Concurrent instance isolation",
       "status": "pass",
-      "duration_ms": 681,
+      "duration_ms": 692,
       "metrics": [
         {
           "id": "concurrency.2.min_actions",
@@ -1611,7 +1611,7 @@
             "min_actions": 6,
             "action_counts": [
               6,
-              33
+              34
             ],
             "progress": [
               0.15000000000000002,
@@ -1650,7 +1650,7 @@
       "id": "localmodel",
       "title": "Local model TTFT/TPS metric chain",
       "status": "pass",
-      "duration_ms": 2422,
+      "duration_ms": 8211,
       "metrics": [
         {
           "id": "localmodel.stream_ttft_ms",
@@ -1662,7 +1662,7 @@
         {
           "id": "localmodel.stream_latency_ms",
           "label": "SSE full stream latency",
-          "value": 84,
+          "value": 85,
           "unit": "ms"
         },
         {
@@ -1674,7 +1674,7 @@
         {
           "id": "localmodel.stream_tps",
           "label": "decode tokens per second after first token",
-          "value": 108.22291214328713,
+          "value": 107.62539367351029,
           "unit": "tps",
           "note": "tokens / (latency - TTFT)"
         },
@@ -1687,19 +1687,19 @@
         {
           "id": "localmodel.metrics_tps_gauge",
           "label": "LocalTPS gauge value",
-          "value": 108.22291214328713,
+          "value": 107.62539367351029,
           "unit": "tps"
         },
         {
           "id": "localmodel.mock_latency_ms",
           "label": "llm.Mock latency",
-          "value": 16,
+          "value": 15,
           "unit": "ms"
         },
         {
           "id": "localmodel.warmup_ms",
           "label": "preflight request including first loopback connect",
-          "value": 2300,
+          "value": 8090,
           "unit": "ms",
           "note": "absorbed before TTFT timing"
         },
@@ -1715,7 +1715,7 @@
         {
           "id": "localmodel.tps",
           "label": "decode speed at least 20 tokens/sec",
-          "value": 108.22291214328713,
+          "value": 107.62539367351029,
           "unit": "tps",
           "threshold": 20,
           "op": "\u003e=",
@@ -1764,13 +1764,13 @@
         "auth_header_seen": true,
         "completion_tokens": 8,
         "got_text": "alpha beta gamma delta alpha beta gamma delta ",
-        "mock_latency_ms": 16,
+        "mock_latency_ms": 15,
         "mock_text": "{\"kind\":\"attack\",\"reason\":\"mock\"}",
-        "stream_latency_ms": 84,
-        "tps": 108.22291214328713,
+        "stream_latency_ms": 85,
+        "tps": 107.62539367351029,
         "ttft_ms": 10,
         "want_text": "alpha beta gamma delta alpha beta gamma delta ",
-        "warmup_ms": 2300
+        "warmup_ms": 8090
       },
       "notes": [
         "The SSE server is local httptest; no external network or real model is required.",

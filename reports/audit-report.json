@@ -1,8 +1,8 @@
 {
   "version": "audit-v1",
   "root": "C:\\Codes\\goplay",
-  "generated_at": "2026-11-26T00:10:06.9797558+08:00",
-  "duration_ms": 1954,
+  "generated_at": "2026-11-26T20:22:01.0295121+08:00",
+  "duration_ms": 1399,
   "verdict": "PASS",
   "source_findings": null,
   "pe_imports": [
@@ -85,97 +85,97 @@
       "severity": "review"
     },
     {
-      "path": "dist/GoPlay-0.6.2-windows-amd64/GoPlay.exe",
+      "path": "dist/GoPlay-0.6.5-windows-amd64/GoPlay.exe",
       "library": "KERNEL32.dll",
       "symbol": "GetThreadContext",
       "severity": "review"
     },
     {
-      "path": "dist/GoPlay-0.6.2-windows-amd64/GoPlay.exe",
-      "library": "KERNEL32.dll",
-      "symbol": "OpenProcess",
-      "severity": "review"
-    },
-    {
-      "path": "dist/GoPlay-0.6.2-windows-amd64/GoPlay.exe",
-      "library": "KERNEL32.dll",
-      "symbol": "SetThreadContext",
-      "severity": "review"
-    },
-    {
-      "path": "dist/GoPlay-0.6.2-windows-amd64/goplay-audit.exe",
-      "library": "kernel32.dll",
-      "symbol": "GetThreadContext",
-      "severity": "review"
-    },
-    {
-      "path": "dist/GoPlay-0.6.2-windows-amd64/goplay-audit.exe",
-      "library": "kernel32.dll",
-      "symbol": "SetThreadContext",
-      "severity": "review"
-    },
-    {
-      "path": "dist/GoPlay-0.6.2-windows-amd64/goplay-cli.exe",
-      "library": "kernel32.dll",
-      "symbol": "GetThreadContext",
-      "severity": "review"
-    },
-    {
-      "path": "dist/GoPlay-0.6.2-windows-amd64/goplay-cli.exe",
-      "library": "kernel32.dll",
-      "symbol": "SetThreadContext",
-      "severity": "review"
-    },
-    {
-      "path": "dist/GoPlay-0.6.2-windows-amd64/goplay-eval.exe",
-      "library": "kernel32.dll",
-      "symbol": "GetThreadContext",
-      "severity": "review"
-    },
-    {
-      "path": "dist/GoPlay-0.6.2-windows-amd64/goplay-eval.exe",
-      "library": "kernel32.dll",
-      "symbol": "SetThreadContext",
-      "severity": "review"
-    },
-    {
-      "path": "dist/GoPlay-0.6.2-windows-amd64/goplay-model.exe",
-      "library": "kernel32.dll",
-      "symbol": "GetThreadContext",
-      "severity": "review"
-    },
-    {
-      "path": "dist/GoPlay-0.6.2-windows-amd64/goplay-model.exe",
-      "library": "kernel32.dll",
-      "symbol": "SetThreadContext",
-      "severity": "review"
-    },
-    {
-      "path": "dist/GoPlay-0.6.2-windows-amd64/goplay-overlay.exe",
-      "library": "KERNEL32.dll",
-      "symbol": "GetThreadContext",
-      "severity": "review"
-    },
-    {
-      "path": "dist/GoPlay-0.6.2-windows-amd64/goplay-overlay.exe",
+      "path": "dist/GoPlay-0.6.5-windows-amd64/GoPlay.exe",
       "library": "KERNEL32.dll",
       "symbol": "OpenProcess",
       "severity": "review"
     },
     {
-      "path": "dist/GoPlay-0.6.2-windows-amd64/goplay-overlay.exe",
+      "path": "dist/GoPlay-0.6.5-windows-amd64/GoPlay.exe",
       "library": "KERNEL32.dll",
       "symbol": "SetThreadContext",
       "severity": "review"
     },
     {
-      "path": "dist/GoPlay-0.6.2-windows-amd64/goplayd.exe",
+      "path": "dist/GoPlay-0.6.5-windows-amd64/goplay-audit.exe",
       "library": "kernel32.dll",
       "symbol": "GetThreadContext",
       "severity": "review"
     },
     {
-      "path": "dist/GoPlay-0.6.2-windows-amd64/goplayd.exe",
+      "path": "dist/GoPlay-0.6.5-windows-amd64/goplay-audit.exe",
+      "library": "kernel32.dll",
+      "symbol": "SetThreadContext",
+      "severity": "review"
+    },
+    {
+      "path": "dist/GoPlay-0.6.5-windows-amd64/goplay-cli.exe",
+      "library": "kernel32.dll",
+      "symbol": "GetThreadContext",
+      "severity": "review"
+    },
+    {
+      "path": "dist/GoPlay-0.6.5-windows-amd64/goplay-cli.exe",
+      "library": "kernel32.dll",
+      "symbol": "SetThreadContext",
+      "severity": "review"
+    },
+    {
+      "path": "dist/GoPlay-0.6.5-windows-amd64/goplay-eval.exe",
+      "library": "kernel32.dll",
+      "symbol": "GetThreadContext",
+      "severity": "review"
+    },
+    {
+      "path": "dist/GoPlay-0.6.5-windows-amd64/goplay-eval.exe",
+      "library": "kernel32.dll",
+      "symbol": "SetThreadContext",
+      "severity": "review"
+    },
+    {
+      "path": "dist/GoPlay-0.6.5-windows-amd64/goplay-model.exe",
+      "library": "kernel32.dll",
+      "symbol": "GetThreadContext",
+      "severity": "review"
+    },
+    {
+      "path": "dist/GoPlay-0.6.5-windows-amd64/goplay-model.exe",
+      "library": "kernel32.dll",
+      "symbol": "SetThreadContext",
+      "severity": "review"
+    },
+    {
+      "path": "dist/GoPlay-0.6.5-windows-amd64/goplay-overlay.exe",
+      "library": "KERNEL32.dll",
+      "symbol": "GetThreadContext",
+      "severity": "review"
+    },
+    {
+      "path": "dist/GoPlay-0.6.5-windows-amd64/goplay-overlay.exe",
+      "library": "KERNEL32.dll",
+      "symbol": "OpenProcess",
+      "severity": "review"
+    },
+    {
+      "path": "dist/GoPlay-0.6.5-windows-amd64/goplay-overlay.exe",
+      "library": "KERNEL32.dll",
+      "symbol": "SetThreadContext",
+      "severity": "review"
+    },
+    {
+      "path": "dist/GoPlay-0.6.5-windows-amd64/goplayd.exe",
+      "library": "kernel32.dll",
+      "symbol": "GetThreadContext",
+      "severity": "review"
+    },
+    {
+      "path": "dist/GoPlay-0.6.5-windows-amd64/goplayd.exe",
       "library": "kernel32.dll",
       "symbol": "SetThreadContext",
       "severity": "review"
@@ -219,9 +219,9 @@
   ],
   "pe_invalid": null,
   "stats": {
-    "walked": 3555,
+    "walked": 3534,
     "source_files": 178,
-    "source_bytes": 2259441,
+    "source_bytes": 2297028,
     "allowlisted": 2,
     "support_skipped": 0,
     "oversize_skipped": 0,
