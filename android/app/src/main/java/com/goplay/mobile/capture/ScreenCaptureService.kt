@@ -79,7 +79,9 @@ class ScreenCaptureService : Service() {
 
     private var projection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
-    private var imageReader: ImageReader? = null
+    @Volatile private var imageReader: ImageReader? = null
+    /** Guards Image acquisition against reader close during rotation. */
+    private val frameLock = Any()
     private var captureThread: HandlerThread? = null
     private var captureHandler: Handler? = null
     private var overlay: OverlayController? = null
@@ -459,7 +461,16 @@ class ScreenCaptureService : Service() {
             return false
         }
 
-        imageReader = reader
+        synchronized(frameLock) {
+            imageReader = reader
+            try {
+                // Detach first: the old reader's queued callbacks are no longer
+                // allowed to encode an Image whose native buffers are being freed.
+                oldReader?.setOnImageAvailableListener(null, null)
+                oldReader?.close()
+            } catch (_: Exception) {
+            }
+        }
         captureThread = thread
         captureHandler = handler
         captureWidth = target.width
@@ -468,10 +479,6 @@ class ScreenCaptureService : Service() {
         lastSentAt = 0L
         fpsWindowStart = SystemClock.elapsedRealtime()
         fpsFrames = 0
-        try {
-            oldReader?.close()
-        } catch (_: Exception) {
-        }
         oldThread?.quitSafely()
         graph.logs.log(
             reason + "：投屏已调整为 " + target.width + "x" + target.height +
@@ -481,12 +488,24 @@ class ScreenCaptureService : Service() {
     }
 
     private fun onImageAvailable(reader: ImageReader) {
+        // A rotation replaces and closes the ImageReader from the main thread
+        // while this callback runs on the capture thread. copyPixelsFromBuffer
+        // is a native memcpy and reads freed buffers as SIGSEGV, so acquisition
+        // and the whole frame copy must exclude reconfigure/teardown.
+        synchronized(frameLock) {
+            if (reader !== imageReader) return
+            processImage(reader)
+        }
+    }
+
+    private fun processImage(reader: ImageReader) {
         val image = try {
             reader.acquireLatestImage()
         } catch (e: Exception) {
             return
         } ?: return
         try {
+            if (reader !== imageReader) return
             val now = SystemClock.elapsedRealtime()
             // A long game session can outlive Wi-Fi, Doze or a WebSocket ping
             // timeout. Frames are the only reliable heartbeat we have, so use
@@ -964,11 +983,14 @@ class ScreenCaptureService : Service() {
         } catch (_: Exception) {
         }
         virtualDisplay = null
-        try {
-            imageReader?.close()
-        } catch (_: Exception) {
+        synchronized(frameLock) {
+            try {
+                imageReader?.setOnImageAvailableListener(null, null)
+                imageReader?.close()
+            } catch (_: Exception) {
+            }
+            imageReader = null
         }
-        imageReader = null
         captureThread?.quitSafely()
         captureThread = null
         captureHandler = null

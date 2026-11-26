@@ -465,6 +465,7 @@ func (p *Policy) filter(in Input) ([]domain.Action, []string) {
 	}
 	purchaseScreen := isPurchaseScreen(in.State)
 	quitConfirm := isQuitConfirmScreen(in.State)
+	adScreen := isAdScreen(in.State)
 	var out []domain.Action
 	var blocked []string
 	for _, a := range in.Actions {
@@ -497,6 +498,14 @@ func (p *Policy) filter(in Input) ([]domain.Action, []string) {
 		}
 		if isRiskyPurchaseAction(a) {
 			blocked = append(blocked, "危险按钮: "+a.Key())
+			continue
+		}
+		if isRiskyAdAction(a) {
+			blocked = append(blocked, "广告/跳转按钮: "+a.Key())
+			continue
+		}
+		if adScreen && (a.Kind == "tap" || a.Kind == "swipe") {
+			blocked = append(blocked, "广告/跳转界面先返回: "+a.Key())
 			continue
 		}
 		// On a payment/recharge screen only a safe escape is legal. Blind grid
@@ -617,7 +626,7 @@ func textLabelAdjust(target string) float64 {
 		}
 	}
 	positive := []string{
-		"开始游戏", "继续游戏", "新的游戏", "新游戏", "进入游戏", "重新开始",
+		"开始游戏", "继续游戏", "新的游戏", "新游戏", "进入游戏", "重新开始", "再玩一会",
 		"攻击", "射击", "开火", "跳跃", "拾取", "采集", "制作", "使用", "装备",
 		"对话", "返回", "下一", "挑战", "确认", "确定",
 		"开始", "继续", "start game", "new game", "continue", "start", "play",
@@ -664,6 +673,14 @@ var stayWords = []string{"再玩一会", "继续游戏", "继续冒险", "继续
 var destructiveWords = []string{
 	"退出游戏", "退出登录", "结束游戏", "关闭游戏", "退出账号",
 	"quit game", "exit game", "exit to desktop", "quit to desktop",
+}
+
+// adWords mark an ad or an out-of-game redirect. Tapping one can leave the
+// game entirely (a real device test landed in the app store community page),
+// so they are never valid game actions.
+var adWords = []string{
+	"点击查看", "查看详情", "了解更多", "立即查看", "去看看", "打开应用", "浏览器打开",
+	"下载安装", "立即下载", "免费下载", "广告", "赞助", "推广", "安装",
 }
 
 var closeWords = []string{
@@ -740,6 +757,18 @@ func isDestructiveAction(a domain.Action) bool {
 	return containsAny(label, destructiveWords)
 }
 
+func isAdScreen(st domain.State) bool {
+	return containsAny(screenText(st), adWords)
+}
+
+func isRiskyAdAction(a domain.Action) bool {
+	if a.Kind == "back" || a.Kind == "wait" {
+		return false
+	}
+	label := strings.ToLower(a.Target + " " + strings.Join(a.Tags, " "))
+	return containsAny(label, adWords)
+}
+
 func isRiskyPurchaseAction(a domain.Action) bool {
 	if a.Kind == "back" || a.Kind == "wait" {
 		return false
@@ -775,6 +804,28 @@ func navigationAdjust(a domain.Action, st domain.State) float64 {
 		case a.Kind == "back":
 			return 4.0
 		case a.Kind == "wait":
+			return 0.5
+		}
+		return -4.0
+	}
+	if isQuitConfirmScreen(st) {
+		// The safe exit is a real button ("再玩一会"/"继续游戏"), not a blind
+		// wait. Waiting here keeps the dialog open forever, so the stay action
+		// must clearly outrank idle.
+		if a.Kind != "wait" && isStayOnQuit(a) {
+			return 8.0
+		}
+		return 0
+	}
+	if isAdScreen(st) {
+		switch {
+		case a.Kind == "back":
+			return 6.0
+		case isCloseLabel(a.Target):
+			return 5.0
+		case a.Kind == "wait":
+			return 0.3
+		case a.Kind == "tap_text":
 			return 0.5
 		}
 		return -4.0

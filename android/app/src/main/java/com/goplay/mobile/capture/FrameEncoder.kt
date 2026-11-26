@@ -22,14 +22,26 @@ object FrameEncoder {
         val rowStride = plane.rowStride
         val rowPadding = rowStride - pixelStride * image.width
         if (rowPadding < 0) return null
+        // copyPixelsFromBuffer() is a native memcpy: a short or already-recycled
+        // plane buffer crashes the whole process with SIGSEGV instead of throwing
+        // a Java exception. Validate the layout before touching it.
+        if (rowPadding % pixelStride != 0) return null
         val paddedWidth = image.width + rowPadding / pixelStride
         if (paddedWidth <= 0) return null
+        val rowBytes = paddedWidth.toLong() * 4L
+        val required = rowBytes * image.height.toLong()
+        if (required <= 0L || required > Int.MAX_VALUE.toLong()) return null
 
         val buffer = plane.buffer
+        if (buffer.remaining().toLong() < required) return null
         buffer.rewind()
+        if (buffer.remaining().toLong() < required) return null
         var padded: Bitmap? = null
         try {
             padded = Bitmap.createBitmap(paddedWidth, image.height, Bitmap.Config.ARGB_8888)
+            if (padded.rowBytes.toLong() * padded.height.toLong() > buffer.remaining().toLong()) {
+                return null
+            }
             padded.copyPixelsFromBuffer(buffer)
             if (paddedWidth == image.width) {
                 val out = padded

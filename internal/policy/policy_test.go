@@ -79,6 +79,23 @@ func TestDestructiveExitIsBlocked(t *testing.T) {
 	}
 }
 
+func TestAdRedirectIsBlocked(t *testing.T) {
+	p := New(nil, nil, DefaultConfig())
+	actions := []domain.Action{
+		{Kind: "back", Target: "screen", Tags: []string{"ui", "back"}, Input: &domain.InputSpec{Type: "back"}},
+		{Kind: "tap", Target: "screen_2_2", Tags: []string{"ui"}, Input: &domain.InputSpec{Type: "tap", X: 0.5, Y: 0.55}},
+		tapText("点击查看>"),
+		tapText("了解更多"),
+	}
+	d := p.Decide(context.Background(), Input{State: touchState("广告 点击查看> 了解更多 下载安装"), Actions: actions})
+	if d.Action.Kind != "back" {
+		t.Fatalf("an ad/redirect screen should escape with back, got %+v", d.Action)
+	}
+	if len(d.Blocked) == 0 {
+		t.Fatalf("ad buttons and blind taps should be reported as blocked")
+	}
+}
+
 func TestContinueBeatsNewGame(t *testing.T) {
 	p := New(nil, nil, DefaultConfig())
 	actions := []domain.Action{tapText("继续游戏"), tapText("新的游戏")}

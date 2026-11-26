@@ -1,6 +1,7 @@
 package luabridge
 
 import (
+	"fmt"
 	"math"
 	"testing"
 
@@ -150,6 +151,49 @@ func TestGenericTouchTapsOCRLabels(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected a tap_text action on an OCR box, got %+v", acts)
+	}
+}
+
+func TestGenericTouchTapsLabelsBeyondTwelve(t *testing.T) {
+	p, err := LoadBuiltin("generic_touch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	regions := make([]any, 0, 14)
+	for i := 1; i <= 12; i++ {
+		regions = append(regions, map[string]any{
+			"text": fmt.Sprintf("HUD %d", i), "x": 0.1, "y": 0.1, "w": 0.1, "h": 0.03,
+		})
+	}
+	regions = append(regions,
+		map[string]any{"text": "再玩一会", "x": 0.5, "y": 0.55, "w": 0.2, "h": 0.06},
+		map[string]any{"text": "退出游戏", "x": 0.5, "y": 0.72, "w": 0.2, "h": 0.06},
+	)
+	world := map[string]any{"ui_regions": regions}
+	st, err := p.Observe(world, domain.State{Values: map[string]float64{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Values["ui_count"] != 14 {
+		t.Fatalf("expected all 14 OCR boxes, got %+v", st.Values["ui_count"])
+	}
+	acts, err := p.Actions(world, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{"text:再玩一会": false, "text:退出游戏": false}
+	for _, a := range acts {
+		if a.Kind == "tap_text" {
+			if _, ok := want[a.Target]; ok {
+				want[a.Target] = true
+			}
+		}
+	}
+	for label, found := range want {
+		if !found {
+			t.Fatalf("expected %s action beyond the first 12 OCR boxes, got %+v", label, acts)
+		}
 	}
 }
 

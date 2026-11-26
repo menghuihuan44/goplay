@@ -32,7 +32,7 @@ function profile.observe(s)
   -- Fold them into values/text so actions() can emit a real tap on each label.
   local regions = type(s.ui_regions) == "table" and s.ui_regions or {}
   local n = 0
-  for i = 1, math.min(#regions, 12) do
+  for i = 1, math.min(#regions, 24) do
     local r = regions[i]
     if type(r) == "table" and type(r.text) == "string" and r.text ~= "" then
       n = n + 1
